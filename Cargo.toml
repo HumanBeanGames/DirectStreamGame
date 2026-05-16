@@ -1,0 +1,18 @@
+[package]
+name = "DirectStreamGame"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "direct_stream_game"
+path = "src/lib.rs"
+
+[dependencies]
+arboard = "3.4.0"
+bevy = "0.18.1"
+crossbeam-channel = "0.5.15"
+
+# Dynamically link LGPL-compatible FFmpeg shared libraries. Do not enable
+# ffmpeg-next's "static", "build", "build-license-gpl", or
+# "build-license-nonfree" features for proprietary distribution.
+ffmpeg-next = { version = "=8.1.0", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }

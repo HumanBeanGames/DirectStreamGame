@@ -1,0 +1,4 @@
+/target
+/vcpkg_installed
+/twitch.toml
+/.idea

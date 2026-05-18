@@ -1,6 +1,6 @@
 use crate::{
-    constants::{STREAM_HEIGHT, STREAM_WIDTH},
     frames::{RawFrame, RawFrameSenders},
+    public_types::DirectStreamTarget,
     scene::StreamReadback,
     stream_control::StreamControl,
 };
@@ -22,7 +22,8 @@ pub(crate) fn request_stream_readback(
     }
 
     let preview_full = senders.preview.as_ref().is_some_and(Sender::is_full);
-    if readback.in_flight || preview_full {
+    let custom_full = senders.custom.as_ref().is_some_and(Sender::is_full);
+    if readback.in_flight || preview_full || custom_full {
         return;
     }
 
@@ -41,21 +42,28 @@ fn queue_readback_frame(
     event: On<ReadbackComplete>,
     mut commands: Commands,
     senders: Res<RawFrameSenders>,
+    target: Res<DirectStreamTarget>,
     mut readback: ResMut<StreamReadback>,
 ) {
     readback.in_flight = false;
     commands.entity(event.entity).despawn();
 
     let preview_full = senders.preview.as_ref().is_some_and(Sender::is_full);
-    if preview_full {
+    let custom_full = senders.custom.as_ref().is_some_and(Sender::is_full);
+    if preview_full || custom_full {
         senders.stats.with_mut(|stats| {
             stats.frames_dropped += 1;
-            stats.preview_frames_dropped += 1;
+            if preview_full {
+                stats.preview_frames_dropped += 1;
+            }
+            if custom_full {
+                stats.custom_frames_dropped += 1;
+            }
         });
         return;
     }
 
-    let row_bytes = STREAM_WIDTH as usize * 4;
+    let row_bytes = target.width as usize * 4;
     let aligned_row_bytes =
         bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(row_bytes);
 
@@ -65,7 +73,7 @@ fn queue_readback_frame(
         event
             .data
             .chunks(aligned_row_bytes)
-            .take(STREAM_HEIGHT as usize)
+            .take(target.height as usize)
             .flat_map(|row| row[..row_bytes.min(row.len())].iter().copied())
             .collect()
     };
@@ -75,8 +83,8 @@ fn queue_readback_frame(
         && preview
             .try_send(RawFrame {
                 bgra: bgra.clone(),
-                width: STREAM_WIDTH,
-                height: STREAM_HEIGHT,
+                width: target.width,
+                height: target.height,
             })
             .is_err()
     {
@@ -89,8 +97,21 @@ fn queue_readback_frame(
     if let Some(twitch) = &senders.twitch {
         twitch.publish(RawFrame {
             bgra,
-            width: STREAM_WIDTH,
-            height: STREAM_HEIGHT,
+            width: target.width,
+            height: target.height,
+        });
+    } else if let Some(custom) = &senders.custom
+        && custom
+            .try_send(RawFrame {
+                bgra,
+                width: target.width,
+                height: target.height,
+            })
+            .is_err()
+    {
+        senders.stats.with_mut(|stats| {
+            stats.frames_dropped += 1;
+            stats.custom_frames_dropped += 1;
         });
     }
 }

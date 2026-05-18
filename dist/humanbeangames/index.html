@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Human Bean Games</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Arial, Helvetica, sans-serif;
+      background: #101418;
+      color: #f4f7fb;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #101418;
+    }
+
+    header {
+      border-bottom: 1px solid #2a3340;
+      background: #171d25;
+      padding: 18px clamp(16px, 4vw, 40px);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(24px, 4vw, 42px);
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    main {
+      display: grid;
+      place-items: start center;
+      padding: clamp(16px, 4vw, 40px);
+    }
+
+    .stream-frame {
+      width: min(100%, 1040px);
+      height: min(78vh, 860px);
+      min-height: 560px;
+      border: 1px solid #2f3948;
+      background: #050608;
+    }
+
+    @media (max-width: 760px) {
+      .stream-frame {
+        min-height: 680px;
+        height: 80vh;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Human Bean Games</h1>
+  </header>
+  <main>
+    <iframe
+      class="stream-frame"
+      title="Human Bean Games live stream"
+      src="https://stream.humanbeangames.com"
+      allow="autoplay"
+    ></iframe>
+  </main>
+</body>
+</html>

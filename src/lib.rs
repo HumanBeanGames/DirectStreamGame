@@ -6,6 +6,8 @@ mod config;
 mod constants;
 mod demo;
 mod frames;
+mod palette;
+pub mod palette_lut;
 mod plugin;
 mod preview;
 mod public_types;
@@ -31,3 +33,4 @@ pub use demo::{
 };
 pub use plugin::DirectStreamPlugin;
 pub use public_types::{DirectStreamSet, DirectStreamTarget};
+pub use web::static_palette_stream_page_html;

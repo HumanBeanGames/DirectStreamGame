@@ -1,0 +1,948 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IPSC Palette Lab</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Arial, sans-serif;
+      background: #101217;
+      color: #edf2f7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(320px, 390px) 1fr;
+    }
+    aside {
+      border-right: 1px solid #2d3441;
+      background: #171b23;
+      padding: 16px;
+      overflow-y: auto;
+    }
+    main {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-width: 0;
+    }
+    header {
+      padding: 14px 16px;
+      border-bottom: 1px solid #2d3441;
+      display: grid;
+      grid-template-columns: max-content minmax(0, 78ch);
+      gap: 16px;
+      align-items: start;
+    }
+    h1 {
+      font-size: 18px;
+      margin: 0 0 16px;
+    }
+    fieldset {
+      border: 1px solid #303847;
+      border-radius: 6px;
+      margin: 0 0 14px;
+      padding: 12px;
+    }
+    legend {
+      padding: 0 6px;
+      color: #c4cede;
+      font-weight: 700;
+    }
+    label {
+      display: grid;
+      grid-template-columns: 1fr 96px;
+      gap: 10px;
+      align-items: center;
+      margin: 9px 0;
+      color: #cbd5e1;
+      font-size: 14px;
+    }
+    .bias-label {
+      grid-template-columns: 74px 1fr 48px;
+    }
+    input {
+      width: 100%;
+      background: #0d1016;
+      color: #f8fafc;
+      border: 1px solid #3a4353;
+      border-radius: 4px;
+      padding: 7px 8px;
+      font: inherit;
+    }
+    input[type="range"] {
+      padding: 0;
+    }
+    button, a.button {
+      appearance: none;
+      border: 1px solid #4a5668;
+      border-radius: 5px;
+      background: #263142;
+      color: #f8fafc;
+      padding: 8px 10px;
+      font: inherit;
+      text-decoration: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 36px;
+    }
+    button.primary {
+      background: #d7e8ff;
+      border-color: #d7e8ff;
+      color: #101217;
+      font-weight: 700;
+    }
+    button:disabled, a.button[aria-disabled="true"] {
+      opacity: 0.45;
+      pointer-events: none;
+    }
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .actions .primary {
+      grid-column: 1 / -1;
+    }
+    .status {
+      font-family: Consolas, monospace;
+      white-space: pre-wrap;
+      color: #cbd5e1;
+      line-height: 1.45;
+      display: block;
+      width: 78ch;
+      height: 10.15em;
+      overflow: auto;
+      scrollbar-gutter: stable;
+    }
+    .status.ok { color: #b6f5c7; }
+    .status.bad { color: #ffb4a8; }
+    .stage {
+      display: grid;
+      align-content: start;
+      justify-items: center;
+      gap: 18px;
+      overflow: auto;
+      padding: 18px;
+      background: #0b0d12;
+    }
+    .preview {
+      width: min(100%, 1100px);
+      display: grid;
+      gap: 8px;
+    }
+    .preview h2 {
+      margin: 0;
+      font-size: 14px;
+      color: #cbd5e1;
+    }
+    canvas {
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #000;
+      border: 1px solid #303847;
+      width: 100%;
+      height: auto;
+    }
+    @media (max-width: 860px) {
+      body { grid-template-columns: 1fr; }
+      aside { border-right: 0; border-bottom: 1px solid #2d3441; }
+      header { grid-template-columns: 1fr; }
+      .status { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <aside>
+    <h1>IPSC Palette Lab</h1>
+    <form id="form">
+      <fieldset>
+        <legend>Chroma</legend>
+        <label>min <input id="chromaMin" type="number" step="0.001" value="0"></label>
+        <label>max <input id="chromaMax" type="number" step="0.001" value="1"></label>
+        <label>divisions <input id="chromaDivisions" type="number" min="1" step="1" value="4"></label>
+      </fieldset>
+      <fieldset>
+        <legend>Value</legend>
+        <label>min <input id="valueMin" type="number" step="0.001" value="0"></label>
+        <label>max <input id="valueMax" type="number" step="0.001" value="1"></label>
+        <label>divisions <input id="valueDivisions" type="number" min="1" step="1" value="16"></label>
+        <label>add black <input id="addBlack" type="checkbox"></label>
+        <label>add white <input id="addWhite" type="checkbox"></label>
+      </fieldset>
+      <fieldset>
+        <legend>Hue</legend>
+        <label>min <input id="hueMin" type="number" step="0.1" value="0"></label>
+        <label>max <input id="hueMax" type="number" step="0.1" value="360"></label>
+        <label>divisions <input id="hueDivisions" type="number" min="1" step="1" value="20"></label>
+        <label>offset <input id="hueOffset" type="number" step="any" value="0"></label>
+      </fieldset>
+      <fieldset>
+        <legend>Nearest Palette Bias</legend>
+        <label class="bias-label">value <input id="biasLightness" type="range" min="0" max="1" step="0.001" value="0.333"><span id="biasLightnessValue">0.333</span></label>
+        <label class="bias-label">chroma <input id="biasChroma" type="range" min="0" max="1" step="0.001" value="0.333"><span id="biasChromaValue">0.333</span></label>
+        <label class="bias-label">hue <input id="biasHue" type="range" min="0" max="1" step="0.001" value="0.334"><span id="biasHueValue">0.334</span></label>
+      </fieldset>
+      <fieldset>
+        <legend>Export</legend>
+        <label>filename <input id="filenameBase" type="text" value="palette"></label>
+      </fieldset>
+      <div class="actions">
+        <button class="secondary" id="previewButton" type="button">Preview</button>
+        <button class="primary" type="submit">Generate</button>
+        <button class="secondary" id="bakeButton" type="button" disabled>Bake</button>
+        <a class="button" id="downloadToml" aria-disabled="true">palette.toml</a>
+        <a class="button" id="downloadIpsi" aria-disabled="true">palette.ipsi</a>
+        <a class="button" id="downloadMap" aria-disabled="true">palette.ipsmap</a>
+      </div>
+    </form>
+  </aside>
+  <main>
+    <header>
+      <strong>Palette Preview</strong>
+      <span id="status" class="status">ready</span>
+    </header>
+    <section class="stage">
+      <div class="preview">
+        <h2>OKLCH strict-gamut palette</h2>
+        <canvas id="canvas" width="1" height="1"></canvas>
+      </div>
+      <div class="preview">
+        <h2>sRGB comparison palette</h2>
+        <canvas id="srgbCanvas" width="1" height="1"></canvas>
+      </div>
+      <div class="preview">
+        <h2>sRGB rounded to nearest OKLCH palette colour</h2>
+        <canvas id="roundedSrgbCanvas" width="1" height="1"></canvas>
+      </div>
+    </section>
+  </main>
+  <script>
+    const form = document.getElementById("form");
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const srgbCanvas = document.getElementById("srgbCanvas");
+    const srgbCtx = srgbCanvas.getContext("2d");
+    const roundedSrgbCanvas = document.getElementById("roundedSrgbCanvas");
+    const roundedSrgbCtx = roundedSrgbCanvas.getContext("2d");
+    const status = document.getElementById("status");
+    const previewButton = document.getElementById("previewButton");
+    const bakeButton = document.getElementById("bakeButton");
+    const downloadToml = document.getElementById("downloadToml");
+    const downloadIpsi = document.getElementById("downloadIpsi");
+    const downloadMap = document.getElementById("downloadMap");
+    const biasInputs = [
+      document.getElementById("biasLightness"),
+      document.getElementById("biasChroma"),
+      document.getElementById("biasHue"),
+    ];
+    const hueOffsetZeroShift = -11;
+    ctx.imageSmoothingEnabled = false;
+    srgbCtx.imageSmoothingEnabled = false;
+    roundedSrgbCtx.imageSmoothingEnabled = false;
+
+    let tomlUrl = null;
+    let ipsiUrl = null;
+    let mapUrl = null;
+    let currentPaletteArtifact = null;
+
+    function numberValue(id) {
+      const input = document.getElementById(id);
+      const value = Number(input.value);
+      if (!Number.isFinite(value)) {
+        throw new Error(`${id} must be a number`);
+      }
+      return value;
+    }
+
+    function checkedValue(id) {
+      return document.getElementById(id).checked;
+    }
+
+    function filenameBase() {
+      const raw = document.getElementById("filenameBase").value.trim() || "palette";
+      return raw
+        .replace(/\.[^.\\\/]+$/, "")
+        .replace(/[^A-Za-z0-9._-]+/g, "_")
+        .replace(/^_+|_+$/g, "") || "palette";
+    }
+
+    function biasValues() {
+      return {
+        lightness: Number(document.getElementById("biasLightness").value),
+        chroma: Number(document.getElementById("biasChroma").value),
+        hue: Number(document.getElementById("biasHue").value),
+      };
+    }
+
+    function updateBiasLabels() {
+      document.getElementById("biasLightnessValue").textContent = Number(document.getElementById("biasLightness").value).toFixed(3);
+      document.getElementById("biasChromaValue").textContent = Number(document.getElementById("biasChroma").value).toFixed(3);
+      document.getElementById("biasHueValue").textContent = Number(document.getElementById("biasHue").value).toFixed(3);
+    }
+
+    function normalizeBias(changedInput) {
+      const next = Math.max(0, Math.min(1, Number(changedInput.value)));
+      changedInput.value = next.toFixed(3);
+      const others = biasInputs.filter(input => input !== changedInput);
+      const remaining = 1 - next;
+      const otherTotal = others.reduce((sum, input) => sum + Number(input.value), 0);
+
+      if (otherTotal <= 0) {
+        const split = remaining / others.length;
+        for (const input of others) input.value = split.toFixed(3);
+      } else {
+        for (const input of others) {
+          input.value = (Number(input.value) / otherTotal * remaining).toFixed(3);
+        }
+      }
+
+      const total = biasInputs.reduce((sum, input) => sum + Number(input.value), 0);
+      const correction = 1 - total;
+      const correctionTarget = others[others.length - 1] || changedInput;
+      correctionTarget.value = Math.max(0, Math.min(1, Number(correctionTarget.value) + correction)).toFixed(3);
+      updateBiasLabels();
+    }
+
+    function integerValue(id) {
+      const value = Math.floor(numberValue(id));
+      if (value < 1) {
+        throw new Error(`${id} must be at least 1`);
+      }
+      return value;
+    }
+
+    function range(min, max, divisions) {
+      if (divisions === 1) return [(min + max) * 0.5];
+      return Array.from({ length: divisions }, (_, i) => min + (max - min) * i / (divisions - 1));
+    }
+
+    function uniqueSortedValues(values) {
+      return [...values]
+        .sort((a, b) => a - b)
+        .filter((value, index, sorted) => index === 0 || Math.abs(value - sorted[index - 1]) > 0.000001);
+    }
+
+    function srgbByte(value) {
+      value = Math.max(0, Math.min(1, value));
+      const srgb = value <= 0.0031308 ? value * 12.92 : 1.055 * Math.pow(value, 1 / 2.4) - 0.055;
+      return Math.round(Math.max(0, Math.min(255, srgb * 255)));
+    }
+
+    function oklchToLinearSrgb(lightness, chroma, hueDegrees) {
+      const hue = hueDegrees * Math.PI / 180;
+      const a = Math.cos(hue) * chroma;
+      const b = Math.sin(hue) * chroma;
+      const l_ = lightness + 0.39633778 * a + 0.21580376 * b;
+      const m_ = lightness - 0.105561346 * a - 0.06385417 * b;
+      const s_ = lightness - 0.08948418 * a - 1.2914855 * b;
+      const l = l_ * l_ * l_;
+      const m = m_ * m_ * m_;
+      const s = s_ * s_ * s_;
+      return [
+        4.0767417 * l - 3.3077116 * m + 0.23096994 * s,
+        -1.268438 * l + 2.6097574 * m - 0.34131938 * s,
+        -0.0041960863 * l - 0.7034186 * m + 1.7076147 * s,
+      ];
+    }
+
+    function srgbToLinear(value) {
+      value /= 255;
+      return value <= 0.04045 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
+    }
+
+    function rgbToOklab(r8, g8, b8) {
+      const r = srgbToLinear(r8);
+      const g = srgbToLinear(g8);
+      const b = srgbToLinear(b8);
+      const l = 0.41222146 * r + 0.53633255 * g + 0.051445995 * b;
+      const m = 0.2119035 * r + 0.6806995 * g + 0.10739696 * b;
+      const s = 0.08830246 * r + 0.28171884 * g + 0.6299787 * b;
+      const l_ = Math.cbrt(l);
+      const m_ = Math.cbrt(m);
+      const s_ = Math.cbrt(s);
+      return {
+        l: 0.21045426 * l_ + 0.7936178 * m_ - 0.004072047 * s_,
+        a: 1.9779985 * l_ - 2.4285922 * m_ + 0.4505937 * s_,
+        b: 0.025904037 * l_ + 0.78277177 * m_ - 0.80867577 * s_,
+      };
+    }
+
+    function oklabToOklch(color) {
+      const chroma = Math.hypot(color.a, color.b);
+      return {
+        l: color.l,
+        c: chroma,
+        h: chroma <= 0.000001 ? 0 : Math.atan2(color.b, color.a),
+      };
+    }
+
+    function hueDeltaRadians(a, b) {
+      let delta = Math.abs(a - b) % (Math.PI * 2);
+      return delta > Math.PI ? Math.PI * 2 - delta : delta;
+    }
+
+    function palettePreviewDistanceSquared(a, b, bias) {
+      const dl = a.l - b.l;
+      const dc = a.c - b.c;
+      const dh = Math.sin(hueDeltaRadians(a.h, b.h) * 0.5) * 2 * Math.max(a.c, b.c);
+      return bias.lightness * dl * dl + bias.chroma * dc * dc + bias.hue * dh * dh;
+    }
+
+    function inGamut(rgb) {
+      return rgb.every(value => Number.isFinite(value) && value >= 0 && value <= 1);
+    }
+
+    function oklchColor(lightness, chroma, hueDegrees) {
+      const rgb = oklchToLinearSrgb(lightness, chroma, hueDegrees);
+      if (!inGamut(rgb)) return null;
+      return [srgbByte(rgb[0]), srgbByte(rgb[1]), srgbByte(rgb[2]), 255];
+    }
+
+    function hsvColor(hueDegrees, saturation, value) {
+      const hue = ((hueDegrees % 360) + 360) % 360;
+      const c = value * saturation;
+      const x = c * (1 - Math.abs((hue / 60) % 2 - 1));
+      const m = value - c;
+      let r = 0;
+      let g = 0;
+      let b = 0;
+
+      if (hue < 60) [r, g, b] = [c, x, 0];
+      else if (hue < 120) [r, g, b] = [x, c, 0];
+      else if (hue < 180) [r, g, b] = [0, c, x];
+      else if (hue < 240) [r, g, b] = [0, x, c];
+      else if (hue < 300) [r, g, b] = [x, 0, c];
+      else [r, g, b] = [c, 0, x];
+
+      return [
+        Math.round((r + m) * 255),
+        Math.round((g + m) * 255),
+        Math.round((b + m) * 255),
+        255,
+      ];
+    }
+
+    function srgbHueToOklchHue(hueDegrees) {
+      const [r, g, b] = hsvColor(hueDegrees, 1, 1);
+      const lab = rgbToOklab(r, g, b);
+      return (Math.atan2(lab.b, lab.a) * 180 / Math.PI + 360) % 360;
+    }
+
+    function hex(color) {
+      if (!isColor(color)) {
+        throw new Error(`invalid palette colour in export: ${JSON.stringify(color)}`);
+      }
+      return "#" + color.slice(0, 3).map(value => value.toString(16).padStart(2, "0").toUpperCase()).join("");
+    }
+
+    function isColor(color) {
+      return Array.isArray(color)
+        && color.length >= 3
+        && color.slice(0, 3).every(value => Number.isInteger(value) && value >= 0 && value <= 255);
+    }
+
+    function colorCountFor(settings) {
+      let count = settings.greys.length;
+      for (const hue of settings.oklchHues) {
+        for (const chroma of settings.chromas) {
+          for (const value of settings.values) {
+            if (value <= 0 || value >= 1) continue;
+            if (oklchColor(value, chroma, hue)) count++;
+          }
+        }
+      }
+      return count;
+    }
+
+    function readSettings() {
+      const chromaMin = numberValue("chromaMin");
+      const chromaMax = numberValue("chromaMax");
+      const chromaDivisions = integerValue("chromaDivisions");
+      const valueMin = numberValue("valueMin");
+      const valueMax = numberValue("valueMax");
+      const valueDivisions = integerValue("valueDivisions");
+      const addBlack = checkedValue("addBlack");
+      const addWhite = checkedValue("addWhite");
+      const hueMin = numberValue("hueMin");
+      const hueMax = numberValue("hueMax");
+      const hueDivisions = integerValue("hueDivisions");
+      const hueOffset = numberValue("hueOffset");
+      const shiftedHueOffset = hueOffset + hueOffsetZeroShift;
+
+      const oklchMaxChroma = 0.2576833;
+
+      if (chromaMax > 1 || chromaMax <= chromaMin) {
+        throw new Error("chroma max must be <= 1 and greater than chroma min");
+      }
+      if (valueMin < 0 || valueMax > 1 || valueMax <= valueMin) {
+        throw new Error("value min/max must be a valid 0..1 range");
+      }
+
+      const chromaSamples = range(chromaMin, chromaMax, chromaDivisions)
+        .filter(value => value > 0);
+      const chromas = chromaSamples.map(value => Math.min(1, value) * oklchMaxChroma);
+      const values = range(valueMin, valueMax, valueDivisions);
+      const greyValues = uniqueSortedValues([
+        ...(addBlack ? [0] : []),
+        ...values,
+        ...(addWhite ? [1] : []),
+      ]);
+      const greys = greyValues.map(greyColor);
+      const hueSpan = hueMax - hueMin;
+      const srgbHues = Array.from({ length: hueDivisions }, (_, i) => shiftedHueOffset + hueMin + hueSpan * i / hueDivisions);
+      const oklchStart = srgbHueToOklchHue(shiftedHueOffset + hueMin);
+      const oklchHues = Array.from({ length: hueDivisions }, (_, i) => oklchStart + hueSpan * i / hueDivisions);
+
+      const srgbSaturations = chromaSamples.map(value => Math.max(0, Math.min(1, value)));
+      const srgbValues = greyValues;
+
+      return {
+        chromas,
+        chromaSamples,
+        values,
+        greyValues,
+        greys,
+        srgbHues,
+        oklchHues,
+        srgbSaturations,
+        srgbValues,
+        chromaDivisions,
+        valueDivisions,
+        hueDivisions,
+        hueMin,
+        hueMax,
+        hueOffset,
+        shiftedHueOffset,
+        addBlack,
+        addWhite,
+        bias: biasValues(),
+      };
+    }
+
+    function greyColor(value) {
+      if (value <= 0) return [0, 0, 0, 255];
+      if (value >= 1) return [255, 255, 255, 255];
+      const grey = srgbByte(value);
+      return [grey, grey, grey, 255];
+    }
+
+    function generatePalette(settings) {
+      const colors = settings.greys.filter(isColor);
+      const indexByCell = new Map();
+
+      for (let hueIndex = 0; hueIndex < settings.oklchHues.length; hueIndex++) {
+        const hue = settings.oklchHues[hueIndex];
+        for (let chromaIndex = 0; chromaIndex < settings.chromas.length; chromaIndex++) {
+          for (let valueIndex = 0; valueIndex < settings.values.length; valueIndex++) {
+            if (settings.values[valueIndex] <= 0 || settings.values[valueIndex] >= 1) continue;
+            const color = oklchColor(settings.values[valueIndex], settings.chromas[chromaIndex], hue);
+            if (color) {
+              indexByCell.set(`${hueIndex}:${chromaIndex}:${valueIndex}`, colors.length);
+              colors.push(color);
+            }
+          }
+        }
+      }
+
+      if (colors.some(color => !isColor(color))) {
+        throw new Error("palette generation produced an invalid colour");
+      }
+
+      return { colors, indexByCell };
+    }
+
+    function draw(settings, palette) {
+      const width = settings.oklchHues.length * settings.chromas.length + 1;
+      const height = settings.greyValues.length;
+      const pixels = new Uint8Array(width * height);
+
+      for (let hueIndex = 0; hueIndex < settings.oklchHues.length; hueIndex++) {
+        const flipChroma = hueIndex % 2 === 1;
+        for (let visualChroma = 0; visualChroma < settings.chromas.length; visualChroma++) {
+          const chromaIndex = flipChroma ? visualChroma : settings.chromas.length - 1 - visualChroma;
+          for (let valueIndex = 0; valueIndex < settings.values.length; valueIndex++) {
+            if (settings.values[valueIndex] <= 0 || settings.values[valueIndex] >= 1) continue;
+            const paletteIndex = palette.indexByCell.get(`${hueIndex}:${chromaIndex}:${valueIndex}`);
+            if (paletteIndex === undefined) continue;
+            const x = hueIndex * settings.chromas.length + visualChroma;
+            const y = settings.greyValues.length - 1 - greyRowIndex(settings, settings.values[valueIndex]);
+            pixels[y * width + x] = paletteIndex;
+          }
+        }
+      }
+
+      const greyX = width - 1;
+      for (let valueIndex = 0; valueIndex < settings.greyValues.length; valueIndex++) {
+        const y = settings.greyValues.length - 1 - valueIndex;
+        pixels[y * width + greyX] = valueIndex;
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const image = ctx.createImageData(width, height);
+      for (let i = 0; i < pixels.length; i++) {
+        const color = palette.colors[pixels[i]] || [0, 0, 0, 255];
+        image.data[i * 4] = color[0];
+        image.data[i * 4 + 1] = color[1];
+        image.data[i * 4 + 2] = color[2];
+        image.data[i * 4 + 3] = color[3];
+      }
+      ctx.putImageData(image, 0, 0);
+      return { width, height, pixels };
+    }
+
+    function greyRowIndex(settings, value) {
+      return settings.greyValues.findIndex(greyValue => Math.abs(greyValue - value) <= 0.000001);
+    }
+
+    function drawDirect(canvasElement, context, width, height, pixelColors) {
+      canvasElement.width = width;
+      canvasElement.height = height;
+      const image = context.createImageData(width, height);
+      for (let i = 0; i < pixelColors.length; i++) {
+        const color = pixelColors[i] || [0, 0, 0, 255];
+        image.data[i * 4] = color[0];
+        image.data[i * 4 + 1] = color[1];
+        image.data[i * 4 + 2] = color[2];
+        image.data[i * 4 + 3] = color[3];
+      }
+      context.putImageData(image, 0, 0);
+    }
+
+    function makeSrgbComparisonPixels(settings) {
+      const width = settings.srgbHues.length * settings.srgbSaturations.length + 1;
+      const height = settings.srgbValues.length;
+      const pixelColors = Array.from({ length: width * height }, () => [0, 0, 0, 255]);
+
+      for (let hueIndex = 0; hueIndex < settings.srgbHues.length; hueIndex++) {
+        const flipSaturation = hueIndex % 2 === 1;
+        for (let visualSaturation = 0; visualSaturation < settings.srgbSaturations.length; visualSaturation++) {
+          const saturationIndex = flipSaturation
+            ? visualSaturation
+            : settings.srgbSaturations.length - 1 - visualSaturation;
+          const saturation = settings.srgbSaturations[saturationIndex];
+
+          for (let valueIndex = 0; valueIndex < settings.srgbValues.length; valueIndex++) {
+            const value = settings.srgbValues[valueIndex];
+            if (saturation <= 0 || value <= 0 || value >= 1) continue;
+            const x = hueIndex * settings.srgbSaturations.length + visualSaturation;
+            const y = settings.srgbValues.length - 1 - valueIndex;
+            pixelColors[y * width + x] = hsvColor(settings.srgbHues[hueIndex], saturation, value);
+          }
+        }
+      }
+
+      const greyX = width - 1;
+      for (let y = 0; y < height; y++) {
+        const value = settings.srgbValues[settings.srgbValues.length - 1 - y];
+        const grey = Math.round(value * 255);
+        pixelColors[y * width + greyX] = [grey, grey, grey, 255];
+      }
+
+      return { width, height, pixelColors };
+    }
+
+    function drawSrgbComparison(settings) {
+      const rendered = makeSrgbComparisonPixels(settings);
+      drawDirect(srgbCanvas, srgbCtx, rendered.width, rendered.height, rendered.pixelColors);
+      return { width: rendered.width, height: rendered.height, pixelColors: rendered.pixelColors };
+    }
+
+    function nearestPaletteColor(color, paletteOklch, paletteColors, bias) {
+      const oklch = oklabToOklch(rgbToOklab(color[0], color[1], color[2]));
+      let bestIndex = 0;
+      let bestDistance = Number.POSITIVE_INFINITY;
+
+      for (let i = 0; i < paletteOklch.length; i++) {
+        const distance = palettePreviewDistanceSquared(oklch, paletteOklch[i], bias);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIndex = i;
+        }
+      }
+
+      return paletteColors[bestIndex] || [0, 0, 0, 255];
+    }
+
+    function drawRoundedSrgbComparison(srgbRendered, palette, bias) {
+      const paletteColors = palette.colors;
+      const paletteOklch = paletteColors.map(color => oklabToOklch(rgbToOklab(color[0], color[1], color[2])));
+      const roundedPixels = srgbRendered.pixelColors.map(color => nearestPaletteColor(color, paletteOklch, paletteColors, bias));
+      drawDirect(roundedSrgbCanvas, roundedSrgbCtx, srgbRendered.width, srgbRendered.height, roundedPixels);
+      return { width: srgbRendered.width, height: srgbRendered.height };
+    }
+
+    function srgbColorCountFor(settings) {
+      let count = settings.srgbValues.length;
+      for (const hue of settings.srgbHues) {
+        for (const saturation of settings.srgbSaturations) {
+          for (const value of settings.srgbValues) {
+            if (saturation <= 0 || value <= 0 || value >= 1) continue;
+            count++;
+          }
+        }
+      }
+      return count;
+    }
+
+    function paddedPalette(colors) {
+      const palette = colors.filter(isColor);
+      while (palette.length < 256) palette.push([0, 0, 0, 255]);
+      return palette;
+    }
+
+    function makeIpsi(width, height, colors, pixels) {
+      const palette = paddedPalette(colors);
+      const bytes = new Uint8Array(11 + palette.length * 4 + pixels.length);
+      bytes.set([0x49, 0x50, 0x53, 0x49, 1], 0);
+      bytes[5] = width & 0xff;
+      bytes[6] = width >> 8;
+      bytes[7] = height & 0xff;
+      bytes[8] = height >> 8;
+      bytes[9] = palette.length & 0xff;
+      bytes[10] = palette.length >> 8;
+      let cursor = 11;
+      for (const color of palette) {
+        bytes.set(color, cursor);
+        cursor += 4;
+      }
+      bytes.set(pixels, cursor);
+      return new Blob([bytes], { type: "application/octet-stream" });
+    }
+
+    function makeTomlText(settings, colors) {
+      const palette = colors.filter(isColor);
+      const lines = [
+        "# Direct Stream Game custom-host palette.",
+        `# Generated by IPSC Palette Lab: normalized chroma ${settings.chromaSamples[0] ?? "none"}..${settings.chromaSamples.at(-1) ?? "none"} x${settings.chromaSamples.length}, OKLCH chroma ${settings.chromas[0] ?? "none"}..${settings.chromas.at(-1) ?? "none"}, value samples ${settings.values[0]}..${settings.values.at(-1)} x${settings.values.length}, add black ${settings.addBlack}, add white ${settings.addWhite}, sRGB hue ${settings.hueMin}..${settings.hueMax} x${settings.hueDivisions}, normalized sRGB offset ${settings.hueOffset} (effective ${settings.shiftedHueOffset}).`,
+        "[matching]",
+        `lightness = ${settings.bias.lightness.toFixed(6)}`,
+        `chroma = ${settings.bias.chroma.toFixed(6)}`,
+        `hue = ${settings.bias.hue.toFixed(6)}`,
+        "",
+        "colors = [",
+        ...palette.map(color => `  "${hex(color)}",`),
+        "]",
+        "",
+      ];
+      return lines.join("\n");
+    }
+
+    function revokeDownloads() {
+      if (tomlUrl) URL.revokeObjectURL(tomlUrl);
+      if (ipsiUrl) URL.revokeObjectURL(ipsiUrl);
+      if (mapUrl) URL.revokeObjectURL(mapUrl);
+      tomlUrl = null;
+      ipsiUrl = null;
+      mapUrl = null;
+      currentPaletteArtifact = null;
+      downloadToml.removeAttribute("href");
+      downloadIpsi.removeAttribute("href");
+      downloadMap.removeAttribute("href");
+      downloadToml.setAttribute("aria-disabled", "true");
+      downloadIpsi.setAttribute("aria-disabled", "true");
+      downloadMap.setAttribute("aria-disabled", "true");
+      bakeButton.disabled = true;
+      bakeButton.textContent = "Bake";
+    }
+
+    function setDownload(link, blob, filename) {
+      const url = URL.createObjectURL(blob);
+      link.href = url;
+      link.download = filename;
+      link.setAttribute("aria-disabled", "false");
+      return url;
+    }
+
+    function makeTextBlob(text, label) {
+      if (typeof text !== "string" || text.length === 0 || text === "null") {
+        throw new Error(`${label} export was not valid text`);
+      }
+      return new Blob([text], { type: "text/plain;charset=utf-8" });
+    }
+
+    async function bakeMapBlob(artifact) {
+      const entries = new Uint8Array(256 * 256 * 256);
+      const paletteOklch = artifact.colors.map(color => oklabToOklch(rgbToOklab(color[0], color[1], color[2])));
+      const matching = artifact.settings.bias;
+      let cursor = 0;
+
+      for (let r = 0; r < 256; r++) {
+        for (let g = 0; g < 256; g++) {
+          for (let b = 0; b < 256; b++) {
+            entries[cursor++] = nearestPaletteIndexForMap(rgbToOklab(r, g, b), paletteOklch, matching);
+          }
+        }
+        if (r % 4 === 0) {
+          status.textContent = `${artifact.baseStatus}\nbaking ${artifact.base}.ipsmap... ${Math.round(r / 255 * 100)}%`;
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
+      }
+
+      const header = new Uint8Array(30);
+      header.set([0x49, 0x50, 0x53, 0x4d, 0x41, 0x50, 0x31, 0x00], 0);
+      writeU64(header, 8, paletteHash(artifact.colors, matching));
+      writeU16(header, 16, artifact.colors.length);
+      writeF32(header, 18, matching.lightness);
+      writeF32(header, 22, matching.chroma);
+      writeF32(header, 26, matching.hue);
+      return new Blob([header, entries], { type: "application/octet-stream" });
+    }
+
+    function nearestPaletteIndexForMap(oklab, paletteOklch, matching) {
+      const color = oklabToOklch(oklab);
+      let bestIndex = 0;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < Math.min(256, paletteOklch.length); i++) {
+        const distance = palettePreviewDistanceSquared(color, paletteOklch[i], matching);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIndex = i;
+        }
+      }
+      return bestIndex;
+    }
+
+    function paletteHash(colors, matching) {
+      let hash = 0xcbf29ce484222325n;
+      const prime = 0x100000001b3n;
+      const feed = byte => {
+        hash ^= BigInt(byte);
+        hash = BigInt.asUintN(64, hash * prime);
+      };
+      for (const color of colors) {
+        for (const byte of color) feed(byte);
+      }
+      const bytes = new Uint8Array(4);
+      for (const value of [matching.lightness, matching.chroma, matching.hue]) {
+        new DataView(bytes.buffer).setFloat32(0, value, true);
+        for (const byte of bytes) feed(byte);
+      }
+      return hash;
+    }
+
+    function writeU16(bytes, offset, value) {
+      bytes[offset] = value & 0xff;
+      bytes[offset + 1] = (value >> 8) & 0xff;
+    }
+
+    function writeU64(bytes, offset, value) {
+      for (let i = 0; i < 8; i++) {
+        bytes[offset + i] = Number((value >> BigInt(i * 8)) & 0xffn);
+      }
+    }
+
+    function writeF32(bytes, offset, value) {
+      new DataView(bytes.buffer).setFloat32(offset, value, true);
+    }
+
+    function previewOnly() {
+      revokeDownloads();
+      const settings = readSettings();
+      const required = colorCountFor(settings);
+      const srgbRequired = srgbColorCountFor(settings);
+      if (required > 256) {
+        status.className = "status bad";
+        const ratio = srgbRequired === 0 ? "n/a" : (required / srgbRequired).toFixed(3);
+        status.textContent = `does not fit\nOKLCH required: ${required}\nsRGB colors: ${srgbRequired}\ncolour space compression ratio: ${ratio}\nlimit: 256`;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        roundedSrgbCtx.clearRect(0, 0, roundedSrgbCanvas.width, roundedSrgbCanvas.height);
+        drawSrgbComparison(settings);
+        return null;
+      }
+
+      const palette = generatePalette(settings);
+      const rendered = draw(settings, palette);
+      const srgbRendered = drawSrgbComparison(settings);
+      const roundedSrgbRendered = drawRoundedSrgbComparison(srgbRendered, palette, settings.bias);
+      const reserved = 256 - palette.colors.length;
+      const tomlText = makeTomlText(settings, palette.colors);
+      localStorage.setItem("ipscCurrentPaletteToml", tomlText);
+      localStorage.setItem("ipscCurrentPaletteName", `${filenameBase()}.toml`);
+      status.className = "status ok";
+      const ratio = srgbRequired === 0 ? "n/a" : (palette.colors.length / srgbRequired).toFixed(3);
+      const baseStatus = `fits\nOKLCH colors: ${palette.colors.length}\nreserved: ${reserved}\nsRGB colors: ${srgbRequired}\ncolour space compression ratio: ${ratio}\nimage: ${rendered.width}x${rendered.height}\nsRGB image: ${srgbRendered.width}x${srgbRendered.height}\nrounded sRGB image: ${roundedSrgbRendered.width}x${roundedSrgbRendered.height}\nbias L/C/H: ${settings.bias.lightness.toFixed(3)} / ${settings.bias.chroma.toFixed(3)} / ${settings.bias.hue.toFixed(3)}`;
+      status.textContent = `${baseStatus}\npreview only; press Generate to build files`;
+      return { settings, palette, rendered, baseStatus };
+    }
+
+    async function generate() {
+      const preview = previewOnly();
+      if (!preview) {
+        return;
+      }
+
+      const { settings, palette, rendered, baseStatus } = preview;
+      const tomlText = makeTomlText(settings, palette.colors);
+      const base = filenameBase();
+      tomlUrl = setDownload(downloadToml, makeTextBlob(tomlText, "TOML"), `${base}.toml`);
+      ipsiUrl = setDownload(downloadIpsi, makeIpsi(rendered.width, rendered.height, palette.colors, rendered.pixels), `${base}.ipsi`);
+      currentPaletteArtifact = { base, settings, colors: palette.colors.filter(isColor), tomlText, baseStatus };
+      bakeButton.disabled = false;
+      status.textContent = `${baseStatus}\nfiles ready; press Bake for ${base}.ipsmap`;
+    }
+
+    for (const input of biasInputs) {
+      input.addEventListener("input", () => {
+        normalizeBias(input);
+        revokeDownloads();
+        status.className = "status";
+        status.textContent = "settings changed; press Generate";
+      });
+    }
+
+    previewButton.addEventListener("click", () => {
+      try {
+        previewOnly();
+      } catch (error) {
+        revokeDownloads();
+        status.className = "status bad";
+        status.textContent = error.toString();
+      }
+    });
+
+    bakeButton.addEventListener("click", async () => {
+      if (!currentPaletteArtifact) return;
+      bakeButton.disabled = true;
+      bakeButton.textContent = "Baking...";
+      status.className = "status ok";
+      status.textContent = `${currentPaletteArtifact.baseStatus}\nbaking ${currentPaletteArtifact.base}.ipsmap in browser...`;
+      try {
+        const mapBlob = await bakeMapBlob(currentPaletteArtifact);
+        if (mapUrl) URL.revokeObjectURL(mapUrl);
+        mapUrl = setDownload(downloadMap, mapBlob, `${currentPaletteArtifact.base}.ipsmap`);
+        status.textContent = `${currentPaletteArtifact.baseStatus}\nmap: ${currentPaletteArtifact.base}.ipsmap (${(mapBlob.size / 1024 / 1024).toFixed(1)} MB)`;
+      } catch (error) {
+        status.className = "status bad";
+        status.textContent = error.toString();
+      } finally {
+        bakeButton.disabled = false;
+        bakeButton.textContent = "Bake";
+      }
+    });
+
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+      try {
+        await generate();
+      } catch (error) {
+        revokeDownloads();
+        status.className = "status bad";
+        status.textContent = error.toString();
+      }
+    });
+
+    updateBiasLabels();
+    revokeDownloads();
+    status.className = "status";
+    status.textContent = "ready; press Generate";
+  </script>
+</body>
+</html>

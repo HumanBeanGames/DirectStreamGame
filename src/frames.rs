@@ -46,6 +46,7 @@ impl EncodedFrameHub {
 #[derive(Clone, Resource)]
 pub(crate) struct RawFrameSenders {
     pub(crate) preview: Option<Sender<RawFrame>>,
+    pub(crate) custom: Option<Sender<RawFrame>>,
     pub(crate) twitch: Option<RawFrameHub>,
     pub(crate) stats: SharedStats,
 }

@@ -16,3 +16,4 @@ crossbeam-channel = "0.5.15"
 # ffmpeg-next's "static", "build", "build-license-gpl", or
 # "build-license-nonfree" features for proprietary distribution.
 ffmpeg-next = { version = "=8.1.0", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
+image = { version = "0.25.9", default-features = false, features = ["png"] }

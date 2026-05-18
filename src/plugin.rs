@@ -3,12 +3,13 @@ use crate::{
     audio::{StreamAudioClip, StreamAudioMixer, collect_stream_audio_events, mix_stream_audio},
     capture::request_stream_readback,
     chat::{
-        TwitchChatCommand, TwitchChatMessage, dispatch_twitch_chat_commands, poll_twitch_chat,
-        start_twitch_chat_listener,
+        TwitchChatCommand, TwitchChatMessage, dispatch_twitch_chat_commands, poll_local_chat,
+        poll_twitch_chat, start_twitch_chat_listener,
     },
     scene::{setup_direct_stream_scene, update_stats_window},
     stream_control::{
-        handle_stream_control_interactions, handle_stream_key_typing, update_stream_control_ui,
+        handle_palette_bias_sliders, handle_stream_control_interactions, handle_stream_key_typing,
+        update_stream_control_ui,
     },
 };
 use bevy::prelude::*;
@@ -33,11 +34,17 @@ impl Plugin for DirectStreamPlugin {
                 Update,
                 (
                     collect_stream_audio_events,
-                    (poll_twitch_chat, dispatch_twitch_chat_commands).chain(),
+                    (
+                        poll_twitch_chat,
+                        poll_local_chat,
+                        dispatch_twitch_chat_commands,
+                    )
+                        .chain(),
                     mix_stream_audio,
                     request_stream_readback,
                     handle_stream_key_typing,
                     handle_stream_control_interactions,
+                    handle_palette_bias_sliders,
                     update_stream_control_ui,
                     update_stats_window,
                 ),

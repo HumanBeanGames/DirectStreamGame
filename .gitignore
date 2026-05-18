@@ -2,3 +2,9 @@
 /vcpkg_installed
 /twitch.toml
 /.idea
+/recordings
+/output.ipsi
+/resized.png
+/palette.toml
+/palette_lab.err.log
+/palette_lab.out.log

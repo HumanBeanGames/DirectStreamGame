@@ -6,7 +6,7 @@ use crate::{
     constants::{
         STATS_WINDOW_HEIGHT, STATS_WINDOW_WIDTH, STREAM_HEIGHT, STREAM_WIDTH, WINDOW_TITLE,
     },
-    frames::{EncodedFrameHub, RawFrameSenders},
+    frames::{DirectStreamFrameProcessors, EncodedFrameHub, RawFrameSenders},
     palette::{PaletteBias, PaletteFrameHub, SharedPaletteBias, start_palette_preview_encoder},
     palette_lut::load_palette_config,
     preview::start_preview_encoder,
@@ -84,6 +84,7 @@ pub fn direct_stream_app() -> App {
         .insert_resource(audio_target)
         .insert_resource(local_chat)
         .insert_resource(custom_stream_state)
+        .insert_resource(DirectStreamFrameProcessors::default())
         .insert_resource(stats.clone())
         .insert_resource(stream_control)
         .insert_resource(config)

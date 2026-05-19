@@ -1,5 +1,5 @@
 use crate::{
-    frames::{RawFrame, RawFrameSenders},
+    frames::{DirectStreamFrame, DirectStreamFrameProcessors, RawFrame, RawFrameSenders},
     public_types::DirectStreamTarget,
     scene::StreamReadback,
     stream_control::StreamControl,
@@ -43,6 +43,7 @@ fn queue_readback_frame(
     mut commands: Commands,
     senders: Res<RawFrameSenders>,
     target: Res<DirectStreamTarget>,
+    mut processors: ResMut<DirectStreamFrameProcessors>,
     mut readback: ResMut<StreamReadback>,
 ) {
     readback.in_flight = false;
@@ -67,7 +68,7 @@ fn queue_readback_frame(
     let aligned_row_bytes =
         bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(row_bytes);
 
-    let bgra = if row_bytes == aligned_row_bytes {
+    let mut bgra = if row_bytes == aligned_row_bytes {
         event.data.clone()
     } else {
         event
@@ -77,6 +78,14 @@ fn queue_readback_frame(
             .flat_map(|row| row[..row_bytes.min(row.len())].iter().copied())
             .collect()
     };
+
+    processors.process(DirectStreamFrame::new(
+        bgra.as_mut_slice(),
+        target.width,
+        target.height,
+        row_bytes,
+    ));
+
     senders.stats.with_mut(|stats| stats.frames_captured += 1);
 
     if let Some(preview) = &senders.preview

@@ -4,6 +4,8 @@ use crossbeam_channel::Sender;
 use ffmpeg_next::frame;
 use std::sync::{Arc, Condvar, Mutex};
 
+type DirectStreamFrameProcessor = Box<dyn for<'a> FnMut(DirectStreamFrame<'a>) + Send + Sync>;
+
 #[derive(Clone, Resource)]
 pub(crate) struct EncodedFrameHub {
     inner: Arc<(Mutex<LatestEncodedFrame>, Condvar)>,
@@ -61,6 +63,27 @@ pub(crate) struct RawFrame {
 #[derive(Clone)]
 pub(crate) struct RawFrameHub {
     inner: Arc<(Mutex<LatestRawFrame>, Condvar)>,
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct DirectStreamFrameProcessors {
+    processors: Vec<DirectStreamFrameProcessor>,
+}
+
+impl DirectStreamFrameProcessors {
+    pub(crate) fn register<F>(&mut self, processor: F)
+    where
+        F: for<'a> FnMut(DirectStreamFrame<'a>) + Send + Sync + 'static,
+    {
+        self.processors.push(Box::new(processor));
+    }
+
+    pub(crate) fn process(&mut self, frame: DirectStreamFrame<'_>) {
+        let mut frame = frame;
+        for processor in &mut self.processors {
+            processor(frame.reborrow());
+        }
+    }
 }
 
 #[derive(Default)]
@@ -132,21 +155,32 @@ impl<'a> DirectStreamFrame<'a> {
     pub fn bgra_mut(&mut self) -> &mut [u8] {
         self.bgra
     }
+
+    pub fn reborrow(&mut self) -> DirectStreamFrame<'_> {
+        DirectStreamFrame {
+            bgra: self.bgra,
+            width: self.width,
+            height: self.height,
+            row_bytes: self.row_bytes,
+        }
+    }
 }
 
 pub trait DirectStreamFrameAppExt {
     fn add_direct_stream_frame_processor<F>(&mut self, processor: F) -> &mut Self
     where
-        F: FnMut(DirectStreamFrame<'_>) + Send + Sync + 'static;
+        F: for<'a> FnMut(DirectStreamFrame<'a>) + Send + Sync + 'static;
 }
 
 impl DirectStreamFrameAppExt for bevy::prelude::App {
     fn add_direct_stream_frame_processor<F>(&mut self, processor: F) -> &mut Self
     where
-        F: FnMut(DirectStreamFrame<'_>) + Send + Sync + 'static,
+        F: for<'a> FnMut(DirectStreamFrame<'a>) + Send + Sync + 'static,
     {
-        // TODO: Implement frame processor registration
-        // For now, this is a placeholder to allow compilation
+        self.init_resource::<DirectStreamFrameProcessors>();
+        self.world_mut()
+            .resource_mut::<DirectStreamFrameProcessors>()
+            .register(processor);
         self
     }
 }

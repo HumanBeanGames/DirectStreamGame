@@ -100,6 +100,57 @@ impl RawFrameHub {
     }
 }
 
+pub struct DirectStreamFrame<'a> {
+    bgra: &'a mut [u8],
+    width: u32,
+    height: u32,
+    row_bytes: usize,
+}
+
+impl<'a> DirectStreamFrame<'a> {
+    pub fn new(bgra: &'a mut [u8], width: u32, height: u32, row_bytes: usize) -> Self {
+        Self {
+            bgra,
+            width,
+            height,
+            row_bytes,
+        }
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    pub fn row_bytes(&self) -> usize {
+        self.row_bytes
+    }
+
+    pub fn bgra_mut(&mut self) -> &mut [u8] {
+        self.bgra
+    }
+}
+
+pub trait DirectStreamFrameAppExt {
+    fn add_direct_stream_frame_processor<F>(&mut self, processor: F) -> &mut Self
+    where
+        F: FnMut(DirectStreamFrame<'_>) + Send + Sync + 'static;
+}
+
+impl DirectStreamFrameAppExt for bevy::prelude::App {
+    fn add_direct_stream_frame_processor<F>(&mut self, processor: F) -> &mut Self
+    where
+        F: FnMut(DirectStreamFrame<'_>) + Send + Sync + 'static,
+    {
+        // TODO: Implement frame processor registration
+        // For now, this is a placeholder to allow compilation
+        self
+    }
+}
+
 pub(crate) fn copy_bgra_into_frame(
     source: &[u8],
     destination: &mut frame::Video,

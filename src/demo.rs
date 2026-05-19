@@ -1,5 +1,5 @@
 use crate::{
-    DirectStreamSet, PlayStreamSound, StreamAudioClip, TwitchChatCommand, TwitchChatSender,
+    DirectText, DirectStreamSet, PlayStreamSound, StreamAudioClip, TwitchChatCommand, TwitchChatSender,
     TwitchCommandAppExt, app::direct_stream_app, public_types::DirectStreamTarget,
 };
 use bevy::{
@@ -108,6 +108,12 @@ pub fn setup_demo_scene(
             },
             HelloWorldText,
         ));
+
+    commands.spawn(
+        DirectText::new("DIRECT TEXT", 4, 4)
+            .with_scale(2.0)
+            .with_color(Srgba::WHITE),
+    );
 
     match StreamAudioClip::from_wav_file(DEMO_MUSIC_PATH) {
         Ok(clip) => {

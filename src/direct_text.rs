@@ -48,12 +48,12 @@ impl DirectText {
     }
 
     pub fn with_font_size(mut self, font_size: f32) -> Self {
-        self.font_size = font_size.max(0.1);
+        self.font_size = DEFAULT_DIRECT_TEXT_FONT_SIZE * quantize_bitmap_scale(font_size / DEFAULT_DIRECT_TEXT_FONT_SIZE);
         self
     }
 
     pub fn with_scale(mut self, scale: f32) -> Self {
-        self.font_size = (DEFAULT_DIRECT_TEXT_FONT_SIZE * scale).max(0.1);
+        self.font_size = DEFAULT_DIRECT_TEXT_FONT_SIZE * quantize_bitmap_scale(scale);
         self
     }
 
@@ -138,7 +138,11 @@ fn draw_text(frame: &mut DirectStreamFrame<'_>, entry: &DirectTextEntry) {
 }
 
 fn resolve_bitmap_scale(desired_pixel_height: f32) -> f32 {
-    (desired_pixel_height.max(0.1) / BITMAP_FONT_HEIGHT as f32).max(0.02)
+    quantize_bitmap_scale(desired_pixel_height / BITMAP_FONT_HEIGHT as f32)
+}
+
+fn quantize_bitmap_scale(scale: f32) -> f32 {
+    scale.round().max(1.0)
 }
 
 fn draw_bitmap_glyph(

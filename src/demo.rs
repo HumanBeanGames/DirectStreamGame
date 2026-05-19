@@ -111,7 +111,7 @@ pub fn setup_demo_scene(
 
     commands.spawn(
         DirectText::new("DIRECT TEXT", 4, 4)
-            .with_scale(2.0)
+            .with_scale(2)
             .with_color(Srgba::WHITE),
     );
 

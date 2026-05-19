@@ -47,13 +47,8 @@ impl DirectText {
         }
     }
 
-    pub fn with_font_size(mut self, font_size: f32) -> Self {
-        self.font_size = DEFAULT_DIRECT_TEXT_FONT_SIZE * quantize_bitmap_scale(font_size / DEFAULT_DIRECT_TEXT_FONT_SIZE);
-        self
-    }
-
-    pub fn with_scale(mut self, scale: f32) -> Self {
-        self.font_size = DEFAULT_DIRECT_TEXT_FONT_SIZE * quantize_bitmap_scale(scale);
+    pub fn with_scale(mut self, scale: u32) -> Self {
+        self.font_size = DEFAULT_DIRECT_TEXT_FONT_SIZE * scale.max(1) as f32;
         self
     }
 

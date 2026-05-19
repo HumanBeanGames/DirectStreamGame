@@ -184,6 +184,54 @@ Run startup systems after `DirectStreamSet::Setup` when they need
 `DirectStreamTarget` or the stream camera. Systems that do not depend on the
 stream target can be scheduled normally.
 
+### Raw Frame Processing And DirectText
+
+For exact stream-pixel overlays, register a raw frame processor. Processors run
+after GPU readback has produced CPU BGRA bytes and before the frame is sent to
+preview, Twitch, or the custom host.
+
+```rust
+use direct_stream_game::{
+    direct_stream_app, DirectStreamFrame, DirectStreamFrameAppExt,
+};
+
+fn main() {
+    direct_stream_app()
+        .add_direct_stream_frame_processor(draw_overlay)
+        .run();
+}
+
+fn draw_overlay(mut frame: DirectStreamFrame) {
+    let width = frame.width();
+    let row_bytes = frame.row_bytes();
+    let pixels = frame.bgra_mut();
+
+    if width > 0 && pixels.len() >= row_bytes {
+        pixels[0..4].copy_from_slice(&[255, 255, 255, 255]);
+    }
+}
+```
+
+`DirectStreamFrame` exposes final outgoing BGRA pixels with `bgra()`,
+`bgra_mut()`, `width()`, `height()`, and `row_bytes()`.
+
+The included `DirectTextPlugin` uses this hook to draw a small built-in bitmap
+font directly over the outgoing stream:
+
+```rust
+use bevy::prelude::*;
+use direct_stream_game::{direct_stream_app, DirectText, DirectTextPlugin};
+
+fn main() {
+    direct_stream_app()
+        .add_plugins(DirectTextPlugin)
+        .add_systems(Startup, |mut commands: Commands| {
+            commands.spawn(DirectText::new("SCORE: 10", 4, 4));
+        })
+        .run();
+}
+```
+
 ### Migrating An Existing Bevy Game
 
 Before:

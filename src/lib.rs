@@ -5,6 +5,7 @@ mod chat;
 mod config;
 mod constants;
 mod demo;
+mod direct_text;
 mod frames;
 mod palette;
 pub mod palette_lut;
@@ -29,8 +30,12 @@ pub use constants::{
 };
 pub use demo::{
     DemoMusicClip, DemoMusicStarted, DemoSfxClip, HelloWorldText, handle_demo_boing_command,
-    pulse_hello_world_text, run_demo, setup_demo_scene, start_demo_music,
+    run_demo, setup_demo_scene, start_demo_music,
 };
+pub use direct_text::{DirectText, DirectTextPlugin};
 pub use plugin::DirectStreamPlugin;
-pub use public_types::{DirectStreamSet, DirectStreamTarget};
+pub use public_types::{
+    DirectStreamFrame, DirectStreamFrameAppExt, DirectStreamFrameProcessors, DirectStreamSet,
+    DirectStreamTarget,
+};
 pub use web::static_palette_stream_page_html;

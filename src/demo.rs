@@ -1,6 +1,7 @@
 use crate::{
-    DirectStreamSet, PlayStreamSound, StreamAudioClip, TwitchChatCommand, TwitchChatSender,
-    TwitchCommandAppExt, app::direct_stream_app, public_types::DirectStreamTarget,
+    DirectStreamSet, DirectText, DirectTextPlugin, PlayStreamSound, StreamAudioClip,
+    TwitchChatCommand, TwitchChatSender, TwitchCommandAppExt, app::direct_stream_app,
+    public_types::DirectStreamTarget,
 };
 use bevy::{
     asset::RenderAssetUsages,
@@ -46,12 +47,12 @@ impl Default for DemoVideoBackground {
 pub fn run_demo() {
     let mut app = direct_stream_app();
     app.insert_non_send_resource(DemoVideoBackground::default())
+        .add_plugins(DirectTextPlugin)
         .add_twitch_command("boing", handle_demo_boing_command)
         .add_systems(Startup, setup_demo_scene.after(DirectStreamSet::Setup))
         .add_systems(
             Update,
             (
-                pulse_hello_world_text,
                 start_demo_music,
                 handle_demo_video_drop,
                 update_demo_video_background,
@@ -68,7 +69,7 @@ pub fn setup_demo_scene(
     mut clips: ResMut<Assets<StreamAudioClip>>,
 ) {
     let background = images.add(srgb_hue_gradient_image(target.width, target.height));
-    let text_size = (target.width.min(target.height) as f32 * 0.11).clamp(8.0, 20.0);
+    let text_size = target.width.min(target.height) as f32 * 0.06;
     commands.spawn((
         Sprite {
             image: background.clone(),
@@ -101,13 +102,19 @@ pub fn setup_demo_scene(
                 font_size: text_size,
                 ..default()
             },
-            TextColor(Color::srgb(0.92, 0.96, 1.0)),
+            TextColor(Color::srgb(0.0, 0.0, 0.0)),
             TextShadow {
-                offset: Vec2::new(2.0, 2.0),
+                offset: Vec2::new(0.5, 0.5),
                 color: Color::srgba(0.0, 0.0, 0.0, 0.7),
             },
             HelloWorldText,
         ));
+
+    commands.spawn(
+        DirectText::new("DIRECT TEXT", 4, 4)
+            .with_scale(1.0)
+            .with_color(Srgba::WHITE),
+    );
 
     match StreamAudioClip::from_wav_file(DEMO_MUSIC_PATH) {
         Ok(clip) => {
@@ -394,18 +401,6 @@ fn hsv_to_srgb(hue_degrees: f32, saturation: f32, value: f32) -> [u8; 3] {
         ((g + m) * 255.0).round() as u8,
         ((b + m) * 255.0).round() as u8,
     ]
-}
-
-pub fn pulse_hello_world_text(
-    time: Res<Time>,
-    mut text_query: Query<&mut TextColor, With<HelloWorldText>>,
-) {
-    let pulse = ((time.elapsed_secs() * 4.0).sin() + 1.0) * 0.5;
-    let color = Color::srgb(0.55 + pulse * 0.4, 0.85, 1.0);
-
-    for mut text_color in &mut text_query {
-        text_color.0 = color;
-    }
 }
 
 pub fn start_demo_music(

@@ -17,7 +17,8 @@ fn export_static_lab() -> Result<(), String> {
     write("index.html", &lab_shell_html())?;
     write("palette.html", &palette_html())?;
     write("converter.html", &converter_html())?;
-    let default_palette = fs::read_to_string(DEFAULT_PALETTE_PATH).map_err(|err| err.to_string())?;
+    let default_palette =
+        fs::read_to_string(DEFAULT_PALETTE_PATH).map_err(|err| err.to_string())?;
     write("default_palette.toml", &default_palette)?;
     Ok(())
 }
@@ -75,8 +76,10 @@ fn palette_html() -> String {
 }
 
 fn converter_html() -> String {
-    extract_raw_html(include_str!("ipsc_png_converter_lab.rs"), "r#\"", "\"#")
-        .replace(r#"fetch("/default_palette.toml""#, r#"fetch("default_palette.toml""#)
+    extract_raw_html(include_str!("ipsc_png_converter_lab.rs"), "r#\"", "\"#").replace(
+        r#"fetch("/default_palette.toml""#,
+        r#"fetch("default_palette.toml""#,
+    )
 }
 
 fn extract_raw_html(source: &str, start_marker: &str, end_marker: &str) -> String {

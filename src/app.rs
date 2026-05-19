@@ -10,6 +10,7 @@ use crate::{
     palette::{PaletteBias, PaletteFrameHub, SharedPaletteBias, start_palette_preview_encoder},
     palette_lut::load_palette_config,
     preview::start_preview_encoder,
+    public_types::DirectStreamFrameProcessors,
     stats::SharedStats,
     stream_control::{CustomStreamState, StreamControl},
     web::{LocalStreamSource, start_local_web_server},
@@ -82,6 +83,7 @@ pub fn direct_stream_app() -> App {
     app.insert_resource(ClearColor(Color::srgb(0.04, 0.05, 0.07)))
         .insert_resource(frame_hub)
         .insert_resource(audio_target)
+        .insert_resource(DirectStreamFrameProcessors::default())
         .insert_resource(local_chat)
         .insert_resource(custom_stream_state)
         .insert_resource(stats.clone())

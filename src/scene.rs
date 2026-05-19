@@ -5,8 +5,11 @@ use crate::{
     stats::{SharedStats, StatsText},
     stream_control::{
         ChatBotUsernameInputBox, ChatBotUsernameInputText, ChatOauthTokenInputBox,
-        ChatOauthTokenInputText, OpenTwitchStreamButton, StartStreamButton, StopStreamButton,
-        StreamControl, StreamControlStatusText, StreamKeyInputBox, StreamKeyInputText,
+        ChatOauthTokenInputText, CustomFpsInputBox, CustomFpsInputText, CustomHeightInputBox,
+        CustomHeightInputText, CustomWidthInputBox, CustomWidthInputText, OpenTwitchStreamButton,
+        PaletteBiasSlider, PaletteBiasSliderFill, PaletteBiasSliderValueText, PurgeChatButton,
+        StartStreamButton, StopStreamButton, StreamControl, StreamControlStatusText,
+        StreamKeyInputBox, StreamKeyInputText,
     },
 };
 use bevy::{
@@ -14,6 +17,7 @@ use bevy::{
     camera::RenderTarget,
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
+    ui::RelativeCursorPosition,
 };
 use std::time::Instant;
 
@@ -30,8 +34,8 @@ pub(crate) fn setup_direct_stream_scene(
     config: Res<AppConfig>,
 ) {
     let size = Extent3d {
-        width: STREAM_WIDTH,
-        height: STREAM_HEIGHT,
+        width: config.stream_width,
+        height: config.stream_height,
         depth_or_array_layers: 1,
     };
 
@@ -69,24 +73,26 @@ pub(crate) fn setup_direct_stream_scene(
                 Transform::from_scale(Vec3::ONE),
             ));
         }
-        WindowMode::Stats => spawn_stats_window(&mut commands),
+        WindowMode::Stats => {
+            spawn_stats_window(&mut commands, config.custom_host, config.prebaked_palette)
+        }
     }
 
     commands.insert_resource(StreamReadback {
         image: stream_image.clone(),
-        timer: Timer::from_seconds(1.0 / STREAM_FPS as f32, TimerMode::Repeating),
+        timer: Timer::from_seconds(1.0 / config.stream_fps as f32, TimerMode::Repeating),
         in_flight: false,
     });
     commands.insert_resource(DirectStreamTarget {
         camera: stream_camera,
         image: stream_image,
-        width: STREAM_WIDTH,
-        height: STREAM_HEIGHT,
-        fps: STREAM_FPS,
+        width: config.stream_width,
+        height: config.stream_height,
+        fps: config.stream_fps,
     });
 }
 
-fn spawn_stats_window(commands: &mut Commands) {
+fn spawn_stats_window(commands: &mut Commands, custom_host: bool, prebaked_palette: bool) {
     commands
         .spawn((
             Node {
@@ -102,7 +108,7 @@ fn spawn_stats_window(commands: &mut Commands) {
             BackgroundColor(Color::srgb(0.02, 0.025, 0.035)),
         ))
         .with_child((
-            Text::new(initial_stats_text()),
+            Text::new(initial_stats_text(custom_host)),
             TextFont {
                 font_size: 10.0,
                 ..default()
@@ -110,54 +116,125 @@ fn spawn_stats_window(commands: &mut Commands) {
             TextColor(Color::srgb(0.86, 0.92, 0.98)),
             StatsText,
         ))
-        .with_child((
-            Text::new("stream key"),
-            TextFont {
-                font_size: 10.0,
-                ..default()
-            },
-            TextColor(Color::srgb(0.64, 0.72, 0.80)),
-        ))
-        .with_child((
-            Button,
-            Node {
-                width: percent(100),
-                height: px(22),
-                padding: UiRect::horizontal(px(6)),
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            BackgroundColor(Color::srgb(0.045, 0.055, 0.07)),
-            BorderColor::all(Color::srgb(0.16, 0.22, 0.30)),
-            StreamKeyInputBox,
-            children![(
-                Text::new("paste stream key"),
-                TextFont {
-                    font_size: 11.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.86, 0.92, 0.98)),
-                StreamKeyInputText,
-            )],
-        ))
-        .with_child((
-            Text::new("chat bot"),
-            TextFont {
-                font_size: 10.0,
-                ..default()
-            },
-            TextColor(Color::srgb(0.64, 0.72, 0.80)),
-        ))
-        .with_child(input_box(
-            "bot username",
-            ChatBotUsernameInputBox,
-            ChatBotUsernameInputText,
-        ))
-        .with_child(input_box(
-            "chat oauth token",
-            ChatOauthTokenInputBox,
-            ChatOauthTokenInputText,
-        ))
+        .with_children(|parent| {
+            if custom_host {
+                parent.spawn((
+                    Text::new("custom host"),
+                    TextFont {
+                        font_size: 10.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.64, 0.72, 0.80)),
+                ));
+                parent
+                    .spawn((Node {
+                        width: percent(100),
+                        height: px(20),
+                        column_gap: px(6),
+                        ..default()
+                    },))
+                    .with_children(|row| {
+                        row.spawn(compact_input_box(
+                            "width",
+                            CustomWidthInputBox,
+                            CustomWidthInputText,
+                        ));
+                        row.spawn(compact_input_box(
+                            "height",
+                            CustomHeightInputBox,
+                            CustomHeightInputText,
+                        ));
+                        row.spawn(compact_input_box(
+                            "fps",
+                            CustomFpsInputBox,
+                            CustomFpsInputText,
+                        ));
+                    });
+                parent.spawn((
+                    Text::new(if prebaked_palette {
+                        "palette match bias (prebaked)"
+                    } else {
+                        "palette match bias"
+                    }),
+                    TextFont {
+                        font_size: 10.0,
+                        ..default()
+                    },
+                    TextColor(if prebaked_palette {
+                        Color::srgb(0.38, 0.43, 0.50)
+                    } else {
+                        Color::srgb(0.64, 0.72, 0.80)
+                    }),
+                ));
+                parent.spawn(bias_slider_row(
+                    "value",
+                    PaletteBiasSlider::Lightness,
+                    33.3,
+                    prebaked_palette,
+                ));
+                parent.spawn(bias_slider_row(
+                    "chroma",
+                    PaletteBiasSlider::Chroma,
+                    33.3,
+                    prebaked_palette,
+                ));
+                parent.spawn(bias_slider_row(
+                    "hue",
+                    PaletteBiasSlider::Hue,
+                    33.4,
+                    prebaked_palette,
+                ));
+            } else {
+                parent.spawn((
+                    Text::new("stream key"),
+                    TextFont {
+                        font_size: 10.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.64, 0.72, 0.80)),
+                ));
+                parent.spawn((
+                    Button,
+                    Node {
+                        width: percent(100),
+                        height: px(22),
+                        padding: UiRect::horizontal(px(6)),
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.045, 0.055, 0.07)),
+                    BorderColor::all(Color::srgb(0.16, 0.22, 0.30)),
+                    StreamKeyInputBox,
+                    children![(
+                        Text::new("paste stream key"),
+                        TextFont {
+                            font_size: 11.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.86, 0.92, 0.98)),
+                        StreamKeyInputText,
+                    )],
+                ));
+                parent.spawn((
+                    Text::new("chat bot"),
+                    TextFont {
+                        font_size: 10.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.64, 0.72, 0.80)),
+                ));
+                parent.spawn(input_box(
+                    "bot username",
+                    ChatBotUsernameInputBox,
+                    ChatBotUsernameInputText,
+                ));
+                parent.spawn(input_box(
+                    "chat oauth token",
+                    ChatOauthTokenInputBox,
+                    ChatOauthTokenInputText,
+                ));
+            }
+        })
         .with_child((
             Node {
                 width: percent(100),
@@ -173,6 +250,7 @@ fn spawn_stats_window(commands: &mut Commands) {
                     OpenTwitchStreamButton,
                     Color::srgb(0.07, 0.10, 0.19)
                 ),
+                stream_button("Purge Chat", PurgeChatButton, Color::srgb(0.17, 0.10, 0.04)),
             ],
         ))
         .with_child((
@@ -186,15 +264,25 @@ fn spawn_stats_window(commands: &mut Commands) {
         ));
 }
 
-fn initial_stats_text() -> String {
+fn initial_stats_text(custom_host: bool) -> String {
+    let mode = if custom_host {
+        "custom host stats"
+    } else {
+        "stats"
+    };
+    let endpoint = if custom_host {
+        "http://127.0.0.1:8080".to_owned()
+    } else {
+        format!("http://{WEB_ADDR}")
+    };
     format!(
         "Direct Stream Game\n{}\n{}\n{}",
-        stat_line("mode", "stats"),
+        stat_line("mode", mode),
         stat_line(
             "stream",
             &format!("{STREAM_WIDTH}x{STREAM_HEIGHT} @ {STREAM_FPS} fps")
         ),
-        stat_line("local preview", &format!("http://{WEB_ADDR}")),
+        stat_line("browser", &endpoint),
     )
 }
 
@@ -227,6 +315,121 @@ fn input_box<T: Component, U: Component>(
     )
 }
 
+fn compact_input_box<T: Component, U: Component>(
+    placeholder: &'static str,
+    box_marker: T,
+    text_marker: U,
+) -> impl Bundle {
+    (
+        Button,
+        Node {
+            flex_grow: 1.0,
+            flex_basis: px(0),
+            height: px(20),
+            padding: UiRect::horizontal(px(6)),
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        BackgroundColor(Color::srgb(0.045, 0.055, 0.07)),
+        BorderColor::all(Color::srgb(0.16, 0.22, 0.30)),
+        box_marker,
+        children![(
+            Text::new(placeholder),
+            TextFont {
+                font_size: 10.0,
+                ..default()
+            },
+            TextColor(Color::srgb(0.86, 0.92, 0.98)),
+            text_marker,
+        )],
+    )
+}
+
+fn bias_slider_row(
+    label: &'static str,
+    slider: PaletteBiasSlider,
+    initial_percent: f32,
+    disabled: bool,
+) -> impl Bundle {
+    (
+        Node {
+            width: percent(100),
+            height: px(18),
+            column_gap: px(6),
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        children![
+            (
+                Text::new(label),
+                TextFont {
+                    font_size: 10.0,
+                    ..default()
+                },
+                TextColor(if disabled {
+                    Color::srgb(0.42, 0.47, 0.55)
+                } else {
+                    Color::srgb(0.78, 0.85, 0.92)
+                }),
+                Node {
+                    width: px(44),
+                    ..default()
+                },
+            ),
+            (
+                Button,
+                Node {
+                    flex_grow: 1.0,
+                    flex_basis: px(0),
+                    height: px(12),
+                    position_type: PositionType::Relative,
+                    ..default()
+                },
+                BackgroundColor(if disabled {
+                    Color::srgb(0.035, 0.040, 0.050)
+                } else {
+                    Color::srgb(0.045, 0.055, 0.07)
+                }),
+                RelativeCursorPosition::default(),
+                slider,
+                children![(
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: px(0),
+                        top: px(0),
+                        width: percent(initial_percent),
+                        height: percent(100),
+                        ..default()
+                    },
+                    BackgroundColor(if disabled {
+                        Color::srgb(0.20, 0.25, 0.32)
+                    } else {
+                        Color::srgb(0.24, 0.48, 0.82)
+                    }),
+                    PaletteBiasSliderFill(slider),
+                )],
+            ),
+            (
+                Text::new(format!("{:.3}", initial_percent / 100.0)),
+                TextFont {
+                    font_size: 10.0,
+                    ..default()
+                },
+                TextColor(if disabled {
+                    Color::srgb(0.42, 0.47, 0.55)
+                } else {
+                    Color::srgb(0.86, 0.92, 0.98)
+                }),
+                Node {
+                    width: px(42),
+                    ..default()
+                },
+                PaletteBiasSliderValueText(slider),
+            ),
+        ],
+    )
+}
+
 fn stream_button<T: Component>(label: &'static str, marker: T, color: Color) -> impl Bundle {
     (
         Button,
@@ -254,6 +457,7 @@ fn stream_button<T: Component>(label: &'static str, marker: T, color: Color) -> 
 pub(crate) fn update_stats_window(
     config: Res<AppConfig>,
     stream_control: Res<StreamControl>,
+    target: Res<DirectStreamTarget>,
     stats: Res<SharedStats>,
     mut query: Query<&mut Text, With<StatsText>>,
 ) {
@@ -268,21 +472,101 @@ pub(crate) fn update_stats_window(
             stats.twitch_kbps = 0.0;
         }
 
-        text.0 = if config.window_mode == WindowMode::Stats {
-            twitch_stats_text(&stats)
+        text.0 = if config.custom_host {
+            custom_host_stats_text(&stats, &target, &stream_control)
+        } else if config.window_mode == WindowMode::Stats {
+            twitch_stats_text(&stats, &target)
         } else {
-            preview_stats_text(&stats)
+            preview_stats_text(&stats, &target)
         };
     }
 }
 
-fn twitch_stats_text(stats: &crate::stats::StreamStats) -> String {
+fn custom_host_stats_text(
+    stats: &crate::stats::StreamStats,
+    target: &DirectStreamTarget,
+    stream_control: &StreamControl,
+) -> String {
+    [
+        "Direct Stream Game".to_owned(),
+        stat_line("mode", "custom host stats"),
+        stat_line(
+            "stream",
+            &format!("{}x{} @ {} fps", target.width, target.height, target.fps),
+        ),
+        stat_line("browser", &format!("http://{WEB_ADDR}")),
+        String::new(),
+        "capture".to_owned(),
+        stat_line("frames captured", &stats.frames_captured.to_string()),
+        stat_line("frames read", &stats.frames_read.to_string()),
+        stat_line("frames encoded", &stats.frames_encoded.to_string()),
+        stat_line("frames dropped", &stats.frames_dropped.to_string()),
+        String::new(),
+        "custom host".to_owned(),
+        stat_line(
+            "palette mode",
+            if stream_control.prebaked_palette {
+                "prebaked LUT"
+            } else {
+                "live matching"
+            },
+        ),
+        stat_line("stage", stats.custom_stage),
+        stat_line("error", &stats.custom_last_error),
+        stat_line("packets sent", &stats.custom_frames_sent.to_string()),
+        stat_line(
+            "packet types",
+            &format!(
+                "key {} / delta {}",
+                stats.custom_keyframes_sent, stats.custom_delta_frames_sent
+            ),
+        ),
+        stat_line(
+            "tile modes",
+            &format!(
+                "raw {} solid {} rle {} span {} xor {} skipped {}",
+                stats.custom_raw_tiles_sent,
+                stats.custom_solid_tiles_sent,
+                stats.custom_rle_tiles_sent,
+                stats.custom_span_tiles_sent,
+                stats.custom_xor_tiles_sent,
+                stats.custom_skipped_tiles
+            ),
+        ),
+        stat_line("packet drops", &stats.custom_frames_dropped.to_string()),
+        stat_line("bytes sent", &stats.custom_bytes_sent.to_string()),
+        stat_line(
+            "audio packets",
+            &stats.custom_audio_packets_sent.to_string(),
+        ),
+        stat_line("audio bytes", &stats.custom_audio_bytes_sent.to_string()),
+        stat_line(
+            "latest packet",
+            &format!("{} bytes", stats.latest_frame_bytes),
+        ),
+        stat_line("recording", &stats.custom_recording_path),
+        stat_line("clients", &stats.stream_clients.to_string()),
+        stat_line("page requests", &stats.preview_requests.to_string()),
+        stat_line(
+            "bias L/C/H",
+            &format!(
+                "{:.3} / {:.3} / {:.3}",
+                stream_control.palette_bias.lightness,
+                stream_control.palette_bias.chroma,
+                stream_control.palette_bias.hue
+            ),
+        ),
+    ]
+    .join("\n")
+}
+
+fn twitch_stats_text(stats: &crate::stats::StreamStats, target: &DirectStreamTarget) -> String {
     [
         "Direct Stream Game".to_owned(),
         stat_line("mode", "twitch stats"),
         stat_line(
             "stream",
-            &format!("{STREAM_WIDTH}x{STREAM_HEIGHT} @ {STREAM_FPS} fps"),
+            &format!("{}x{} @ {} fps", target.width, target.height, target.fps),
         ),
         String::new(),
         "capture".to_owned(),
@@ -304,13 +588,13 @@ fn twitch_stats_text(stats: &crate::stats::StreamStats) -> String {
     .join("\n")
 }
 
-fn preview_stats_text(stats: &crate::stats::StreamStats) -> String {
+fn preview_stats_text(stats: &crate::stats::StreamStats, target: &DirectStreamTarget) -> String {
     [
         "Direct Stream Game".to_owned(),
         stat_line("mode", "preview stats"),
         stat_line(
             "stream",
-            &format!("{STREAM_WIDTH}x{STREAM_HEIGHT} @ {STREAM_FPS} fps"),
+            &format!("{}x{} @ {} fps", target.width, target.height, target.fps),
         ),
         stat_line("local preview", &format!("http://{WEB_ADDR}")),
         String::new(),

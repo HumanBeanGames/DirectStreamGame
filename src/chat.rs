@@ -5,10 +5,11 @@ use bevy::{
     ecs::system::{In, IntoSystem, SystemId},
 };
 use crossbeam_channel::{Receiver, Sender};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::{
     io::{BufRead, BufReader, ErrorKind, Write},
     net::TcpStream,
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -39,6 +40,152 @@ pub struct TwitchChatRoles {
     pub vip: bool,
     pub subscriber: bool,
     pub staff: bool,
+}
+
+#[derive(Clone, Resource, Default)]
+pub(crate) struct LocalChatHub {
+    state: Arc<Mutex<LocalChatState>>,
+}
+
+struct LocalChatState {
+    messages: VecDeque<LocalChatSubmission>,
+    history: VecDeque<LocalChatEntry>,
+    next_id: u64,
+    generation: u64,
+    names_by_identity: HashMap<String, String>,
+    blocked_identities: HashMap<String, String>,
+}
+
+impl Default for LocalChatState {
+    fn default() -> Self {
+        Self {
+            messages: VecDeque::new(),
+            history: VecDeque::new(),
+            next_id: 1,
+            generation: 0,
+            names_by_identity: HashMap::new(),
+            blocked_identities: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct LocalChatSubmission {
+    user: String,
+    display_name: String,
+    text: String,
+}
+
+#[derive(Clone)]
+pub(crate) struct LocalChatEntry {
+    pub(crate) id: u64,
+    pub(crate) user: String,
+    pub(crate) display_name: String,
+    pub(crate) text: String,
+}
+
+impl LocalChatHub {
+    pub(crate) fn submit(
+        &self,
+        identity: impl AsRef<str>,
+        message: impl Into<String>,
+    ) -> Option<String> {
+        let identity_hash = local_chat_identity_hash(identity.as_ref());
+        let mut state = self.state.lock().ok()?;
+        if state.blocked_identities.contains_key(&identity_hash) {
+            return None;
+        }
+
+        let display_name = state
+            .names_by_identity
+            .entry(identity_hash.clone())
+            .or_insert_with(|| local_chat_name_from_hash(&identity_hash))
+            .clone();
+        let entry = LocalChatEntry {
+            id: state.next_id,
+            user: identity_hash.clone(),
+            display_name: display_name.clone(),
+            text: message.into(),
+        };
+        state.next_id = state.next_id.wrapping_add(1);
+        state.messages.push_back(LocalChatSubmission {
+            user: entry.user.clone(),
+            display_name: entry.display_name.clone(),
+            text: entry.text.clone(),
+        });
+        state.history.push_back(entry);
+        while state.history.len() > 200 {
+            state.history.pop_front();
+        }
+        Some(display_name)
+    }
+
+    pub(crate) fn entries_after(&self, last_seen_id: u64) -> Vec<LocalChatEntry> {
+        if let Ok(state) = self.state.lock() {
+            state
+                .history
+                .iter()
+                .filter(|entry| entry.id > last_seen_id)
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub(crate) fn latest_id(&self) -> u64 {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.history.back().map(|entry| entry.id))
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.state
+            .lock()
+            .map(|state| state.generation)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn purge(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.messages.clear();
+            state.history.clear();
+            state.next_id = 1;
+            state.generation = state.generation.wrapping_add(1);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn block_identity(&self, identity_hash: impl Into<String>, reason: impl Into<String>) {
+        if let Ok(mut state) = self.state.lock() {
+            state
+                .blocked_identities
+                .insert(identity_hash.into(), reason.into());
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn active_names(&self) -> Vec<(String, String)> {
+        if let Ok(state) = self.state.lock() {
+            state
+                .names_by_identity
+                .iter()
+                .map(|(identity, name)| (identity.clone(), name.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn drain(&self) -> Vec<LocalChatSubmission> {
+        if let Ok(mut state) = self.state.lock() {
+            state.messages.drain(..).collect()
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 #[derive(Resource, Default)]
@@ -194,6 +341,44 @@ pub(crate) fn poll_twitch_chat(
                 args,
                 roles: message.roles.clone(),
                 message_id: message.message_id.clone(),
+            });
+        }
+        messages.write(message);
+    }
+}
+
+pub(crate) fn poll_local_chat(
+    hub: Option<Res<LocalChatHub>>,
+    mut messages: MessageWriter<TwitchChatMessage>,
+    mut commands: MessageWriter<TwitchChatCommand>,
+) {
+    let Some(hub) = hub else {
+        return;
+    };
+
+    for submission in hub.drain() {
+        let message = TwitchChatMessage {
+            user: submission.user,
+            display_name: submission.display_name,
+            text: submission.text,
+            roles: TwitchChatRoles {
+                broadcaster: false,
+                moderator: false,
+                vip: false,
+                subscriber: false,
+                staff: false,
+            },
+            message_id: None,
+        };
+
+        if let Some((command, args)) = parse_twitch_command(&message.text) {
+            commands.write(TwitchChatCommand {
+                user: message.user.clone(),
+                display_name: message.display_name.clone(),
+                command,
+                args,
+                roles: message.roles.clone(),
+                message_id: None,
             });
         }
         messages.write(message);
@@ -430,4 +615,34 @@ fn normalize_oauth_token(token: &str) -> Option<String> {
 
 fn sanitize_outgoing_chat(message: &str) -> String {
     message.replace(['\r', '\n'], " ")
+}
+
+fn local_chat_identity_hash(identity: &str) -> String {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET;
+    for byte in identity.trim().to_ascii_lowercase().bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
+}
+
+fn local_chat_name_from_hash(hash: &str) -> String {
+    const ADJECTIVES: &[&str] = &[
+        "Amber", "Brave", "Bright", "Clever", "Cozy", "Daring", "Gentle", "Jolly", "Lucky",
+        "Merry", "Nimble", "Quiet", "Ruby", "Silver", "Sunny", "Velvet",
+    ];
+    const CREATURES: &[&str] = &[
+        "Dragon", "Sprite", "Phoenix", "Griffin", "Wyvern", "Unicorn", "Kelpie", "Dryad",
+        "Golem", "Pixie", "Wisp", "Sphinx", "Kirin", "Sylph", "Basilisk", "Chimera",
+    ];
+    const SYMBOLS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+    let value = u64::from_str_radix(hash, 16).unwrap_or(0);
+    let adjective = ADJECTIVES[(value as usize) % ADJECTIVES.len()];
+    let creature = CREATURES[((value >> 8) as usize) % CREATURES.len()];
+    let suffix_a = SYMBOLS[((value >> 16) as usize) % SYMBOLS.len()] as char;
+    let suffix_b = SYMBOLS[((value >> 24) as usize) % SYMBOLS.len()] as char;
+    format!("{adjective}{creature}-{suffix_a}{suffix_b}")
 }

@@ -1,14 +1,30 @@
 use crate::{
     audio::DirectStreamAudioTarget,
-    chat::TwitchChatLogin,
+    chat::{LocalChatHub, TwitchChatLogin},
     config::{AppConfig, save_twitch_stream_key, twitch_rtmp_url},
     frames::{RawFrameHub, RawFrameSenders},
+    palette::{PaletteBias, SharedPaletteBias},
+    public_types::DirectStreamTarget,
+    scene::StreamReadback,
     stats::SharedStats,
     twitch::{TwitchStreamHandle, start_twitch_sink},
 };
-use bevy::{input::keyboard::KeyboardInput, prelude::*};
+use bevy::{
+    asset::RenderAssetUsages,
+    camera::RenderTarget,
+    input::keyboard::KeyboardInput,
+    prelude::*,
+    render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
+    ui::RelativeCursorPosition,
+};
 use crossbeam_channel::Sender;
-use std::process::Command;
+use std::{
+    process::Command,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use crate::frames::RawFrame;
 
@@ -17,6 +33,11 @@ pub(crate) struct StreamControl {
     pub(crate) stream_key: String,
     pub(crate) chat_bot_username: String,
     pub(crate) chat_oauth_token: String,
+    pub(crate) custom_width: String,
+    pub(crate) custom_height: String,
+    pub(crate) custom_fps: String,
+    pub(crate) palette_bias: PaletteBias,
+    pub(crate) prebaked_palette: bool,
     pub(crate) focused_input: Option<StreamControlInput>,
     pub(crate) status: String,
     twitch_config_path: std::path::PathBuf,
@@ -25,15 +46,30 @@ pub(crate) struct StreamControl {
     bandwidth_test: bool,
     twitch_url_override: Option<String>,
     preview_sender: Option<Sender<RawFrame>>,
+    custom_sender: Option<Sender<RawFrame>>,
+    custom_stream_state: CustomStreamState,
+    shared_palette_bias: SharedPaletteBias,
     twitch_handle: Option<TwitchStreamHandle>,
 }
 
 impl StreamControl {
-    pub(crate) fn new(config: &AppConfig, preview_sender: Option<Sender<RawFrame>>) -> Self {
+    pub(crate) fn new(
+        config: &AppConfig,
+        preview_sender: Option<Sender<RawFrame>>,
+        custom_sender: Option<Sender<RawFrame>>,
+        custom_stream_state: CustomStreamState,
+        shared_palette_bias: SharedPaletteBias,
+    ) -> Self {
+        let palette_bias = shared_palette_bias.get();
         Self {
             stream_key: config.stream_key.clone(),
             chat_bot_username: config.chat_bot_username.clone(),
             chat_oauth_token: config.chat_oauth_token.clone(),
+            custom_width: config.stream_width.to_string(),
+            custom_height: config.stream_height.to_string(),
+            custom_fps: config.stream_fps.to_string(),
+            palette_bias,
+            prebaked_palette: config.prebaked_palette,
             focused_input: None,
             status: "Ready".to_owned(),
             twitch_config_path: config.twitch_config_path.clone(),
@@ -42,6 +78,9 @@ impl StreamControl {
             bandwidth_test: config.bandwidth_test,
             twitch_url_override: config.twitch_url_override.clone(),
             preview_sender,
+            custom_sender,
+            custom_stream_state,
+            shared_palette_bias,
             twitch_handle: None,
         }
     }
@@ -52,7 +91,7 @@ impl StreamControl {
     }
 
     pub(crate) fn is_streaming(&self) -> bool {
-        self.twitch_handle.is_some()
+        self.twitch_handle.is_some() || self.custom_stream_state.is_active()
     }
 
     pub(crate) fn should_capture(&self) -> bool {
@@ -65,9 +104,18 @@ impl StreamControl {
         stats: &SharedStats,
         audio_target: &DirectStreamAudioTarget,
         chat_login: Option<&TwitchChatLogin>,
+        images: &mut Assets<Image>,
+        target: &mut DirectStreamTarget,
+        readback: &mut StreamReadback,
+        camera_targets: &mut Query<&mut RenderTarget>,
     ) {
         if self.is_streaming() {
             self.status = "Already streaming".to_owned();
+            return;
+        }
+
+        if self.custom_sender.is_some() {
+            self.start_custom_host(senders, stats, images, target, readback, camera_targets);
             return;
         }
 
@@ -124,7 +172,138 @@ impl StreamControl {
         });
     }
 
-    fn stop(&mut self, senders: &mut RawFrameSenders, stats: &SharedStats) {
+    fn start_custom_host(
+        &mut self,
+        senders: &mut RawFrameSenders,
+        stats: &SharedStats,
+        images: &mut Assets<Image>,
+        target: &mut DirectStreamTarget,
+        readback: &mut StreamReadback,
+        camera_targets: &mut Query<&mut RenderTarget>,
+    ) {
+        let Some(custom_sender) = self.custom_sender.clone() else {
+            self.status = "Custom host unavailable".to_owned();
+            return;
+        };
+        let Ok((width, height, fps)) = self.custom_dimensions() else {
+            self.status = "Use an 8-aligned square size 64-256 and fps 1-60".to_owned();
+            return;
+        };
+
+        let mut image = Image::new_fill(
+            Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            &[0, 0, 0, 255],
+            TextureFormat::Bgra8UnormSrgb,
+            RenderAssetUsages::default(),
+        );
+        image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING
+            | TextureUsages::COPY_DST
+            | TextureUsages::COPY_SRC
+            | TextureUsages::RENDER_ATTACHMENT;
+        let image = images.add(image);
+
+        if let Ok(mut camera_target) = camera_targets.get_mut(target.camera) {
+            *camera_target = RenderTarget::Image(image.clone().into());
+        } else {
+            self.status = "Could not retarget stream camera".to_owned();
+            return;
+        }
+
+        target.image = image.clone();
+        target.width = width;
+        target.height = height;
+        target.fps = fps;
+        readback.image = image;
+        readback.timer = Timer::from_seconds(1.0 / fps as f32, TimerMode::Repeating);
+        readback.in_flight = false;
+
+        senders.preview = None;
+        senders.twitch = None;
+        senders.custom = Some(custom_sender);
+        self.custom_stream_state.set_active(true);
+        self.status = "Custom host streaming".to_owned();
+        stats.with_mut(|stats| stats.reset_custom_session());
+    }
+
+    fn custom_dimensions(&self) -> Result<(u32, u32, u32), ()> {
+        let width = self.custom_width.trim().parse::<u32>().map_err(|_| ())?;
+        let height = self.custom_height.trim().parse::<u32>().map_err(|_| ())?;
+        let fps = self.custom_fps.trim().parse::<u32>().map_err(|_| ())?;
+
+        if width != height
+            || !(64..=256).contains(&width)
+            || !(64..=256).contains(&height)
+            || width % 8 != 0
+            || !(1..=60).contains(&fps)
+        {
+            return Err(());
+        }
+
+        Ok((width, height, fps))
+    }
+
+    pub(crate) fn set_palette_bias_slider(&mut self, slider: PaletteBiasSlider, value: f32) {
+        if self.prebaked_palette {
+            return;
+        }
+
+        let value = value.clamp(0.0, 1.0);
+        let mut values = [
+            self.palette_bias.lightness,
+            self.palette_bias.chroma,
+            self.palette_bias.hue,
+        ];
+        let changed_index = slider.index();
+        values[changed_index] = value;
+        let remaining = 1.0 - value;
+        let other_indices: Vec<usize> = (0..3).filter(|index| *index != changed_index).collect();
+        let other_total: f32 = other_indices.iter().map(|index| values[*index]).sum();
+
+        if other_total <= f32::EPSILON {
+            let split = remaining / other_indices.len() as f32;
+            for index in other_indices {
+                values[index] = split;
+            }
+        } else {
+            for index in other_indices {
+                values[index] = values[index] / other_total * remaining;
+            }
+        }
+
+        let total = values.iter().sum::<f32>();
+        values[2] = (values[2] + 1.0 - total).clamp(0.0, 1.0);
+        self.palette_bias = PaletteBias {
+            lightness: values[0],
+            chroma: values[1],
+            hue: values[2],
+        };
+        self.shared_palette_bias.set(self.palette_bias);
+    }
+
+    fn stop(
+        &mut self,
+        senders: &mut RawFrameSenders,
+        stats: &SharedStats,
+        audio_target: &DirectStreamAudioTarget,
+    ) {
+        if self.custom_sender.is_some() {
+            self.custom_stream_state.set_active(false);
+            senders.custom = None;
+            audio_target.clear();
+            self.status = "Custom host stopped".to_owned();
+            stats.with_mut(|stats| {
+                stats.custom_stage = "stopped";
+                stats.custom_audio_packets_sent = 0;
+                stats.custom_audio_bytes_sent = 0;
+            });
+            return;
+        }
+
         let Some(handle) = self.twitch_handle.take() else {
             self.status = "Not streaming".to_owned();
             return;
@@ -132,6 +311,7 @@ impl StreamControl {
 
         handle.stop();
         senders.twitch = None;
+        senders.custom = None;
         if self.preview_sender.is_some() {
             senders.preview = self.preview_sender.clone();
         }
@@ -143,6 +323,14 @@ impl StreamControl {
     }
 
     fn open_twitch_stream(&mut self) {
+        if self.custom_sender.is_some() {
+            match open_url("http://127.0.0.1:8080") {
+                Ok(()) => self.status = "Opened custom host preview".to_owned(),
+                Err(err) => self.status = format!("Could not open custom host: {err}"),
+            }
+            return;
+        }
+
         let channel = self.twitch_channel.trim().trim_start_matches('#');
         if channel.is_empty() || channel == "your_channel_name" {
             self.status = "Set channel in twitch.toml first".to_owned();
@@ -163,6 +351,50 @@ pub(crate) struct StreamKeyInputBox;
 pub(crate) struct ChatBotUsernameInputBox;
 #[derive(Component)]
 pub(crate) struct ChatOauthTokenInputBox;
+#[derive(Component)]
+pub(crate) struct CustomWidthInputBox;
+#[derive(Component)]
+pub(crate) struct CustomHeightInputBox;
+#[derive(Component)]
+pub(crate) struct CustomFpsInputBox;
+
+#[derive(Clone, Resource)]
+pub(crate) struct CustomStreamState {
+    active: Arc<AtomicBool>,
+}
+
+impl CustomStreamState {
+    pub(crate) fn new() -> Self {
+        Self {
+            active: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.active.load(Ordering::Relaxed)
+    }
+
+    fn set_active(&self, active: bool) {
+        self.active.store(active, Ordering::Relaxed);
+    }
+}
+
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaletteBiasSlider {
+    Lightness,
+    Chroma,
+    Hue,
+}
+
+impl PaletteBiasSlider {
+    fn index(self) -> usize {
+        match self {
+            Self::Lightness => 0,
+            Self::Chroma => 1,
+            Self::Hue => 2,
+        }
+    }
+}
 
 #[derive(Component)]
 pub(crate) struct StreamKeyInputText;
@@ -170,12 +402,27 @@ pub(crate) struct StreamKeyInputText;
 pub(crate) struct ChatBotUsernameInputText;
 #[derive(Component)]
 pub(crate) struct ChatOauthTokenInputText;
+#[derive(Component)]
+pub(crate) struct CustomWidthInputText;
+#[derive(Component)]
+pub(crate) struct CustomHeightInputText;
+#[derive(Component)]
+pub(crate) struct CustomFpsInputText;
+
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PaletteBiasSliderValueText(pub(crate) PaletteBiasSlider);
+
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PaletteBiasSliderFill(pub(crate) PaletteBiasSlider);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StreamControlInput {
     StreamKey,
     ChatBotUsername,
     ChatOauthToken,
+    CustomWidth,
+    CustomHeight,
+    CustomFps,
 }
 
 #[derive(Component)]
@@ -189,6 +436,9 @@ pub(crate) struct StopStreamButton;
 
 #[derive(Component)]
 pub(crate) struct OpenTwitchStreamButton;
+
+#[derive(Component)]
+pub(crate) struct PurgeChatButton;
 
 pub(crate) fn handle_stream_key_typing(
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -242,7 +492,12 @@ pub(crate) fn handle_stream_control_interactions(
     mut senders: ResMut<RawFrameSenders>,
     stats: Res<SharedStats>,
     audio_target: Res<DirectStreamAudioTarget>,
+    local_chat: Option<Res<LocalChatHub>>,
     chat_login: Option<Res<TwitchChatLogin>>,
+    mut images: ResMut<Assets<Image>>,
+    mut target: ResMut<DirectStreamTarget>,
+    mut readback: ResMut<StreamReadback>,
+    mut camera_targets: Query<&mut RenderTarget>,
     mut controls: Query<
         (
             &Interaction,
@@ -250,9 +505,13 @@ pub(crate) fn handle_stream_control_interactions(
             Option<&StreamKeyInputBox>,
             Option<&ChatBotUsernameInputBox>,
             Option<&ChatOauthTokenInputBox>,
+            Option<&CustomWidthInputBox>,
+            Option<&CustomHeightInputBox>,
+            Option<&CustomFpsInputBox>,
             Option<&StartStreamButton>,
             Option<&StopStreamButton>,
             Option<&OpenTwitchStreamButton>,
+            Option<&PurgeChatButton>,
         ),
         Changed<Interaction>,
     >,
@@ -263,9 +522,13 @@ pub(crate) fn handle_stream_control_interactions(
         key_box,
         bot_box,
         token_box,
+        width_box,
+        height_box,
+        fps_box,
         start_button,
         stop_button,
         open_button,
+        purge_button,
     ) in &mut controls
     {
         if key_box.is_some() {
@@ -289,11 +552,41 @@ pub(crate) fn handle_stream_control_interactions(
                 &mut control,
                 StreamControlInput::ChatOauthToken,
             );
+        } else if width_box.is_some() {
+            set_input_interaction_color(
+                *interaction,
+                &mut color,
+                &mut control,
+                StreamControlInput::CustomWidth,
+            );
+        } else if height_box.is_some() {
+            set_input_interaction_color(
+                *interaction,
+                &mut color,
+                &mut control,
+                StreamControlInput::CustomHeight,
+            );
+        } else if fps_box.is_some() {
+            set_input_interaction_color(
+                *interaction,
+                &mut color,
+                &mut control,
+                StreamControlInput::CustomFps,
+            );
         } else if start_button.is_some() {
             match *interaction {
                 Interaction::Pressed => {
                     control.focused_input = None;
-                    control.start(&mut senders, &stats, &audio_target, chat_login.as_deref());
+                    control.start(
+                        &mut senders,
+                        &stats,
+                        &audio_target,
+                        chat_login.as_deref(),
+                        &mut images,
+                        &mut target,
+                        &mut readback,
+                        &mut camera_targets,
+                    );
                     *color = BackgroundColor(Color::srgb(0.10, 0.36, 0.22));
                 }
                 Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.08, 0.28, 0.18)),
@@ -303,7 +596,7 @@ pub(crate) fn handle_stream_control_interactions(
             match *interaction {
                 Interaction::Pressed => {
                     control.focused_input = None;
-                    control.stop(&mut senders, &stats);
+                    control.stop(&mut senders, &stats, &audio_target);
                     *color = BackgroundColor(Color::srgb(0.38, 0.11, 0.12));
                 }
                 Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.30, 0.09, 0.10)),
@@ -319,9 +612,54 @@ pub(crate) fn handle_stream_control_interactions(
                 Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.10, 0.15, 0.27)),
                 Interaction::None => *color = BackgroundColor(Color::srgb(0.07, 0.10, 0.19)),
             }
+        } else if purge_button.is_some() {
+            match *interaction {
+                Interaction::Pressed => {
+                    control.focused_input = None;
+                    if let Some(local_chat) = local_chat.as_deref() {
+                        local_chat.purge();
+                        control.status = "Local chat purged".to_owned();
+                    } else {
+                        control.status = "Local chat unavailable".to_owned();
+                    }
+                    *color = BackgroundColor(Color::srgb(0.32, 0.18, 0.05));
+                }
+                Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.25, 0.14, 0.04)),
+                Interaction::None => *color = BackgroundColor(Color::srgb(0.17, 0.10, 0.04)),
+            }
         } else if *interaction == Interaction::Pressed {
             control.focused_input = None;
         }
+    }
+}
+
+pub(crate) fn handle_palette_bias_sliders(
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut control: ResMut<StreamControl>,
+    sliders: Query<(&Interaction, &RelativeCursorPosition, &PaletteBiasSlider), With<Button>>,
+) {
+    if control.prebaked_palette {
+        return;
+    }
+
+    if !mouse.pressed(MouseButton::Left) {
+        return;
+    }
+
+    for (interaction, cursor, slider) in &sliders {
+        if !matches!(interaction, Interaction::Pressed | Interaction::Hovered) {
+            continue;
+        }
+
+        let Some(position) = cursor.normalized else {
+            continue;
+        };
+
+        if !(-0.5..=0.5).contains(&position.x) || !(-0.5..=0.5).contains(&position.y) {
+            continue;
+        }
+
+        control.set_palette_bias_slider(*slider, position.x + 0.5);
     }
 }
 
@@ -332,14 +670,30 @@ pub(crate) fn update_stream_control_ui(
         Option<&StreamKeyInputText>,
         Option<&ChatBotUsernameInputText>,
         Option<&ChatOauthTokenInputText>,
+        Option<&CustomWidthInputText>,
+        Option<&CustomHeightInputText>,
+        Option<&CustomFpsInputText>,
+        Option<&PaletteBiasSliderValueText>,
         Option<&StreamControlStatusText>,
     )>,
+    mut fill_query: Query<(&mut Node, &PaletteBiasSliderFill)>,
 ) {
     if !control.is_changed() {
         return;
     }
 
-    for (mut text, key_text, bot_text, token_text, status_text) in &mut text_query {
+    for (
+        mut text,
+        key_text,
+        bot_text,
+        token_text,
+        width_text,
+        height_text,
+        fps_text,
+        bias_value_text,
+        status_text,
+    ) in &mut text_query
+    {
         if key_text.is_some() {
             text.0 = masked_input_text(
                 &control.stream_key,
@@ -358,6 +712,29 @@ pub(crate) fn update_stream_control_ui(
                 control.focused_input == Some(StreamControlInput::ChatOauthToken),
                 "chat oauth token",
             );
+        } else if width_text.is_some() {
+            text.0 = plain_input_text(
+                &control.custom_width,
+                control.focused_input == Some(StreamControlInput::CustomWidth),
+                "width",
+            );
+        } else if height_text.is_some() {
+            text.0 = plain_input_text(
+                &control.custom_height,
+                control.focused_input == Some(StreamControlInput::CustomHeight),
+                "height",
+            );
+        } else if fps_text.is_some() {
+            text.0 = plain_input_text(
+                &control.custom_fps,
+                control.focused_input == Some(StreamControlInput::CustomFps),
+                "fps",
+            );
+        } else if let Some(bias_value_text) = bias_value_text {
+            text.0 = format!(
+                "{:.3}",
+                palette_bias_value(control.palette_bias, bias_value_text.0)
+            );
         } else if status_text.is_some() {
             let mode = if control.is_streaming() {
                 "live"
@@ -366,6 +743,10 @@ pub(crate) fn update_stream_control_ui(
             };
             text.0 = format!("stream control: {mode} - {}", control.status);
         }
+    }
+
+    for (mut node, fill) in &mut fill_query {
+        node.width = percent(palette_bias_value(control.palette_bias, fill.0) * 100.0);
     }
 }
 
@@ -382,6 +763,9 @@ fn push_focused_text(control: &mut StreamControl, input: StreamControlInput, tex
         StreamControlInput::StreamKey => control.stream_key.push_str(text),
         StreamControlInput::ChatBotUsername => control.chat_bot_username.push_str(text),
         StreamControlInput::ChatOauthToken => control.chat_oauth_token.push_str(text),
+        StreamControlInput::CustomWidth => push_numeric_text(&mut control.custom_width, text),
+        StreamControlInput::CustomHeight => push_numeric_text(&mut control.custom_height, text),
+        StreamControlInput::CustomFps => push_numeric_text(&mut control.custom_fps, text),
     }
 }
 
@@ -396,7 +780,20 @@ fn pop_focused_text(control: &mut StreamControl, input: StreamControlInput) {
         StreamControlInput::ChatOauthToken => {
             control.chat_oauth_token.pop();
         }
+        StreamControlInput::CustomWidth => {
+            control.custom_width.pop();
+        }
+        StreamControlInput::CustomHeight => {
+            control.custom_height.pop();
+        }
+        StreamControlInput::CustomFps => {
+            control.custom_fps.pop();
+        }
     }
+}
+
+fn push_numeric_text(value: &mut String, text: &str) {
+    value.extend(text.chars().filter(|chr| chr.is_ascii_digit()));
 }
 
 fn set_input_interaction_color(
@@ -454,6 +851,14 @@ fn plain_input_text(value: &str, focused: bool, placeholder: &str) -> String {
         format!("{value}|")
     } else {
         value.to_owned()
+    }
+}
+
+fn palette_bias_value(bias: PaletteBias, slider: PaletteBiasSlider) -> f32 {
+    match slider {
+        PaletteBiasSlider::Lightness => bias.lightness,
+        PaletteBiasSlider::Chroma => bias.chroma,
+        PaletteBiasSlider::Hue => bias.hue,
     }
 }
 

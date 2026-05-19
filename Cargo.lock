@@ -10,6 +10,7 @@ dependencies = [
  "bevy",
  "crossbeam-channel",
  "ffmpeg-next",
+ "image",
 ]
 
 [[package]]

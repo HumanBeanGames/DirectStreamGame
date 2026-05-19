@@ -1,3 +1,4 @@
+use crate::constants::{STREAM_FPS, STREAM_HEIGHT, STREAM_WIDTH};
 use ffmpeg_next::util::log;
 use std::{env, fs, path::PathBuf};
 
@@ -10,6 +11,12 @@ pub(crate) enum WindowMode {
 #[derive(bevy::prelude::Resource)]
 pub(crate) struct AppConfig {
     pub(crate) window_mode: WindowMode,
+    pub(crate) custom_host: bool,
+    pub(crate) prebaked_palette: bool,
+    pub(crate) stream_width: u32,
+    pub(crate) stream_height: u32,
+    pub(crate) stream_fps: u32,
+    pub(crate) palette_config_path: PathBuf,
     pub(crate) twitch_config_path: PathBuf,
     pub(crate) twitch_channel: String,
     pub(crate) chat_bot_username: String,
@@ -32,6 +39,14 @@ struct TwitchConfig {
 impl AppConfig {
     pub(crate) fn from_args() -> Self {
         let mut window_mode = WindowMode::Preview;
+        let mut custom_host = false;
+        let mut prebaked_palette = false;
+        let mut stream_width = STREAM_WIDTH;
+        let mut stream_height = STREAM_HEIGHT;
+        let mut stream_fps = STREAM_FPS;
+        let mut stream_width_set = false;
+        let mut stream_height_set = false;
+        let mut palette_config_path = PathBuf::from("src/default_pallette/default_pallette.toml");
         let mut twitch_url_override = None;
         let mut twitch_config_path = PathBuf::from("twitch.toml");
         let mut ffmpeg_log_level = log::Level::Error;
@@ -41,6 +56,21 @@ impl AppConfig {
                 window_mode = WindowMode::Stats;
             } else if arg == "--twitch" {
                 // Twitch output is now controlled by the stats-window Start button.
+            } else if arg == "--custom-host" {
+                custom_host = true;
+                window_mode = WindowMode::Stats;
+            } else if arg == "--prebaked" {
+                prebaked_palette = true;
+            } else if let Some(width) = arg.strip_prefix("--stream-width=") {
+                stream_width = width.parse().unwrap_or(stream_width);
+                stream_width_set = true;
+            } else if let Some(height) = arg.strip_prefix("--stream-height=") {
+                stream_height = height.parse().unwrap_or(stream_height);
+                stream_height_set = true;
+            } else if let Some(fps) = arg.strip_prefix("--stream-fps=") {
+                stream_fps = fps.parse().unwrap_or(stream_fps);
+            } else if let Some(path) = arg.strip_prefix("--palette-config=") {
+                palette_config_path = PathBuf::from(path);
             } else if let Some(path) = arg.strip_prefix("--twitch-config=") {
                 twitch_config_path = PathBuf::from(path);
             } else if let Some(url) = arg.strip_prefix("--twitch-url=") {
@@ -49,6 +79,17 @@ impl AppConfig {
                 ffmpeg_log_level = log::Level::Warning;
             } else if arg == "--ffmpeg-verbose" {
                 ffmpeg_log_level = log::Level::Info;
+            }
+        }
+
+        if custom_host {
+            if !stream_width_set && !stream_height_set {
+                stream_width = 128;
+                stream_height = 128;
+            } else if stream_width_set && !stream_height_set {
+                stream_height = stream_width;
+            } else if stream_height_set && !stream_width_set {
+                stream_width = stream_height;
             }
         }
 
@@ -62,6 +103,12 @@ impl AppConfig {
 
         Self {
             window_mode,
+            custom_host,
+            prebaked_palette,
+            stream_width,
+            stream_height,
+            stream_fps,
+            palette_config_path,
             twitch_config_path,
             twitch_channel: twitch_config.channel,
             chat_bot_username: twitch_config.chat_bot_username,

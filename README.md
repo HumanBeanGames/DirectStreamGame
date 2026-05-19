@@ -1,40 +1,48 @@
 # Direct Stream Game
 
-Direct Stream Game is a reusable Bevy streaming foundation. It creates a
-low-resolution offscreen render target, reads it back from the GPU, and routes
-the frames to either a local browser preview or a Twitch-compatible RTMP stream
-through integrated FFmpeg dynamic libraries.
+Direct Stream Game is a Bevy streaming foundation for making games that can be
+played through a browser stream. It renders the game to a low-resolution
+offscreen target, reads frames back from the GPU, and sends them to either:
 
-The binary in this repository is a small `HelloWorld` demo. The useful piece is
-the library API in `src/lib.rs`, which future games can build on without having
-to manually wire the capture, encoding, preview, Twitch config, chat commands,
-or stream pacing systems.
+- Twitch, through integrated dynamic FFmpeg libraries as H.264/AAC over RTMP.
+- A custom browser player, through the Indexed Pixel Stream Codec (`IPSC`) plus
+  a small local chat/control layer.
 
-The current Twitch profile is `320x240 @ 15fps` with a `350 kbps` H.264 target
-bitrate and AAC audio, matching Twitch's 240p quality tier closely enough for
-early stream tests.
+The repository binary is a demo. The reusable API is the library exposed from
+`src/lib.rs`.
+
+## Current Capabilities
+
+- Bevy `0.18.1` app shell with an offscreen stream render target.
+- GPU readback with bounded in-flight capture.
+- Stats/control window with Start, End, Open, Purge Chat, stream dimensions,
+  palette-bias controls, and Twitch credentials.
+- Stream-only audio mixer. Bevy speaker output is disabled by default.
+- Twitch RTMP output using H.264 video and AAC audio.
+- Twitch IRC command input and optional bot replies.
+- Custom browser host using IPSC indexed-palette video, 8 kHz mono μ-law audio,
+  local chat, and a static player that can be hosted on Cloudflare Pages.
+- Local chat names generated from hashed viewer identity.
+- In-memory local chat feed with purge/reset support.
+- Palette Lab and PNG Converter Lab for creating palettes, LUTs, and IPSI still
+  images.
+- Demo scene with looping music, `!boing` sound effect, and drag-and-drop video
+  background playback.
 
 ## Requirements
 
 - Rust stable, currently verified with `rustc 1.95.0`.
 - Bevy `0.18.1`.
-- An LGPL-compatible dynamic FFmpeg SDK with headers, import libraries, and
-  runtime DLLs.
+- Windows/MSVC currently receives the most testing.
+- Dynamic FFmpeg libraries with headers/import libs available at build time and
+  DLLs available at runtime.
 
-The app does not launch `ffmpeg.exe`. It links to FFmpeg libraries through
+The app does not launch `ffmpeg.exe`. It links to FFmpeg through
 `ffmpeg-next`/`ffmpeg-sys-next`.
 
-## Windows FFmpeg SDK Setup
+## FFmpeg Setup On Windows
 
-`ffmpeg-sys-next` needs to find FFmpeg at build time. On Windows MSVC, use one
-of these dynamic-library paths. The recommended route for this repo is vcpkg
-with the included `vcpkg.json` manifest.
-
-### Recommended vcpkg path
-
-Install vcpkg and LLVM/clang, then install FFmpeg into vcpkg's classic
-installed tree. This is the layout that `ffmpeg-sys-next` discovers on
-Windows/MSVC.
+The recommended route is vcpkg with the included `vcpkg.json` manifest.
 
 ```powershell
 git clone https://github.com/microsoft/vcpkg C:\vcpkg
@@ -46,193 +54,94 @@ $env:VCPKG_DEFAULT_TRIPLET = "x64-windows"
 C:\vcpkg\vcpkg.exe install "ffmpeg[avcodec,avformat,openh264,swresample,swscale]:x64-windows" --classic
 ```
 
-Keep `VCPKG_ROOT` set when running Cargo:
+Then keep vcpkg on the environment when building/running:
 
 ```powershell
 $env:VCPKG_ROOT = "C:\vcpkg"
 $env:PATH = "C:\vcpkg\installed\x64-windows\bin;$env:PATH"
-cargo run
+cargo run --bin DirectStreamGame
 ```
 
-`ffmpeg-sys-next` sets `VCPKGRS_DYNAMIC=1` for dynamic linking when the Rust
-crate's `static` feature is not enabled.
+For closed-source distribution, keep FFmpeg dynamically linked and use an
+LGPL-compatible FFmpeg build. Do not enable `ffmpeg-next` static, GPL, or
+nonfree build features. See `FFMPEG-LGPL-COMPLIANCE.md`.
 
-The included `vcpkg.json` documents the native dependency set, but Cargo's
-current FFmpeg binding discovery expects the classic vcpkg install location.
+## Running The Demo
 
-### Alternative paths
-
-1. Install a compatible FFmpeg development package with `pkg-config`
-   metadata, then put `pkg-config` on `PATH`.
-2. Provide the FFmpeg include/lib/bin layout expected by `ffmpeg-sys-next` and
-   set the relevant environment variables for that package.
-
-Whichever route you choose, ensure the FFmpeg build is configured without
-`--enable-gpl` or `--enable-nonfree`, and ensure the FFmpeg DLLs are available
-at runtime.
-
-## Run
+Normal local preview:
 
 ```powershell
-cargo run
+cargo run --bin DirectStreamGame
 ```
 
-Useful options:
+Custom browser host:
 
 ```powershell
-cargo run -- --stats-window
-cargo run -- --headless-window
-cargo run -- --twitch-url="rtmp://live.twitch.tv/app/live_..."
-cargo run -- --ffmpeg-warnings
+cargo run --bin DirectStreamGame -- --stats-window --custom-host --prebaked
 ```
 
-`--stats-window` keeps the Bevy window alive but displays server/stream stats
-instead of the rendered output. The offscreen scene still renders and streams.
-The stats window also has stream-key, chat bot username, and chat OAuth token
-inputs plus Start, End, and Open buttons. Click an input, paste with `Ctrl+V`,
-then use Start to begin RTMP output, End to stop it, or Open to view the Twitch
-channel in your browser. This control window is not part of the streamed render
-target.
-
-Games send stream audio through the direct-stream audio mixer, which writes
-interleaved stereo `f32` PCM into `DirectStreamAudioTarget`. Bevy's normal
-speaker audio plugin is disabled by the app shell, so audio is intended to go
-to the stream rather than the local audio device. Twitch consumes that target,
-encodes AAC, and muxes it into the RTMP stream. If the game has not supplied
-enough samples for a frame, the stream fills the gap with silence so video
-pacing remains stable.
-
-`--twitch-url` overrides the RTMP destination used when the stats-window Start
-button is pressed. The sink prefers FFmpeg's `libopenh264` encoder for CPU
-frames, then falls back to Media Foundation's `h264_mf`, and muxes AAC audio so
-the stream shape matches Twitch's H.264/AAC/RTMP ingest model.
-
-FFmpeg native logging defaults to errors-only to keep harmless decoder warnings
-out of the terminal. Use `--ffmpeg-warnings` or `--ffmpeg-verbose` when you need
-more detail while debugging.
-
-## Twitch Setup
-
-The quickest local control path is the stats window:
-
-```powershell
-cargo run -- --stats-window
-```
-
-The field is pre-filled from `twitch.toml` when that file has a real stream
-key. Click the stream-key field, paste or edit your Twitch stream key with
-`Ctrl+V`, and press Start. Press End to stop the RTMP sink, or Open to view the
-configured Twitch channel page. Start writes the current key back to
-`twitch.toml`, and the stream key is masked in the window. The stats/control
-window is never sent to Twitch.
-
-For chat commands, set `channel` in `twitch.toml` to your Twitch channel name.
-The app connects to Twitch IRC and emits typed Bevy messages for chat messages
-and `!command` messages. If `chat_bot_username` and `chat_oauth_token` are set,
-it can also send replies back to chat. In the demo, any viewer can type:
-
-```text
-!boing
-```
-
-and the stream audio mixer will play `sfx/boing_x.wav` over the looping backing
-music, then the bot replies in chat.
-
-For bot write access, use a dedicated Twitch account if you want replies to come
-from a bot name instead of your streaming account. Generate a chat OAuth token
-for that account with IRC chat write permission, then set:
-
-```toml
-channel = "your_channel_name"
-chat_bot_username = "your_bot_login"
-chat_oauth_token = "oauth:your_chat_oauth_token_here"
-```
-
-Twitch IRC authentication uses `PASS oauth:...` plus `NICK bot_login`, and chat
-messages are sent as `PRIVMSG #channel :message`. Twitch currently describes
-EventSub/API chat as the preferred long-term chat path, but IRC is still a
-supported practical route for this prototype.
-
-You can also use a config file. Copy the example config and add your private
-stream key:
-
-```powershell
-Copy-Item twitch.example.toml twitch.toml
-notepad twitch.toml
-```
-
-Fill in `stream_key` from Twitch Creator Dashboard -> Settings -> Stream ->
-Primary Stream key, and set `channel` to your Twitch channel name for chat
-commands. Fill in the bot username/token if you want the app to write chat
-replies. You do not need your Twitch username for RTMP ingest; the stream key is
-the credential. `twitch.toml` is ignored by git.
-
-Start with:
-
-```toml
-enabled = false
-bandwidth_test = true
-```
-
-Then run:
-
-```powershell
-cargo run -- --stats-window
-```
-
-With `bandwidth_test = true`, the app appends `?bandwidthtest=true` when you
-press Start, which Twitch documents as the mode for
-testing bandwidth health in Twitch Inspector without making the stream viewable.
-Open https://inspector.twitch.tv/ while the app is running and confirm Twitch is
-receiving video/audio without sustained bitrate drops.
-
-When you actually want to go live, change:
-
-```toml
-bandwidth_test = false
-```
-
-Then run `cargo run -- --stats-window`, confirm the key in the stats window,
-confirm the chat bot fields if you are using replies, and press Start. Start
-writes the current stream key and chat bot fields back to `twitch.toml`, then
-connects/reconnects the chat bot with those values. The old `enabled` setting is
-tolerated in `twitch.toml`, but streaming no longer auto-starts from config or
-command-line flags.
-
-Twitch's documented RTMP URL format is:
-
-```text
-rtmp://<ingest-server>/app/<stream-key>[?bandwidthtest=true]
-```
-
-The default config uses `rtmp://live.twitch.tv/app`. You can replace
-`ingest_server` with a specific endpoint from Twitch's ingest list if you want
-to pin a region.
-
-For normal preview mode, run `cargo run` and open:
+Then press **Start** in the stats window and open:
 
 ```text
 http://127.0.0.1:8080
 ```
 
-The Rust app serves both the preview page and the multipart JPEG stream on port
-`8080` in normal preview mode.
+Twitch mode:
 
-Local preview and Twitch output are separate modes. `cargo run` shows the
-rendered preview window and starts the local MJPEG preview encoder.
-`cargo run -- --stats-window` opens the larger stats/control window instead;
-when Start is pressed there, frames are routed to the RTMP sink. The stats
-window follows the active mode: preview stats hide Twitch-only counters, and
-Twitch stats hide local-preview counters.
+```powershell
+cargo run --bin DirectStreamGame -- --stats-window
+```
 
-The Twitch sink is clocked independently at the stream FPS. GPU readback updates
-the latest available frame, and the RTMP thread repeats that frame if needed so
-packet cadence stays steady for Twitch ingest.
+Paste or confirm the Twitch stream key in the stats window, then press Start.
+The old `--twitch` flag is accepted for compatibility but no longer auto-starts
+streaming.
 
-## Game API
+Useful flags:
 
-The streaming stack is exposed as a library. A game can start from the same
-Bevy app shell and then add normal Bevy plugins/systems:
+```powershell
+--stats-window
+--headless-window
+--custom-host
+--prebaked
+--palette-config=palette.toml
+--stream-width=128
+--stream-height=128
+--stream-fps=5
+--twitch-config=twitch.toml
+--twitch-url="rtmp://live.twitch.tv/app/live_..."
+--ffmpeg-warnings
+--ffmpeg-verbose
+```
+
+In custom-host mode, width and height must be equal, 8-aligned, and between
+`64` and `256`. The default is `128x128 @ 5fps`.
+
+## Demo Controls
+
+The demo starts with a hue-gradient background and `HelloWorld` text. It also:
+
+- Loops `music/Elijah_K - Iron.wav` as backing music.
+- Plays `sfx/boing_x.wav` when chat sends `!boing`.
+- Accepts video files dragged onto the Bevy window.
+
+Supported demo video extensions:
+
+```text
+.mp4 .mov .m4v .webm .mkv .avi
+```
+
+Best first test file:
+
+```text
+MP4 container, H.264 video, yuv420p, small resolution, 24/25/30 fps
+```
+
+Video audio is ignored. The video loops and is scaled into the stream render
+target. This is demo-only code, not part of the streaming library API.
+
+## Using The Library In A Game
+
+Add the library to your game:
 
 ```toml
 [dependencies]
@@ -240,18 +149,20 @@ bevy = "0.18.1"
 direct_stream_game = { path = "../DirectStreamGame" }
 ```
 
+Use the direct-stream app shell instead of `App::new().add_plugins(DefaultPlugins)`:
+
 ```rust
 use bevy::prelude::*;
 use direct_stream_game::{direct_stream_app, DirectStreamSet, DirectStreamTarget};
 
 fn main() {
     direct_stream_app()
-        .add_systems(Startup, setup_game.after(DirectStreamSet::Setup))
-        .add_systems(Update, update_game)
+        .add_systems(Startup, setup.after(DirectStreamSet::Setup))
+        .add_systems(Update, update)
         .run();
 }
 
-fn setup_game(mut commands: Commands, target: Res<DirectStreamTarget>) {
+fn setup(mut commands: Commands, target: Res<DirectStreamTarget>) {
     commands
         .spawn((
             Node {
@@ -266,72 +177,14 @@ fn setup_game(mut commands: Commands, target: Res<DirectStreamTarget>) {
         .with_child(Text::new("My Game"));
 }
 
-fn update_game() {}
+fn update() {}
 ```
 
-If a startup system does not need `DirectStreamTarget`, it can be added normally.
-Systems that need the stream camera should run after `DirectStreamSet::Setup`.
-The binary in this repo is now only a demo built with the same chained app style.
+Run startup systems after `DirectStreamSet::Setup` when they need
+`DirectStreamTarget` or the stream camera. Systems that do not depend on the
+stream target can be scheduled normally.
 
-Audio is stream-only. The direct-stream app disables Bevy's built-in speaker
-audio plugin and installs the combined `DirectStreamPlugin`, which wires both
-video capture and stream audio. It provides `StreamAudioClip` assets plus
-`PlayStreamSound` messages for simple one-shot or looping stream sounds:
-
-```rust
-use bevy::prelude::*;
-use direct_stream_game::{PlayStreamSound, StreamAudioClip};
-
-#[derive(Resource)]
-struct HitSound(Handle<StreamAudioClip>);
-
-fn setup_audio(mut commands: Commands, mut clips: ResMut<Assets<StreamAudioClip>>) {
-    let samples = vec![0.0; 48_000 / 10];
-    commands.insert_resource(HitSound(clips.add(StreamAudioClip::from_mono_f32(samples, 48_000))));
-}
-
-fn play_hit_sound(sound: Res<HitSound>, mut sounds: MessageWriter<PlayStreamSound>) {
-    sounds.write(PlayStreamSound::once(sound.0.clone()).with_volume(0.5));
-}
-```
-
-For lower-level engines or generated audio, systems can also write directly to
-`DirectStreamAudioTarget` with `push_stereo_f32` or `push_mono_f32`. The stream
-target expects `48_000 Hz`, stereo, `f32` samples in `[-1.0, 1.0]`; clips with
-other sample rates are resampled by the lightweight stream mixer.
-
-Chat command routing lives in the stream plugin. Register a command once on the
-app, then write the handler as a normal Bevy system that receives
-`In<TwitchChatCommand>`. The command includes parsed arguments, display name,
-login name, roles, and optional message ID.
-
-```rust
-use bevy::prelude::*;
-use bevy::ecs::system::In;
-use direct_stream_game::{direct_stream_app, TwitchChatCommand, TwitchChatSender, TwitchCommandAppExt};
-
-fn main() {
-    direct_stream_app()
-        .add_twitch_command("boing", handle_boing)
-        .add_systems(Startup, setup)
-        .run();
-}
-
-fn setup() {}
-
-fn handle_boing(In(command): In<TwitchChatCommand>, chat: Option<Res<TwitchChatSender>>) {
-    if command.roles.broadcaster || command.roles.moderator {
-        if let Some(chat) = chat {
-            chat.send(format!("Boing accepted from {}!", command.display_name));
-        }
-    }
-}
-```
-
-## Migrating A Bevy Game
-
-For an existing Bevy game, replace the app bootstrap with the direct-stream app
-shell, then add your normal game systems and plugins back onto it.
+### Migrating An Existing Bevy Game
 
 Before:
 
@@ -361,58 +214,344 @@ fn main() {
 }
 ```
 
-If the game renders UI, attach UI roots to the stream camera:
+UI should be attached to the stream camera with `UiTargetCamera(target.camera)`.
+Camera-heavy 2D/3D games may need an adapter so their main camera renders to
+`DirectStreamTarget.image` or is replaced by the provided stream camera.
+
+## Stream Audio
+
+The app disables Bevy's normal speaker audio plugin. Audio is sent to the stream
+through `DirectStreamAudioTarget`.
+
+Simple clip playback:
 
 ```rust
 use bevy::prelude::*;
-use direct_stream_game::DirectStreamTarget;
+use direct_stream_game::{PlayStreamSound, StreamAudioClip};
 
-fn setup(mut commands: Commands, target: Res<DirectStreamTarget>) {
-    commands.spawn((
-        Node {
-            width: percent(100),
-            height: percent(100),
-            ..default()
-        },
-        UiTargetCamera(target.camera),
-    ));
+#[derive(Resource)]
+struct HitSound(Handle<StreamAudioClip>);
+
+fn setup_audio(mut commands: Commands, mut clips: ResMut<Assets<StreamAudioClip>>) {
+    let samples = vec![0.0; 48_000 / 10];
+    let clip = StreamAudioClip::from_mono_f32(samples, 48_000);
+    commands.insert_resource(HitSound(clips.add(clip)));
+}
+
+fn play_hit(sound: Res<HitSound>, mut sounds: MessageWriter<PlayStreamSound>) {
+    sounds.write(PlayStreamSound::once(sound.0.clone()).with_volume(0.5));
 }
 ```
 
-Run modes are unchanged:
+You can also load WAV files with `StreamAudioClip::from_wav_file`. The mixer
+handles common WAV formats and caches the decode path per file. Lower-level
+audio engines can push samples directly into `DirectStreamAudioTarget` with
+`push_stereo_f32` or `push_mono_f32`.
+
+The stream target expects `48_000 Hz`, stereo, `f32` samples in `[-1.0, 1.0]`.
+Custom-host output currently sends browser audio as 8 kHz mono μ-law to keep
+bandwidth low.
+
+## Chat Commands
+
+Register commands with `TwitchCommandAppExt`. The same command handler is used
+for Twitch IRC commands and local custom-host chat commands.
+
+```rust
+use bevy::ecs::system::In;
+use bevy::prelude::*;
+use direct_stream_game::{
+    direct_stream_app, TwitchChatCommand, TwitchChatSender, TwitchCommandAppExt,
+};
+
+fn main() {
+    direct_stream_app()
+        .add_twitch_command("boing", handle_boing)
+        .run();
+}
+
+fn handle_boing(In(command): In<TwitchChatCommand>, chat: Option<Res<TwitchChatSender>>) {
+    if let Some(chat) = chat {
+        chat.send(format!("Boing, {}!", command.display_name));
+    }
+}
+```
+
+`TwitchChatCommand` includes:
+
+- `user`
+- `display_name`
+- `command`
+- `args`
+- `roles`
+- `message_id`
+
+Local custom-host users receive generated names such as `BrightDragon-A1` based
+on a hash of the viewer identity. The active app session keeps a recent chat
+history and a generated-name cache. The stats window **Purge Chat** button
+clears the current local chat feed.
+
+## Twitch Setup
+
+Copy the example config:
 
 ```powershell
-cargo run -- --stats-window
+Copy-Item twitch.example.toml twitch.toml
+notepad twitch.toml
 ```
 
-In stats mode, streaming starts only when the Start button is pressed. The old
-`--twitch` flag is accepted for compatibility but intentionally does not
-auto-start the stream.
+Important fields:
 
-The current API is easiest for UI-first or explicitly stream-camera-driven games.
-Camera-heavy 2D/3D games can still migrate, but they may need one more adapter
-step so their main camera renders into `DirectStreamTarget.image` or is replaced
-with the provided stream camera. That helper layer is the next natural API
-improvement.
+```toml
+channel = "your_channel_name"
+chat_bot_username = "your_bot_login"
+chat_oauth_token = "oauth:your_chat_oauth_token_here"
+ingest_server = "rtmp://live.twitch.tv/app"
+stream_key = "live_your_stream_key_here"
+bandwidth_test = true
+```
 
-## Current Stream Shape
+Notes:
+
+- `stream_key` is the RTMP credential.
+- `channel` is used for Twitch chat commands.
+- `chat_bot_username` and `chat_oauth_token` are only needed if the app should
+  reply in Twitch chat.
+- With `bandwidth_test = true`, the app appends Twitch's `bandwidthtest=true`
+  query so you can test in Twitch Inspector without going live.
+- Streaming starts only from the stats-window Start button.
+
+Twitch output currently targets `320x240 @ 15fps` with a `350 kbps` H.264 video
+target and AAC audio. The sink prefers `libopenh264`, then falls back to
+Media Foundation `h264_mf`.
+
+## Custom Browser Hosting
+
+Local custom host:
+
+```powershell
+cargo run --bin DirectStreamGame -- --stats-window --custom-host --prebaked
+```
+
+Public hosting layout used by this project:
 
 ```text
-Bevy game -> 320x240 offscreen GPU texture -> throttled GPU readback -> latest-frame hub
+humanbeangames.com
+  Cloudflare Pages landing page
 
-Local preview:
-latest-frame hub -> FFmpeg MJPEG encoder -> multipart HTTP stream -> Chrome
+stream.humanbeangames.com
+  Cloudflare Pages static player
 
-Twitch:
-latest-frame hub -> clocked 15fps RTMP thread -> H.264 video + AAC audio -> FLV/RTMP
+game.humanbeangames.com
+  Cloudflare Tunnel to http://localhost:8080 on the machine running the game
 ```
 
-The capture side allows only one outstanding GPU readback at a time. In Twitch
-mode, readback updates the latest available frame and the RTMP thread sends on a
-stable stream clock, repeating the newest frame when necessary. This keeps memory
-bounded while giving Twitch a steady packet cadence.
+Export the static stream player:
 
-For LGPL-only FFmpeg builds, be careful not to depend on GPL encoders such as
-`libx264`. The recommended vcpkg setup enables `openh264`, which is not GPL and
-works with CPU frames. The D3D12VA H.264 encoder is intentionally not used here
-because it accepts D3D12 surfaces rather than CPU pixel buffers.
+```powershell
+cargo run --bin ipsc_export_static_stream
+```
+
+Upload the contents of:
+
+```text
+dist/humanbeangames_stream
+```
+
+to the `stream.humanbeangames.com` Pages/Worker project.
+
+Export the dummy landing page from:
+
+```text
+dist/humanbeangames
+```
+
+The landing page embeds `https://stream.humanbeangames.com`. The static stream
+page talks to `https://game.humanbeangames.com` for:
+
+```text
+/status.json
+/palette.bin
+/audio.pcm
+/local-chat
+/local-chat-feed
+```
+
+Because the player is static, `stream.humanbeangames.com` can show **Not Online**
+even when the Rust game app is closed. The raw backend hostname may show a
+Cloudflare tunnel error when the app is down; that is expected.
+
+## IPSC Video Format
+
+IPSC is an indexed-pixel live stream format for tiny browser-playable games. It
+is closer to a live state-sync stream than a GIF.
+
+Stream header:
+
+```text
+magic:       [u8; 4] = b"IPSC"
+version:     u8
+width:       u16
+height:      u16
+tile_size:   u8 = 8
+palette_len: u16
+palette:     [rgba; palette_len]
+```
+
+Each frame is length-prefixed by a little-endian `u32`. Frame body:
+
+```text
+frame_type:  u8   // 0 = keyframe, 1 = delta
+frame_index: u32
+payload_len: u32
+payload:     [u8; payload_len]
+```
+
+Keyframes are raw indexed pixels: `width * height` bytes.
+
+Delta frames contain an 8x8 tile-change bitmask followed by tile payloads for
+changed tiles only. The encoder chooses the smallest tile representation:
+
+```text
+Skipped   unchanged tile, no payload
+Raw       64 palette indices
+Solid     one palette index
+RLE       row-major color/length runs
+Span      changed spans inside the old tile
+XorRLE    row-major XOR/length runs against the old tile
+```
+
+Custom-host recordings are written to:
+
+```text
+recordings/custom-*.ipsc
+```
+
+Replay a recording:
+
+```powershell
+cargo run --bin ipsc_player -- recordings\custom-1234567890.ipsc
+```
+
+The player serves `http://127.0.0.1:8090`.
+
+## Palette And Image Tools
+
+The default palette is:
+
+```text
+src/default_pallette/default_pallette.toml
+```
+
+Custom-host mode uses live OKLab/OKLCH palette matching by default. Pass
+`--prebaked` to use a sibling `.ipsmap` direct lookup table:
+
+```powershell
+cargo run --release --bin DirectStreamGame -- --custom-host --prebaked --palette-config=palette.toml
+```
+
+The `.ipsmap` file is a 16 MB direct sRGB-to-palette lookup table. It is only
+accepted when its hash matches the palette colours and matching weights.
+
+Combined browser lab:
+
+```powershell
+cargo run --bin ipsc_lab
+```
+
+Open:
+
+```text
+http://127.0.0.1:8092
+```
+
+The lab has Palette and Converter tabs. Palette generation can export:
+
+```text
+palette.toml
+palette.ipsi
+palette.ipsmap
+```
+
+The converter tab uses the current Palette Lab palette automatically.
+
+Export the static lab:
+
+```powershell
+cargo run --bin ipsc_export_static_lab
+```
+
+Upload the contents of:
+
+```text
+dist/ipsc_lab
+```
+
+to a static host such as Cloudflare Pages.
+
+CLI PNG to IPSI conversion:
+
+```powershell
+cargo run --bin ipsc_png_to_ipsi -- input.png output.ipsi palette.toml
+cargo run --bin ipsc_png_to_ipsi -- input.png output.ipsi --size 128x128
+cargo run --bin ipsc_png_to_ipsi -- input.png output.ipsi --no-dither
+```
+
+View IPSI still images:
+
+```powershell
+cargo run --bin ipsc_image_viewer -- assets\palette.ipsi
+```
+
+## Project Structure
+
+Key library modules:
+
+```text
+src/app.rs             app shell and plugin setup
+src/plugin.rs          DirectStreamPlugin
+src/capture.rs         GPU readback
+src/frames.rs          raw frame hubs
+src/palette.rs         IPSC encoder
+src/audio.rs           stream audio mixer
+src/chat.rs            Twitch/local chat and command routing
+src/web.rs             local HTTP server and browser player HTML
+src/stream_control.rs  stats-window controls
+src/scene.rs           stream target and stats UI
+src/twitch.rs          RTMP/H.264/AAC sink
+src/demo.rs            demo-only game scene/audio/video
+```
+
+Tools:
+
+```text
+src/bin/ipsc_lab.rs
+src/bin/ipsc_palette_lab.rs
+src/bin/ipsc_png_converter_lab.rs
+src/bin/ipsc_export_static_lab.rs
+src/bin/ipsc_export_static_stream.rs
+src/bin/ipsc_player.rs
+src/bin/ipsc_image_viewer.rs
+src/bin/ipsc_png_to_ipsi.rs
+```
+
+## Current Caveats
+
+- The custom host is a prototype server using a small hand-written HTTP layer.
+- Local chat moderation is in-memory and session-scoped.
+- Static player deployment currently assumes `game.humanbeangames.com` as the
+  backend origin unless you pass another origin to `ipsc_export_static_stream`.
+- The demo video player is intentionally simple and demo-only. It decodes on the
+  main thread and is best tested with small H.264 MP4 files.
+- Twitch scaling/filtering is controlled by Twitch/browser playback, so pixel
+  art may be blurred there. The custom browser player controls canvas filtering.
+
+## Checks
+
+Useful local checks:
+
+```powershell
+cargo check --bin DirectStreamGame
+cargo check --bin ipsc_lab --bin ipsc_export_static_stream
+cargo test --lib
+```

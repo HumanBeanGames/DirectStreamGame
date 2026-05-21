@@ -390,9 +390,11 @@ fn stream_palette(
         return;
     }
 
-    let Some(keyframe) =
-        frame_hub
-            .wait_for_delayed_keyframe(CUSTOM_STREAM_SERVER_DELAY, &stats, || active.is_active())
+    stats.with_mut(|stats| stats.custom_stage = "waiting for stream frame");
+    let Some(start_frame) =
+        frame_hub.wait_for_delayed_start_frame(CUSTOM_STREAM_SERVER_DELAY, &stats, || {
+            active.is_active()
+        })
     else {
         stats.with_mut(|stats| stats.stream_clients = stats.stream_clients.saturating_sub(1));
         return;
@@ -405,11 +407,16 @@ fn stream_palette(
         stats.with_mut(|stats| stats.stream_clients = stats.stream_clients.saturating_sub(1));
         return;
     };
-    let mut last_sequence = keyframe.sequence;
-    let mut last_sent_framebuffer = Some(keyframe.framebuffer.clone());
+    let start_packet = encode_palette_batch_packets(None, std::slice::from_ref(&start_frame));
+    let Some(start_packet_bytes) = start_packet.packets.first() else {
+        stats.with_mut(|stats| stats.stream_clients = stats.stream_clients.saturating_sub(1));
+        return;
+    };
+    let mut last_sequence = start_frame.sequence;
+    let mut last_sent_framebuffer = start_packet.last_framebuffer.clone();
     if stream.write_all(&stream_header).is_err()
         || write_palette_cache_reset(&mut stream).is_err()
-        || write_palette_packet(&mut stream, &keyframe.frame).is_err()
+        || write_palette_packet(&mut stream, start_packet_bytes).is_err()
     {
         stats.with_mut(|stats| stats.stream_clients = stats.stream_clients.saturating_sub(1));
         return;
@@ -418,8 +425,9 @@ fn stream_palette(
     stats.with_mut(|stats| {
         stats.custom_frames_sent += 1;
         stats.custom_keyframes_sent += 1;
-        stats.custom_bytes_sent += (8 + keyframe.frame.len()) as u64;
-        stats.latest_frame_bytes = keyframe.frame.len();
+        stats.custom_bytes_sent += (8 + start_packet_bytes.len()) as u64;
+        stats.latest_frame_bytes = start_packet_bytes.len();
+        stats.custom_stage = "streaming";
         stats.record_custom_frame_sent();
     });
 

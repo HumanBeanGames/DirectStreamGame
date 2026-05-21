@@ -175,7 +175,7 @@ impl PaletteFrameHub {
         latest.stream_header.clone()
     }
 
-    pub(crate) fn wait_for_delayed_keyframe(
+    pub(crate) fn wait_for_delayed_start_frame(
         &self,
         delay: Duration,
         stats: &SharedStats,
@@ -195,12 +195,12 @@ impl PaletteFrameHub {
                 .history
                 .iter()
                 .rev()
-                .find(|entry| entry.packet.is_keyframe && entry.captured_at <= cutoff)
+                .find(|entry| entry.captured_at <= cutoff)
             {
                 return Some(entry.packet.clone());
             }
 
-            let deadline = next_keyframe_deadline(&latest.history, delay, now);
+            let deadline = next_any_frame_deadline(&latest.history, delay, now);
             latest = wait_for_next_palette_deadline(ready, latest, deadline, Some(stats))?;
         }
     }
@@ -308,14 +308,13 @@ fn record_palette_wait(stats: Option<&SharedStats>, timed_out: bool) {
     }
 }
 
-fn next_keyframe_deadline(
+fn next_any_frame_deadline(
     history: &VecDeque<PaletteFrameEntry>,
     delay: Duration,
     now: Instant,
 ) -> Option<Duration> {
     history
         .iter()
-        .filter(|entry| entry.packet.is_keyframe)
         .map(|entry| frame_deadline_wait(entry, delay, now))
         .min()
 }

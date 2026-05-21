@@ -1,28 +1,24 @@
 use crate::{
-    frames::RawFrame,
-    palette_lut::{
-        PaletteConfig, PaletteLookup, PaletteMatching, load_lookup, load_palette_config,
-        sibling_lut_path,
-    },
+    frames::{IndexedFrame, RawFrame},
+    palette_lut::{PaletteConfig, PaletteLookup, PaletteMatching, load_palette_config},
     stats::SharedStats,
     stream_control::CustomStreamState,
 };
 use crossbeam_channel::Receiver;
 use std::{
-    collections::VecDeque,
-    fs::{self, File},
-    io::Write,
+    collections::{HashMap, VecDeque},
     path::Path,
     sync::{Arc, Condvar, Mutex},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 const CODEC_MAGIC: &[u8; 4] = b"IPSC";
 const CODEC_VERSION: u8 = 1;
 const TILE_SIZE: usize = 8;
+const TILE_CACHE_LIMIT: usize = 4096;
 const KEYFRAME_INTERVAL: u32 = 25;
-const FRAME_HISTORY_SECONDS: u64 = 3;
+const FRAME_HISTORY_SECONDS: u64 = 60;
 const OKLCH_HUE_COUNT: usize = 20;
 const OKLCH_HUE_OFFSET_DEGREES: f32 = 29.233885;
 const OKLCH_LIGHTNESS_LEVELS: [f32; 16] = [
@@ -48,6 +44,21 @@ impl Default for PaletteBias {
     }
 }
 
+pub(crate) fn load_palette_runtime(path: impl AsRef<Path>) -> (Vec<[u8; 4]>, PaletteBias) {
+    let palette_config = load_palette_config(path.as_ref()).unwrap_or_else(|err| {
+        eprintln!("Could not load palette.toml, using default palette: {err}");
+        PaletteConfig {
+            colors: default_palette(),
+            matching: PaletteMatching::default(),
+        }
+    });
+
+    (
+        palette_config.colors,
+        PaletteBias::from(palette_config.matching),
+    )
+}
+
 impl From<PaletteMatching> for PaletteBias {
     fn from(matching: PaletteMatching) -> Self {
         Self {
@@ -68,7 +79,7 @@ impl From<PaletteBias> for PaletteMatching {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, bevy::prelude::Resource)]
 pub(crate) struct SharedPaletteBias(Arc<Mutex<PaletteBias>>);
 
 impl SharedPaletteBias {
@@ -97,16 +108,23 @@ struct LatestPaletteFrame {
     sequence: u64,
     stream_header: Option<Arc<Vec<u8>>>,
     frame: Option<Arc<Vec<u8>>>,
-    latest_keyframe: Option<(u64, Arc<Vec<u8>>)>,
+    latest_keyframe: Option<PaletteFramePacket>,
     history: VecDeque<PaletteFrameEntry>,
 }
 
 #[derive(Clone)]
+pub(crate) struct PaletteFramePacket {
+    pub(crate) sequence: u64,
+    pub(crate) frame: Arc<Vec<u8>>,
+    pub(crate) framebuffer: Arc<Framebuffer>,
+    pub(crate) is_keyframe: bool,
+    pub(crate) frame_index: u32,
+}
+
+#[derive(Clone)]
 struct PaletteFrameEntry {
-    sequence: u64,
-    published_at: Instant,
-    frame: Arc<Vec<u8>>,
-    is_keyframe: bool,
+    captured_at: Instant,
+    packet: PaletteFramePacket,
 }
 
 impl PaletteFrameHub {
@@ -116,22 +134,35 @@ impl PaletteFrameHub {
         }
     }
 
-    fn publish(&self, stream_header: Vec<u8>, frame: Vec<u8>, is_keyframe: bool) {
+    fn publish(
+        &self,
+        stream_header: Vec<u8>,
+        frame: Vec<u8>,
+        framebuffer: Framebuffer,
+        is_keyframe: bool,
+        frame_index: u32,
+        captured_at: Instant,
+    ) {
         let (lock, ready) = &*self.inner;
         if let Ok(mut latest) = lock.lock() {
             latest.sequence += 1;
             let frame = Arc::new(frame);
+            let framebuffer = Arc::new(framebuffer);
+            let packet = PaletteFramePacket {
+                sequence: latest.sequence,
+                frame: frame.clone(),
+                framebuffer,
+                is_keyframe,
+                frame_index,
+            };
             latest.stream_header = Some(Arc::new(stream_header));
             latest.frame = Some(frame.clone());
             if is_keyframe {
-                latest.latest_keyframe = Some((latest.sequence, frame.clone()));
+                latest.latest_keyframe = Some(packet.clone());
             }
-            let sequence = latest.sequence;
             latest.history.push_back(PaletteFrameEntry {
-                sequence,
-                published_at: Instant::now(),
-                frame,
-                is_keyframe,
+                captured_at,
+                packet,
             });
             prune_palette_history(&mut latest.history);
             ready.notify_all();
@@ -144,50 +175,178 @@ impl PaletteFrameHub {
         latest.stream_header.clone()
     }
 
-    pub(crate) fn wait_for_delayed_keyframe(&self, delay: Duration) -> Option<(u64, Arc<Vec<u8>>)> {
+    pub(crate) fn wait_for_delayed_keyframe(
+        &self,
+        delay: Duration,
+        stats: &SharedStats,
+        should_continue: impl Fn() -> bool,
+    ) -> Option<PaletteFramePacket> {
         let (lock, ready) = &*self.inner;
         let mut latest = lock.lock().ok()?;
 
         loop {
-            let cutoff = Instant::now()
-                .checked_sub(delay)
-                .unwrap_or_else(Instant::now);
+            if !should_continue() {
+                return None;
+            }
+
+            let now = Instant::now();
+            let cutoff = now.checked_sub(delay).unwrap_or(now);
             if let Some(entry) = latest
                 .history
                 .iter()
                 .rev()
-                .find(|entry| entry.is_keyframe && entry.published_at <= cutoff)
+                .find(|entry| entry.packet.is_keyframe && entry.captured_at <= cutoff)
             {
-                return Some((entry.sequence, entry.frame.clone()));
+                return Some(entry.packet.clone());
             }
 
-            latest = ready.wait(latest).ok()?;
+            let deadline = next_keyframe_deadline(&latest.history, delay, now);
+            latest = wait_for_next_palette_deadline(ready, latest, deadline, Some(stats))?;
         }
     }
 
-    pub(crate) fn wait_for_delayed_frame_after(
+    #[cfg(test)]
+    fn wait_for_delayed_frame_after(
         &self,
         last_sequence: u64,
         delay: Duration,
-    ) -> Option<(u64, Arc<Vec<u8>>)> {
+        stats: &SharedStats,
+        should_continue: impl Fn() -> bool,
+    ) -> Option<PaletteFramePacket> {
         let (lock, ready) = &*self.inner;
         let mut latest = lock.lock().ok()?;
 
         loop {
-            let cutoff = Instant::now()
-                .checked_sub(delay)
-                .unwrap_or_else(Instant::now);
+            if !should_continue() {
+                return None;
+            }
+
+            let now = Instant::now();
+            let cutoff = now.checked_sub(delay).unwrap_or(now);
             if let Some(entry) = latest
                 .history
                 .iter()
-                .find(|entry| entry.sequence > last_sequence && entry.published_at <= cutoff)
+                .find(|entry| entry.packet.sequence > last_sequence && entry.captured_at <= cutoff)
             {
-                return Some((entry.sequence, entry.frame.clone()));
+                return Some(entry.packet.clone());
             }
 
-            latest = ready.wait(latest).ok()?;
+            let deadline = next_frame_deadline_after(&latest.history, last_sequence, delay, now);
+            latest = wait_for_next_palette_deadline(ready, latest, deadline, Some(stats))?;
         }
     }
+
+    pub(crate) fn wait_for_delayed_frame_batch_after(
+        &self,
+        last_sequence: u64,
+        delay: Duration,
+        target_frames: usize,
+        stats: &SharedStats,
+        should_continue: impl Fn() -> bool,
+    ) -> Option<Vec<PaletteFramePacket>> {
+        let (lock, ready) = &*self.inner;
+        let mut latest = lock.lock().ok()?;
+        let target_frames = target_frames.max(1);
+
+        loop {
+            if !should_continue() {
+                return None;
+            }
+
+            let now = Instant::now();
+            let cutoff = now.checked_sub(delay).unwrap_or(now);
+            let frames = delayed_frames_after(&latest.history, last_sequence, cutoff);
+            if frames.len() >= target_frames {
+                return Some(frames.into_iter().take(target_frames).collect());
+            }
+
+            let deadline = if frames.is_empty() {
+                next_frame_deadline_after(&latest.history, last_sequence, delay, now)
+            } else {
+                None
+            };
+            latest = wait_for_next_palette_deadline(ready, latest, deadline, Some(stats))?;
+        }
+    }
+}
+
+fn wait_for_next_palette_deadline<'a>(
+    ready: &Condvar,
+    latest: std::sync::MutexGuard<'a, LatestPaletteFrame>,
+    deadline_wait: Option<Duration>,
+    stats: Option<&SharedStats>,
+) -> Option<std::sync::MutexGuard<'a, LatestPaletteFrame>> {
+    let Some(wait_duration) = deadline_wait else {
+        let (latest, result) = ready
+            .wait_timeout(latest, Duration::from_millis(100))
+            .ok()?;
+        record_palette_wait(stats, result.timed_out());
+        return Some(latest);
+    };
+
+    let (latest, result) = ready
+        .wait_timeout(
+            latest,
+            wait_duration
+                .max(Duration::from_millis(1))
+                .min(Duration::from_millis(100)),
+        )
+        .ok()?;
+    record_palette_wait(stats, result.timed_out());
+    Some(latest)
+}
+
+fn record_palette_wait(stats: Option<&SharedStats>, timed_out: bool) {
+    if let Some(stats) = stats {
+        stats.with_mut(|stats| {
+            if timed_out {
+                stats.custom_sender_wait_timeouts += 1;
+            } else {
+                stats.custom_sender_wait_wakeups += 1;
+            }
+        });
+    }
+}
+
+fn next_keyframe_deadline(
+    history: &VecDeque<PaletteFrameEntry>,
+    delay: Duration,
+    now: Instant,
+) -> Option<Duration> {
+    history
+        .iter()
+        .filter(|entry| entry.packet.is_keyframe)
+        .map(|entry| frame_deadline_wait(entry, delay, now))
+        .min()
+}
+
+fn next_frame_deadline_after(
+    history: &VecDeque<PaletteFrameEntry>,
+    last_sequence: u64,
+    delay: Duration,
+    now: Instant,
+) -> Option<Duration> {
+    history
+        .iter()
+        .filter(|entry| entry.packet.sequence > last_sequence)
+        .map(|entry| frame_deadline_wait(entry, delay, now))
+        .min()
+}
+
+fn delayed_frames_after(
+    history: &VecDeque<PaletteFrameEntry>,
+    last_sequence: u64,
+    cutoff: Instant,
+) -> Vec<PaletteFramePacket> {
+    history
+        .iter()
+        .filter(|entry| entry.packet.sequence > last_sequence && entry.captured_at <= cutoff)
+        .map(|entry| entry.packet.clone())
+        .collect()
+}
+
+fn frame_deadline_wait(entry: &PaletteFrameEntry, delay: Duration, now: Instant) -> Duration {
+    (entry.captured_at + delay).saturating_duration_since(now)
 }
 
 fn prune_palette_history(history: &mut VecDeque<PaletteFrameEntry>) {
@@ -196,14 +355,14 @@ fn prune_palette_history(history: &mut VecDeque<PaletteFrameEntry>) {
         .unwrap_or_else(Instant::now);
     while history
         .front()
-        .is_some_and(|entry| entry.published_at < cutoff && history.len() > 1)
+        .is_some_and(|entry| entry.captured_at < cutoff && history.len() > 1)
     {
         history.pop_front();
     }
 }
 
 pub(crate) fn start_palette_preview_encoder(
-    receiver: Receiver<RawFrame>,
+    receiver: Receiver<IndexedFrame>,
     frame_hub: PaletteFrameHub,
     stats: SharedStats,
     palette_bias: SharedPaletteBias,
@@ -212,87 +371,51 @@ pub(crate) fn start_palette_preview_encoder(
     use_prebaked_lookup: bool,
 ) {
     let palette_config_path = palette_config_path.as_ref().to_owned();
-    let palette_config = load_palette_config(&palette_config_path).unwrap_or_else(|err| {
-        eprintln!("Could not load palette.toml, using default palette: {err}");
-        PaletteConfig {
-            colors: default_palette(),
-            matching: PaletteMatching::default(),
-        }
-    });
-    palette_bias.set(PaletteBias::from(palette_config.matching));
+    let (palette_colors, palette_matching) = load_palette_runtime(&palette_config_path);
+    palette_bias.set(palette_matching);
 
-    let lookup = if use_prebaked_lookup {
-        load_lookup(sibling_lut_path(&palette_config_path), &palette_config)
-            .map_err(|err| {
-                eprintln!("Palette LUT unavailable; using live OKLCH matching: {err}");
-                err
-            })
-            .ok()
-    } else {
-        None
-    };
+    let _ = use_prebaked_lookup;
 
     thread::spawn(move || {
-        let mut encoder = IndexedPixelEncoder::new(
-            palette_config.colors,
-            PaletteBias::from(palette_config.matching),
-            lookup,
-        );
-        let mut recording = None;
-        let mut recorded_header = false;
+        let mut publisher = IndexedFramePublisher::new(palette_colors);
 
         for raw_frame in receiver {
             if !active.is_active() {
                 continue;
             }
+            let captured_at = raw_frame.captured_at;
+            let pipeline_started = Instant::now();
             stats.with_mut(|stats| stats.frames_read += 1);
-            match encoder.encode(&raw_frame, palette_bias.get()) {
+            let encode_started = Instant::now();
+            match publisher.publishable_frame(raw_frame) {
                 Ok(encoded) => {
-                    if recording.is_none() {
-                        match create_recording_file() {
-                            Ok((file, path)) => {
-                                stats.with_mut(|stats| stats.custom_recording_path = path);
-                                recording = Some(file);
-                            }
-                            Err(err) => {
-                                eprintln!("Could not create custom stream recording: {err}")
-                            }
-                        }
-                    }
-
-                    if let Some(recording) = recording.as_mut() {
-                        if !recorded_header {
-                            let _ = recording.write_all(&encoded.stream_header);
-                            recorded_header = true;
-                        }
-                        let _ = recording.write_all(&(encoded.frame.len() as u32).to_le_bytes());
-                        let _ = recording.write_all(&encoded.frame);
-                    }
-
-                    let bytes = encoded.frame.len();
+                    let encode_ms = encode_started.elapsed().as_secs_f64() * 1000.0;
+                    let stream_header = encoded.stream_header.clone();
                     let is_keyframe = encoded.is_keyframe;
-                    let tile_counts = encoded.tile_counts;
+                    let frame_index = encoded.frame_index;
+
                     if !active.is_active() {
                         continue;
                     }
-                    frame_hub.publish(encoded.stream_header.clone(), encoded.frame, is_keyframe);
+
+                    let publish_started = Instant::now();
+                    frame_hub.publish(
+                        stream_header.clone(),
+                        encoded.frame,
+                        encoded.framebuffer,
+                        is_keyframe,
+                        frame_index,
+                        captured_at,
+                    );
+                    let publish_ms = publish_started.elapsed().as_secs_f64() * 1000.0;
+                    let total_ms = pipeline_started.elapsed().as_secs_f64() * 1000.0;
                     stats.with_mut(|stats| {
                         stats.frames_encoded += 1;
-                        stats.custom_frames_sent += 1;
-                        stats.custom_bytes_sent += bytes as u64;
-                        if is_keyframe {
-                            stats.custom_keyframes_sent += 1;
-                        } else {
-                            stats.custom_delta_frames_sent += 1;
-                        }
-                        stats.custom_raw_tiles_sent += tile_counts.raw;
-                        stats.custom_solid_tiles_sent += tile_counts.solid;
-                        stats.custom_rle_tiles_sent += tile_counts.rle;
-                        stats.custom_span_tiles_sent += tile_counts.span_delta;
-                        stats.custom_xor_tiles_sent += tile_counts.xor_rle;
-                        stats.custom_skipped_tiles += tile_counts.skipped;
                         stats.custom_stage = "streaming";
-                        stats.latest_frame_bytes = bytes;
+                        stats.record_custom_encode(encode_ms);
+                        stats.record_custom_record(0.0);
+                        stats.record_custom_publish(publish_ms);
+                        stats.record_custom_pipeline(total_ms);
                     });
                 }
                 Err(err) => {
@@ -310,6 +433,7 @@ pub(crate) fn start_palette_preview_encoder(
 struct IndexedPixelEncoder {
     palette: Vec<[u8; 4]>,
     palette_oklab: Vec<Oklab>,
+    exact_palette_indices: Box<[u16]>,
     lookup: Option<PaletteLookup>,
     lookup_matching: PaletteBias,
     previous: Option<Framebuffer>,
@@ -322,18 +446,106 @@ struct IndexedPixelEncoder {
 struct EncodedFrame {
     stream_header: Vec<u8>,
     frame: Vec<u8>,
+    framebuffer: Framebuffer,
     is_keyframe: bool,
-    tile_counts: TileModeCounts,
+    frame_index: u32,
+}
+
+struct IndexedFramePublisher {
+    palette: Vec<[u8; 4]>,
+    frame_index: u32,
+    header: Option<Vec<u8>>,
+    header_width: u32,
+    header_height: u32,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct TileModeCounts {
+    pub(crate) raw: u64,
+    pub(crate) solid: u64,
+    pub(crate) rle: u64,
+    pub(crate) span_delta: u64,
+    pub(crate) xor_rle: u64,
+    pub(crate) cached: u64,
+    pub(crate) skipped: u64,
 }
 
 #[derive(Default)]
-struct TileModeCounts {
-    raw: u64,
-    solid: u64,
-    rle: u64,
-    span_delta: u64,
-    xor_rle: u64,
-    skipped: u64,
+struct TileCache {
+    tiles: Vec<[u8; 64]>,
+    lookup: HashMap<[u8; 64], u16>,
+}
+
+impl IndexedFramePublisher {
+    fn new(palette: Vec<[u8; 4]>) -> Self {
+        Self {
+            palette,
+            frame_index: 0,
+            header: None,
+            header_width: 0,
+            header_height: 0,
+        }
+    }
+
+    fn publishable_frame(&mut self, indexed: IndexedFrame) -> Result<EncodedFrame, String> {
+        let pixel_count = indexed.width as usize * indexed.height as usize;
+        if indexed.indices.len() < pixel_count {
+            return Err("indexed frame is shorter than expected".to_owned());
+        }
+
+        if indexed.width != indexed.height
+            || indexed.width == 0
+            || indexed.width > u8::MAX as u32 + 1
+            || indexed.width as usize % TILE_SIZE != 0
+            || indexed.height as usize % TILE_SIZE != 0
+        {
+            return Err(
+                "IPSC frames must be square, 8-aligned, and no larger than 256x256".to_owned(),
+            );
+        }
+
+        if self.palette.is_empty() || self.palette.len() > 256 {
+            return Err("IPSC palette must contain 1-256 colors".to_owned());
+        }
+
+        if self.header_width != indexed.width || self.header_height != indexed.height {
+            self.frame_index = 0;
+            self.header = Some(stream_header(
+                indexed.width as u16,
+                indexed.height as u16,
+                &self.palette,
+            ));
+            self.header_width = indexed.width;
+            self.header_height = indexed.height;
+        }
+
+        let current = Framebuffer {
+            pixels: indexed.indices,
+            width: indexed.width as usize,
+            height: indexed.height as usize,
+        };
+        let is_keyframe = self.frame_index % KEYFRAME_INTERVAL == 0;
+        let frame_index = self.frame_index;
+        let payload = if is_keyframe {
+            encode_keyframe_raw(&current)
+        } else {
+            Vec::new()
+        };
+        let frame = encode_frame_packet(is_keyframe, frame_index, &payload);
+        self.frame_index = self.frame_index.wrapping_add(1);
+
+        Ok(EncodedFrame {
+            stream_header: self
+                .header
+                .as_ref()
+                .expect("header initialized for current resolution")
+                .clone(),
+            frame,
+            framebuffer: current,
+            is_keyframe,
+            frame_index,
+        })
+    }
 }
 
 impl IndexedPixelEncoder {
@@ -342,6 +554,12 @@ impl IndexedPixelEncoder {
         lookup_matching: PaletteBias,
         lookup: Option<PaletteLookup>,
     ) -> Self {
+        let mut exact_palette_indices = vec![u16::MAX; 1 << 24].into_boxed_slice();
+        for (index, [r, g, b, _]) in palette.iter().enumerate() {
+            exact_palette_indices
+                [((usize::from(*b)) << 16) | ((usize::from(*g)) << 8) | usize::from(*r)] =
+                index as u16;
+        }
         let palette_oklab = palette
             .iter()
             .map(|[r, g, b, _]| rgb_to_oklab(*r, *g, *b))
@@ -349,6 +567,7 @@ impl IndexedPixelEncoder {
         Self {
             palette,
             palette_oklab,
+            exact_palette_indices,
             lookup,
             lookup_matching,
             previous: None,
@@ -360,11 +579,35 @@ impl IndexedPixelEncoder {
     }
 
     fn encode(&mut self, raw: &RawFrame, bias: PaletteBias) -> Result<EncodedFrame, String> {
-        if raw.width != raw.height
-            || raw.width == 0
-            || raw.width > u8::MAX as u32 + 1
-            || raw.width as usize % TILE_SIZE != 0
-            || raw.height as usize % TILE_SIZE != 0
+        let current = self.quantize(raw, bias)?;
+        self.encode_framebuffer(raw.width, raw.height, current)
+    }
+
+    fn encode_indexed(&mut self, indexed: IndexedFrame) -> Result<EncodedFrame, String> {
+        let pixel_count = indexed.width as usize * indexed.height as usize;
+        if indexed.indices.len() < pixel_count {
+            return Err("indexed frame is shorter than expected".to_owned());
+        }
+
+        let current = Framebuffer {
+            pixels: indexed.indices,
+            width: indexed.width as usize,
+            height: indexed.height as usize,
+        };
+        self.encode_framebuffer(indexed.width, indexed.height, current)
+    }
+
+    fn encode_framebuffer(
+        &mut self,
+        width: u32,
+        height: u32,
+        current: Framebuffer,
+    ) -> Result<EncodedFrame, String> {
+        if width != height
+            || width == 0
+            || width > u8::MAX as u32 + 1
+            || width as usize % TILE_SIZE != 0
+            || height as usize % TILE_SIZE != 0
         {
             return Err(
                 "IPSC frames must be square, 8-aligned, and no larger than 256x256".to_owned(),
@@ -375,19 +618,13 @@ impl IndexedPixelEncoder {
             return Err("IPSC palette must contain 1-256 colors".to_owned());
         }
 
-        if self.header_width != raw.width || self.header_height != raw.height {
+        if self.header_width != width || self.header_height != height {
             self.previous = None;
             self.frame_index = 0;
-            self.header = Some(stream_header(
-                raw.width as u16,
-                raw.height as u16,
-                &self.palette,
-            ));
-            self.header_width = raw.width;
-            self.header_height = raw.height;
+            self.header = Some(stream_header(width as u16, height as u16, &self.palette));
+            self.header_width = width;
+            self.header_height = height;
         }
-
-        let current = self.quantize(raw, bias)?;
         let header = self
             .header
             .as_ref()
@@ -395,29 +632,29 @@ impl IndexedPixelEncoder {
             .clone();
         let is_keyframe = self.previous.is_none() || self.frame_index % KEYFRAME_INTERVAL == 0;
 
-        let (payload, tile_counts) = if is_keyframe {
-            (encode_keyframe_raw(&current), TileModeCounts::default())
+        let payload = if is_keyframe {
+            encode_keyframe_raw(&current)
         } else {
-            encode_delta_frame(
+            let (payload, _) = encode_delta_frame(
                 &current,
                 self.previous.as_ref().expect("previous frame exists"),
-            )
+            );
+            payload
         };
 
-        let mut frame = Vec::with_capacity(1 + 4 + 4 + payload.len());
-        frame.push(if is_keyframe { 0 } else { 1 });
-        frame.extend_from_slice(&self.frame_index.to_le_bytes());
-        frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        frame.extend_from_slice(&payload);
+        let frame_index = self.frame_index;
+        let frame = encode_frame_packet(is_keyframe, frame_index, &payload);
 
+        let framebuffer = current.clone();
         self.previous = Some(current);
         self.frame_index = self.frame_index.wrapping_add(1);
 
         Ok(EncodedFrame {
             stream_header: header,
             frame,
+            framebuffer,
             is_keyframe,
-            tile_counts,
+            frame_index,
         })
     }
 
@@ -427,17 +664,19 @@ impl IndexedPixelEncoder {
             return Err("raw frame is shorter than expected".to_owned());
         }
 
-        let pixels = raw
-            .bgra
-            .chunks_exact(4)
-            .take(pixel_count)
-            .map(|pixel| {
-                let b = pixel[0];
-                let g = pixel[1];
-                let r = pixel[2];
+        let mut pixels = Vec::with_capacity(pixel_count);
+        for pixel in raw.bgra.chunks_exact(4).take(pixel_count) {
+            let b = pixel[0];
+            let g = pixel[1];
+            let r = pixel[2];
+            let exact_index = self.exact_palette_indices
+                [((usize::from(b)) << 16) | ((usize::from(g)) << 8) | usize::from(r)];
+            pixels.push(if exact_index != u16::MAX {
+                exact_index as u8
+            } else {
                 self.palette_index(r, g, b, bias)
-            })
-            .collect();
+            });
+        }
 
         Ok(Framebuffer {
             pixels,
@@ -493,6 +732,75 @@ fn stream_header(width: u16, height: u16, palette: &[[u8; 4]]) -> Vec<u8> {
         header.extend_from_slice(color);
     }
     header
+}
+
+fn encode_frame_packet(is_keyframe: bool, frame_index: u32, payload: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(1 + 4 + 4 + payload.len());
+    frame.push(if is_keyframe { 0 } else { 1 });
+    frame.extend_from_slice(&frame_index.to_le_bytes());
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(payload);
+    frame
+}
+
+pub(crate) struct PaletteBatchEncoding {
+    pub(crate) packets: Vec<Vec<u8>>,
+    pub(crate) tile_counts: TileModeCounts,
+    pub(crate) bytes: usize,
+    pub(crate) keyframes: u64,
+    pub(crate) delta_frames: u64,
+    pub(crate) last_framebuffer: Option<Arc<Framebuffer>>,
+}
+
+pub(crate) fn encode_palette_batch_packets(
+    previous_framebuffer: Option<Arc<Framebuffer>>,
+    batch: &[PaletteFramePacket],
+) -> PaletteBatchEncoding {
+    let mut previous = previous_framebuffer;
+    let mut tile_cache = TileCache::default();
+    let mut packets = Vec::with_capacity(batch.len());
+    let mut tile_counts = TileModeCounts::default();
+    let mut bytes = 0usize;
+    let mut keyframes = 0u64;
+    let mut delta_frames = 0u64;
+
+    for packet in batch {
+        let current = packet.framebuffer.as_ref();
+        let encode_as_keyframe = packet.is_keyframe || previous.is_none();
+        let (payload, counts) = if encode_as_keyframe {
+            keyframes += 1;
+            let payload = encode_keyframe_raw(current);
+            tile_cache = TileCache::default();
+            seed_tile_cache_from_frame(current, &mut tile_cache);
+            (payload, TileModeCounts::default())
+        } else {
+            delta_frames += 1;
+            let (payload, counts) = encode_delta_frame_with_tile_cache(
+                current,
+                previous
+                    .as_ref()
+                    .expect("previous framebuffer is available")
+                    .as_ref(),
+                &mut tile_cache,
+            );
+            (payload, counts)
+        };
+
+        tile_counts.add(counts);
+        let frame = encode_frame_packet(encode_as_keyframe, packet.frame_index, &payload);
+        bytes += 4 + frame.len();
+        packets.push(frame);
+        previous = Some(packet.framebuffer.clone());
+    }
+
+    PaletteBatchEncoding {
+        packets,
+        tile_counts,
+        bytes,
+        keyframes,
+        delta_frames,
+        last_framebuffer: previous,
+    }
 }
 
 fn default_palette() -> Vec<[u8; 4]> {
@@ -657,7 +965,7 @@ fn in_srgb_gamut(r: f32, g: f32, b: f32) -> bool {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Framebuffer {
+pub(crate) struct Framebuffer {
     pixels: Vec<u8>,
     width: usize,
     height: usize,
@@ -684,6 +992,24 @@ fn encode_keyframe_raw(frame: &Framebuffer) -> Vec<u8> {
 }
 
 fn encode_delta_frame(current: &Framebuffer, previous: &Framebuffer) -> (Vec<u8>, TileModeCounts) {
+    let mut tile_cache = TileCache::default();
+    encode_delta_frame_impl(current, previous, &mut tile_cache, false)
+}
+
+fn encode_delta_frame_with_tile_cache(
+    current: &Framebuffer,
+    previous: &Framebuffer,
+    tile_cache: &mut TileCache,
+) -> (Vec<u8>, TileModeCounts) {
+    encode_delta_frame_impl(current, previous, tile_cache, true)
+}
+
+fn encode_delta_frame_impl(
+    current: &Framebuffer,
+    previous: &Framebuffer,
+    tile_cache: &mut TileCache,
+    allow_cached_tiles: bool,
+) -> (Vec<u8>, TileModeCounts) {
     let tiles_x = current.width / TILE_SIZE;
     let tiles_y = current.height / TILE_SIZE;
     let tile_count = tiles_x * tiles_y;
@@ -703,9 +1029,15 @@ fn encode_delta_frame(current: &Framebuffer, previous: &Framebuffer) -> (Vec<u8>
             }
 
             set_bit(&mut mask, tile_index);
-            let encoded_tile = encode_best_tile(&current_tile, &previous_tile);
+            let cached = allow_cached_tiles
+                .then(|| tile_cache.lookup(&current_tile))
+                .flatten();
+            let encoded_tile = encode_best_tile(&current_tile, &previous_tile, cached);
             counts.record(encoded_tile[0]);
             payload.extend_from_slice(&encoded_tile);
+            if allow_cached_tiles {
+                tile_cache.remember(current_tile);
+            }
         }
     }
 
@@ -714,6 +1046,16 @@ fn encode_delta_frame(current: &Framebuffer, previous: &Framebuffer) -> (Vec<u8>
 }
 
 impl TileModeCounts {
+    fn add(&mut self, other: Self) {
+        self.raw += other.raw;
+        self.solid += other.solid;
+        self.rle += other.rle;
+        self.span_delta += other.span_delta;
+        self.xor_rle += other.xor_rle;
+        self.cached += other.cached;
+        self.skipped += other.skipped;
+    }
+
     fn record(&mut self, mode: u8) {
         match mode {
             0 => self.raw += 1,
@@ -721,7 +1063,34 @@ impl TileModeCounts {
             2 => self.rle += 1,
             3 => self.span_delta += 1,
             4 => self.xor_rle += 1,
+            5 => self.cached += 1,
             _ => {}
+        }
+    }
+}
+
+impl TileCache {
+    fn lookup(&self, tile: &[u8; 64]) -> Option<u16> {
+        self.lookup.get(tile).copied()
+    }
+
+    fn remember(&mut self, tile: [u8; 64]) {
+        if self.tiles.len() >= TILE_CACHE_LIMIT {
+            return;
+        }
+
+        let index = self.tiles.len() as u16;
+        self.tiles.push(tile);
+        self.lookup.entry(tile).or_insert(index);
+    }
+}
+
+fn seed_tile_cache_from_frame(frame: &Framebuffer, tile_cache: &mut TileCache) {
+    let tiles_x = frame.width / TILE_SIZE;
+    let tiles_y = frame.height / TILE_SIZE;
+    for tile_y in 0..tiles_y {
+        for tile_x in 0..tiles_x {
+            tile_cache.remember(extract_tile(frame, tile_x, tile_y));
         }
     }
 }
@@ -750,9 +1119,10 @@ enum TileMode {
     Rle = 2,
     SpanDelta = 3,
     XorRle = 4,
+    Cached = 5,
 }
 
-fn encode_best_tile(current: &[u8; 64], previous: &[u8; 64]) -> Vec<u8> {
+fn encode_best_tile(current: &[u8; 64], previous: &[u8; 64], cached: Option<u16>) -> Vec<u8> {
     let mut best = encode_raw_tile(current);
 
     if let Some(solid) = encode_solid_tile(current)
@@ -776,7 +1146,21 @@ fn encode_best_tile(current: &[u8; 64], previous: &[u8; 64]) -> Vec<u8> {
         best = xor_rle;
     }
 
+    if let Some(index) = cached {
+        let cached = encode_cached_tile(index);
+        if cached.len() < best.len() {
+            best = cached;
+        }
+    }
+
     best
+}
+
+fn encode_cached_tile(index: u16) -> Vec<u8> {
+    let mut out = Vec::with_capacity(3);
+    out.push(TileMode::Cached as u8);
+    out.extend_from_slice(&index.to_le_bytes());
+    out
 }
 
 fn encode_raw_tile(tile: &[u8; 64]) -> Vec<u8> {
@@ -883,18 +1267,6 @@ fn encode_xor_rle_tile(current: &[u8; 64], previous: &[u8; 64]) -> Vec<u8> {
     out
 }
 
-fn create_recording_file() -> Result<(File, String), String> {
-    fs::create_dir_all("recordings").map_err(|err| err.to_string())?;
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
-    let path = format!("recordings/custom-{stamp}.ipsc");
-    File::create(&path)
-        .map(|file| (file, path))
-        .map_err(|err| err.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -915,15 +1287,24 @@ mod tests {
         current.set_pixel(11, 10, 5);
         current.set_pixel(12, 10, 5);
 
-        let (encoded, counts) = encode_delta_frame(&current, &previous);
+        let mut tile_cache = TileCache::default();
+        seed_tile_cache_from_frame(&previous, &mut tile_cache);
+        let (encoded, counts) =
+            encode_delta_frame_with_tile_cache(&current, &previous, &mut tile_cache);
         assert_eq!(counts.span_delta, 1);
         let decoded = decode_delta_frame_for_test(&previous, &encoded);
         assert_eq!(current, decoded);
 
         previous = current;
-        let (encoded, counts) = encode_delta_frame(&previous, &previous);
+        let (encoded, counts) =
+            encode_delta_frame_with_tile_cache(&previous, &previous, &mut tile_cache);
         assert_eq!(
-            counts.raw + counts.solid + counts.rle + counts.span_delta + counts.xor_rle,
+            counts.raw
+                + counts.solid
+                + counts.rle
+                + counts.span_delta
+                + counts.xor_rle
+                + counts.cached,
             0
         );
         assert_eq!(encoded.len(), 32);
@@ -933,7 +1314,66 @@ mod tests {
     fn best_tile_prefers_solid() {
         let previous = [0u8; 64];
         let current = [7u8; 64];
-        assert_eq!(encode_best_tile(&current, &previous), vec![1, 7]);
+        assert_eq!(encode_best_tile(&current, &previous, None), vec![1, 7]);
+    }
+
+    #[test]
+    fn delta_can_reference_cached_tiles() {
+        let previous = Framebuffer::new(128, 128);
+        let mut current = previous.clone();
+        let mut cached_tile = [0u8; 64];
+        cached_tile[0] = 3;
+        current.set_pixel(0, 0, 3);
+
+        let mut tile_cache = TileCache::default();
+        tile_cache.remember(cached_tile);
+        let (encoded, counts) =
+            encode_delta_frame_with_tile_cache(&current, &previous, &mut tile_cache);
+
+        assert_eq!(counts.cached, 1);
+        assert!(encoded.ends_with(&[TileMode::Cached as u8, 0, 0]));
+    }
+
+    #[test]
+    fn batch_keyframe_resets_cached_tile_indices() {
+        let previous = Arc::new(Framebuffer::new(128, 128));
+        let mut keyframe = Framebuffer::new(128, 128);
+        keyframe.set_pixel(0, 0, 4);
+
+        let mut delta = keyframe.clone();
+        delta.set_pixel(64, 64, 4);
+
+        let batch = vec![
+            PaletteFramePacket {
+                sequence: 1,
+                frame: Arc::new(Vec::new()),
+                framebuffer: Arc::new(keyframe),
+                is_keyframe: true,
+                frame_index: 1,
+            },
+            PaletteFramePacket {
+                sequence: 2,
+                frame: Arc::new(Vec::new()),
+                framebuffer: Arc::new(delta),
+                is_keyframe: false,
+                frame_index: 2,
+            },
+        ];
+
+        let encoded = encode_palette_batch_packets(Some(previous), &batch);
+        assert_eq!(encoded.keyframes, 1);
+        assert_eq!(encoded.delta_frames, 1);
+        assert_eq!(encoded.tile_counts.cached, 1);
+
+        let delta_packet = &encoded.packets[1];
+        let payload_len = u32::from_le_bytes([
+            delta_packet[5],
+            delta_packet[6],
+            delta_packet[7],
+            delta_packet[8],
+        ]) as usize;
+        let payload = &delta_packet[9..9 + payload_len];
+        assert!(payload.ends_with(&[TileMode::Cached as u8, 0, 0]));
     }
 
     #[test]
@@ -954,6 +1394,30 @@ mod tests {
     #[test]
     fn default_palette_has_256_entries() {
         assert_eq!(default_palette().len(), 256);
+    }
+
+    #[test]
+    fn delayed_frame_becomes_available_without_new_publish() {
+        let hub = PaletteFrameHub::new();
+        let stats = SharedStats::new();
+        let delay = Duration::from_millis(25);
+        hub.publish(
+            vec![0],
+            vec![42],
+            Framebuffer::new(128, 128),
+            true,
+            0,
+            Instant::now(),
+        );
+
+        let started = Instant::now();
+        let packet = hub
+            .wait_for_delayed_frame_after(0, delay, &stats, || true)
+            .expect("frame should become eligible after its delay");
+
+        assert_eq!(packet.sequence, 1);
+        assert_eq!(&*packet.frame, &[42]);
+        assert!(started.elapsed() >= delay);
     }
 
     fn decode_delta_frame_for_test(previous: &Framebuffer, bytes: &[u8]) -> Framebuffer {

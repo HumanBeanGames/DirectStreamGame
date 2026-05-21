@@ -7,7 +7,7 @@ use crate::{
         STREAM_WIDTH, WEB_ADDR,
     },
     frames::EncodedFrameHub,
-    palette::PaletteFrameHub,
+    palette::{PaletteFrameHub, encode_palette_batch_packets},
     stats::SharedStats,
     stream_control::CustomStreamState,
 };
@@ -18,7 +18,9 @@ use std::{
     time::Duration,
 };
 
-const CUSTOM_STREAM_DELAY: Duration = Duration::from_secs(1);
+const CUSTOM_STREAM_SERVER_DELAY: Duration = Duration::ZERO;
+const CUSTOM_STREAM_PLAYBACK_BUFFER_SECONDS: f64 = 1.0;
+const CUSTOM_STREAM_BATCH_FRAMES: usize = 30;
 
 #[derive(Clone)]
 pub(crate) enum LocalStreamSource {
@@ -84,8 +86,8 @@ fn handle_web_request(mut stream: TcpStream, source: LocalStreamSource, stats: S
             serve_not_found(stream);
         }
     } else if path.starts_with(PALETTE_STREAM_PATH) {
-        if let LocalStreamSource::Palette { frames, .. } = source {
-            stream_palette(stream, frames, stats);
+        if let LocalStreamSource::Palette { frames, active, .. } = source {
+            stream_palette(stream, frames, stats, active);
         } else {
             serve_not_found(stream);
         }
@@ -361,40 +363,121 @@ fn stream_mjpeg(mut stream: TcpStream, frame_hub: EncodedFrameHub, stats: Shared
     stats.with_mut(|stats| stats.stream_clients = stats.stream_clients.saturating_sub(1));
 }
 
-fn stream_palette(mut stream: TcpStream, frame_hub: PaletteFrameHub, stats: SharedStats) {
+fn stream_palette(
+    mut stream: TcpStream,
+    frame_hub: PaletteFrameHub,
+    stats: SharedStats,
+    active: CustomStreamState,
+) {
+    if !active.is_active() {
+        let body = "stream offline";
+        let response = format!(
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(response.as_bytes());
+        return;
+    }
+
     stats.with_mut(|stats| stats.stream_clients += 1);
-    let header = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n";
+    let stream_fps = active.fps();
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Expose-Headers: X-Stream-Fps, X-Playback-Buffer-Seconds\r\nConnection: close\r\nX-Stream-Fps: {stream_fps}\r\nX-Playback-Buffer-Seconds: {CUSTOM_STREAM_PLAYBACK_BUFFER_SECONDS:.3}\r\n\r\n"
+    );
     if stream.write_all(header.as_bytes()).is_err() {
         stats.with_mut(|stats| stats.stream_clients = stats.stream_clients.saturating_sub(1));
         return;
     }
 
-    let Some((mut last_sequence, keyframe)) =
-        frame_hub.wait_for_delayed_keyframe(CUSTOM_STREAM_DELAY)
+    let Some(keyframe) =
+        frame_hub
+            .wait_for_delayed_keyframe(CUSTOM_STREAM_SERVER_DELAY, &stats, || active.is_active())
     else {
         stats.with_mut(|stats| stats.stream_clients = stats.stream_clients.saturating_sub(1));
         return;
     };
+    if !active.is_active() {
+        stats.with_mut(|stats| stats.stream_clients = stats.stream_clients.saturating_sub(1));
+        return;
+    }
     let Some(stream_header) = frame_hub.stream_header() else {
         stats.with_mut(|stats| stats.stream_clients = stats.stream_clients.saturating_sub(1));
         return;
     };
+    let mut last_sequence = keyframe.sequence;
+    let mut last_sent_framebuffer = Some(keyframe.framebuffer.clone());
     if stream.write_all(&stream_header).is_err()
-        || write_palette_packet(&mut stream, &keyframe).is_err()
+        || write_palette_cache_reset(&mut stream).is_err()
+        || write_palette_packet(&mut stream, &keyframe.frame).is_err()
     {
         stats.with_mut(|stats| stats.stream_clients = stats.stream_clients.saturating_sub(1));
         return;
     }
 
-    while let Some((sequence, packet)) =
-        frame_hub.wait_for_delayed_frame_after(last_sequence, CUSTOM_STREAM_DELAY)
-    {
-        last_sequence = sequence;
-        if write_palette_packet(&mut stream, &packet).is_err() {
+    stats.with_mut(|stats| {
+        stats.custom_frames_sent += 1;
+        stats.custom_keyframes_sent += 1;
+        stats.custom_bytes_sent += (8 + keyframe.frame.len()) as u64;
+        stats.latest_frame_bytes = keyframe.frame.len();
+        stats.record_custom_frame_sent();
+    });
+
+    loop {
+        let Some(batch) = frame_hub.wait_for_delayed_frame_batch_after(
+            last_sequence,
+            CUSTOM_STREAM_SERVER_DELAY,
+            CUSTOM_STREAM_BATCH_FRAMES,
+            &stats,
+            || active.is_active(),
+        ) else {
+            break;
+        };
+        let encoded_batch = encode_palette_batch_packets(last_sent_framebuffer.clone(), &batch);
+        if !active.is_active() || write_palette_batch(&mut stream, &encoded_batch.packets).is_err()
+        {
             break;
         }
+        last_sent_framebuffer = encoded_batch.last_framebuffer.clone();
+        last_sequence = batch
+            .last()
+            .map(|packet| packet.sequence)
+            .unwrap_or(last_sequence);
+        stats.with_mut(|stats| {
+            stats.record_custom_http_batch(batch.len());
+            stats.custom_bytes_sent += (encoded_batch.bytes + 4) as u64;
+            stats.custom_keyframes_sent += encoded_batch.keyframes;
+            stats.custom_delta_frames_sent += encoded_batch.delta_frames;
+            stats.custom_raw_tiles_sent += encoded_batch.tile_counts.raw;
+            stats.custom_solid_tiles_sent += encoded_batch.tile_counts.solid;
+            stats.custom_rle_tiles_sent += encoded_batch.tile_counts.rle;
+            stats.custom_span_tiles_sent += encoded_batch.tile_counts.span_delta;
+            stats.custom_xor_tiles_sent += encoded_batch.tile_counts.xor_rle;
+            stats.custom_cached_tiles_sent += encoded_batch.tile_counts.cached;
+            stats.custom_skipped_tiles += encoded_batch.tile_counts.skipped;
+            stats.latest_frame_bytes = encoded_batch.bytes / batch.len().max(1);
+            for _ in 0..encoded_batch.packets.len() {
+                stats.custom_frames_sent += 1;
+                stats.record_custom_frame_sent();
+            }
+        });
     }
     stats.with_mut(|stats| stats.stream_clients = stats.stream_clients.saturating_sub(1));
+}
+
+fn write_palette_batch(stream: &mut TcpStream, batch: &[Vec<u8>]) -> std::io::Result<()> {
+    let batch_len: usize = 4 + batch.iter().map(|packet| 4 + packet.len()).sum::<usize>();
+    let mut bytes = Vec::with_capacity(batch_len);
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    for packet in batch {
+        bytes.extend_from_slice(&(packet.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(packet);
+    }
+    stream.write_all(&bytes)
+}
+
+fn write_palette_cache_reset(stream: &mut TcpStream) -> std::io::Result<()> {
+    stream.write_all(&0u32.to_le_bytes())
 }
 
 fn write_palette_packet(stream: &mut TcpStream, packet: &[u8]) -> std::io::Result<()> {
@@ -563,10 +646,18 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     let height = 0;
     let tileSize = 8;
     let palette = [];
+    let tileCache = [];
     let framebuffer = new Uint8Array(0);
     let image = ctx.createImageData(1, 1);
     let pending = new Uint8Array(0);
+    let frameQueue = [];
     let streamReady = false;
+    let streamFps = 5;
+    let frameIntervalMs = 1000 / streamFps;
+    let playbackBufferSeconds = 1;
+    let playbackRunning = false;
+    let playbackStarted = false;
+    let nextPlaybackAt = 0;
     let audioContext = null;
     let audioGain = null;
     let audioNode = null;
@@ -595,10 +686,25 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
       height = 0;
       tileSize = 8;
       palette = [];
+      tileCache = [];
       framebuffer = new Uint8Array(0);
       image = ctx.createImageData(1, 1);
       pending = new Uint8Array(0);
+      frameQueue = [];
       streamReady = false;
+      playbackRunning = false;
+      playbackStarted = false;
+      nextPlaybackAt = 0;
+    }}
+
+    function setStreamTiming(fps, bufferSeconds) {{
+      if (Number.isFinite(fps) && fps > 0) {{
+        streamFps = Math.min(120, Math.max(1, fps));
+        frameIntervalMs = 1000 / streamFps;
+      }}
+      if (Number.isFinite(bufferSeconds) && bufferSeconds >= 0) {{
+        playbackBufferSeconds = Math.min(5, bufferSeconds);
+      }}
     }}
 
     function appendBytes(a, b) {{
@@ -643,6 +749,7 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
       player.style.aspectRatio = `${{width}} / ${{height}}`;
       framebuffer = new Uint8Array(width * height);
       image = ctx.createImageData(width, height);
+      tileCache.length = 0;
       streamReady = true;
       pending = pending.slice(headerLength);
       return true;
@@ -653,16 +760,74 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
       let offset = 0;
       while (pending.length - offset >= 4) {{
         const frameLength = readU32LE(pending, offset);
+        if (frameLength === 0) {{
+          frameQueue.push(null);
+          offset += 4;
+          continue;
+        }}
         if (pending.length - offset - 4 < frameLength) {{
           break;
         }}
 
         const frame = pending.slice(offset + 4, offset + 4 + frameLength);
-        drawFrame(frame);
+        frameQueue.push(frame);
         offset += 4 + frameLength;
       }}
 
       pending = pending.slice(offset);
+      startPlaybackLoop();
+    }}
+
+    function startPlaybackLoop() {{
+      if (playbackRunning) return;
+      playbackRunning = true;
+      nextPlaybackAt = performance.now();
+      requestAnimationFrame(playbackTick);
+    }}
+
+    function playbackTick(now) {{
+      if (!playbackRunning) return;
+      if (!streamOnline || !streamReady) {{
+        playbackRunning = false;
+        playbackStarted = false;
+        return;
+      }}
+
+      const bufferFrames = Math.max(1, Math.ceil(streamFps * playbackBufferSeconds));
+      if (!playbackStarted) {{
+        if (frameQueue.length < bufferFrames) {{
+          requestAnimationFrame(playbackTick);
+          return;
+        }}
+        playbackStarted = true;
+        nextPlaybackAt = now;
+      }}
+
+      if (frameQueue.length === 0) {{
+        playbackStarted = false;
+        nextPlaybackAt = now + frameIntervalMs;
+        requestAnimationFrame(playbackTick);
+        return;
+      }}
+
+      while (frameQueue[0] === null) {{
+        tileCache.length = 0;
+        frameQueue.shift();
+        if (frameQueue.length === 0) {{
+          requestAnimationFrame(playbackTick);
+          return;
+        }}
+      }}
+
+      if (now >= nextPlaybackAt) {{
+        drawFrame(frameQueue.shift());
+        nextPlaybackAt += frameIntervalMs;
+        if (now - nextPlaybackAt > frameIntervalMs * 4) {{
+          nextPlaybackAt = now + frameIntervalMs;
+        }}
+      }}
+
+      requestAnimationFrame(playbackTick);
     }}
 
     function drawFrame(frame) {{
@@ -676,6 +841,7 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
 
       if (frameType === 0) {{
         framebuffer.set(payload.slice(0, framebuffer.length));
+        seedTileCacheFromFramebuffer();
       }} else if (frameType === 1) {{
         applyDelta(payload);
       }} else {{
@@ -702,6 +868,7 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
         const decoded = decodeTile(payload, cursor, tileX, tileY);
         cursor = decoded.cursor;
         writeTile(tileX, tileY, decoded.tile);
+        rememberTile(decoded.tile);
       }}
     }}
 
@@ -728,9 +895,31 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
         }}
       }} else if (mode === 4) {{
         cursor = decodeRle(tile, bytes, cursor, true);
+      }} else if (mode === 5) {{
+        const index = readU16LE(bytes, cursor);
+        cursor += 2;
+        if (tileCache[index]) {{
+          tile.set(tileCache[index]);
+        }}
       }}
 
       return {{ tile, cursor }};
+    }}
+
+    function rememberTile(tile) {{
+      if (tileCache.length >= 4096) return;
+      tileCache.push(new Uint8Array(tile));
+    }}
+
+    function seedTileCacheFromFramebuffer() {{
+      tileCache.length = 0;
+      const tilesX = width / tileSize;
+      const tilesY = height / tileSize;
+      for (let tileY = 0; tileY < tilesY; tileY++) {{
+        for (let tileX = 0; tileX < tilesX; tileX++) {{
+          rememberTile(readTile(tileX, tileY));
+        }}
+      }}
     }}
 
     function decodeRle(tile, bytes, cursor, xor) {{
@@ -780,14 +969,25 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     async function connect() {{
       while (true) {{
         try {{
+          while (!streamOnline) {{
+            await new Promise(resolve => setTimeout(resolve, 250));
+          }}
           resetStreamState();
           const response = await fetch("{palette_stream_url}?t=" + Date.now(), {{ cache: "no-store" }});
+          if (!response.ok) {{
+            throw new Error(`stream failed: ${{response.status}}`);
+          }}
+          setStreamTiming(
+            Number(response.headers.get("X-Stream-Fps")),
+            Number(response.headers.get("X-Playback-Buffer-Seconds")),
+          );
           const reader = response.body.getReader();
           while (true) {{
             const {{ value, done }} = await reader.read();
             if (done) break;
             pending = appendBytes(pending, value);
             consumeFrames();
+            if (!streamOnline) break;
           }}
         }} catch (error) {{
           console.error(error);

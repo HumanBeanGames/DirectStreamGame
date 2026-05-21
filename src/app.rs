@@ -2,11 +2,11 @@ use crate::{
     DirectStreamPlugin,
     audio::{CustomAudioPacketHub, DirectStreamAudioTarget, start_custom_audio_packet_pump},
     chat::LocalChatHub,
-    config::{AppConfig, WindowMode},
+    config::{AppConfig, WindowMode, effective_custom_batch_size},
     constants::{
         STATS_WINDOW_HEIGHT, STATS_WINDOW_WIDTH, STREAM_HEIGHT, STREAM_WIDTH, WINDOW_TITLE,
     },
-    frames::{DirectStreamFrameProcessors, EncodedFrameHub, RawFrameSenders},
+    frames::{DirectStreamFrameProcessors, EncodedFrameHub, IndexedFrame, RawFrameSenders},
     palette::{PaletteBias, PaletteFrameHub, SharedPaletteBias, start_palette_preview_encoder},
     palette_lut::load_palette_config,
     preview::start_preview_encoder,
@@ -32,7 +32,10 @@ pub fn direct_stream_app() -> App {
         palette_bias.set(PaletteBias::from(palette_config.matching));
     }
     let (preview_sender, preview_receiver) = crossbeam_channel::bounded(2);
-    let (custom_sender, custom_receiver) = crossbeam_channel::bounded(2);
+    let custom_frame_capacity = (config.stream_fps as usize * 30)
+        .max(effective_custom_batch_size(config.custom_host_batch_size, config.stream_fps) * 8);
+    let (custom_sender, custom_receiver) =
+        crossbeam_channel::bounded::<IndexedFrame>(custom_frame_capacity);
     let preview_enabled = config.window_mode == WindowMode::Preview;
     let custom_host = config.custom_host;
     let stream_control = StreamControl::new(
@@ -84,6 +87,7 @@ pub fn direct_stream_app() -> App {
         .insert_resource(audio_target)
         .insert_resource(local_chat)
         .insert_resource(custom_stream_state)
+        .insert_resource(palette_bias)
         .insert_resource(DirectStreamFrameProcessors::default())
         .insert_resource(stats.clone())
         .insert_resource(stream_control)

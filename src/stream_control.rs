@@ -1,8 +1,12 @@
 use crate::{
     audio::DirectStreamAudioTarget,
     chat::{LocalChatHub, TwitchChatLogin},
-    config::{AppConfig, save_twitch_stream_key, twitch_rtmp_url},
-    frames::{RawFrameHub, RawFrameSenders},
+    config::{AppConfig, effective_custom_batch_size, save_twitch_stream_key, twitch_rtmp_url},
+    frames::{IndexedFrame, RawFrameHub, RawFrameSenders},
+    gpu_palette::{
+        GpuPalettePipeline, PaletteMaterial, make_stream_source_image,
+        retarget_custom_host_pipeline,
+    },
     palette::{PaletteBias, SharedPaletteBias},
     public_types::DirectStreamTarget,
     scene::StreamReadback,
@@ -10,19 +14,14 @@ use crate::{
     twitch::{TwitchStreamHandle, start_twitch_sink},
 };
 use bevy::{
-    asset::RenderAssetUsages,
-    camera::RenderTarget,
-    input::keyboard::KeyboardInput,
-    prelude::*,
-    render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
-    ui::RelativeCursorPosition,
+    camera::RenderTarget, input::keyboard::KeyboardInput, prelude::*, ui::RelativeCursorPosition,
 };
 use crossbeam_channel::Sender;
 use std::{
     process::Command,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
 };
 
@@ -46,7 +45,7 @@ pub(crate) struct StreamControl {
     bandwidth_test: bool,
     twitch_url_override: Option<String>,
     preview_sender: Option<Sender<RawFrame>>,
-    custom_sender: Option<Sender<RawFrame>>,
+    custom_sender: Option<Sender<IndexedFrame>>,
     custom_stream_state: CustomStreamState,
     shared_palette_bias: SharedPaletteBias,
     twitch_handle: Option<TwitchStreamHandle>,
@@ -56,7 +55,7 @@ impl StreamControl {
     pub(crate) fn new(
         config: &AppConfig,
         preview_sender: Option<Sender<RawFrame>>,
-        custom_sender: Option<Sender<RawFrame>>,
+        custom_sender: Option<Sender<IndexedFrame>>,
         custom_stream_state: CustomStreamState,
         shared_palette_bias: SharedPaletteBias,
     ) -> Self {
@@ -105,9 +104,13 @@ impl StreamControl {
         audio_target: &DirectStreamAudioTarget,
         chat_login: Option<&TwitchChatLogin>,
         images: &mut Assets<Image>,
+        palette_materials: &mut Assets<PaletteMaterial>,
         target: &mut DirectStreamTarget,
         readback: &mut StreamReadback,
+        gpu_palette: Option<&mut GpuPalettePipeline>,
         camera_targets: &mut Query<&mut RenderTarget>,
+        quad_transforms: &mut Query<&mut Transform>,
+        config: &AppConfig,
     ) {
         if self.is_streaming() {
             self.status = "Already streaming".to_owned();
@@ -115,7 +118,18 @@ impl StreamControl {
         }
 
         if self.custom_sender.is_some() {
-            self.start_custom_host(senders, stats, images, target, readback, camera_targets);
+            self.start_custom_host(
+                senders,
+                stats,
+                images,
+                palette_materials,
+                target,
+                readback,
+                gpu_palette,
+                camera_targets,
+                quad_transforms,
+                config,
+            );
             return;
         }
 
@@ -177,9 +191,13 @@ impl StreamControl {
         senders: &mut RawFrameSenders,
         stats: &SharedStats,
         images: &mut Assets<Image>,
+        palette_materials: &mut Assets<PaletteMaterial>,
         target: &mut DirectStreamTarget,
         readback: &mut StreamReadback,
+        gpu_palette: Option<&mut GpuPalettePipeline>,
         camera_targets: &mut Query<&mut RenderTarget>,
+        quad_transforms: &mut Query<&mut Transform>,
+        config: &AppConfig,
     ) {
         let Some(custom_sender) = self.custom_sender.clone() else {
             self.status = "Custom host unavailable".to_owned();
@@ -190,22 +208,13 @@ impl StreamControl {
             return;
         };
 
-        let mut image = Image::new_fill(
-            Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            TextureDimension::D2,
-            &[0, 0, 0, 255],
-            TextureFormat::Bgra8UnormSrgb,
-            RenderAssetUsages::default(),
-        );
-        image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING
-            | TextureUsages::COPY_DST
-            | TextureUsages::COPY_SRC
-            | TextureUsages::RENDER_ATTACHMENT;
-        let image = images.add(image);
+        let Some(gpu_palette) = gpu_palette else {
+            self.status = "GPU palette pipeline unavailable".to_owned();
+            return;
+        };
+        let batch_size = effective_custom_batch_size(config.custom_host_batch_size, fps);
+
+        let image = images.add(make_stream_source_image(width, height));
 
         if let Ok(mut camera_target) = camera_targets.get_mut(target.camera) {
             *camera_target = RenderTarget::Image(image.clone().into());
@@ -214,17 +223,45 @@ impl StreamControl {
             return;
         }
 
+        if retarget_custom_host_pipeline(
+            gpu_palette,
+            images,
+            palette_materials,
+            camera_targets,
+            quad_transforms,
+            width,
+            height,
+            image.clone(),
+            target,
+            batch_size,
+        )
+        .is_err()
+        {
+            self.status = "Could not retarget GPU output pipeline".to_owned();
+            return;
+        }
+
         target.image = image.clone();
         target.width = width;
         target.height = height;
         target.fps = fps;
-        readback.image = image;
-        readback.timer = Timer::from_seconds(1.0 / fps as f32, TimerMode::Repeating);
-        readback.in_flight = false;
+        readback.images = gpu_palette.output_images.clone();
+        readback.batch_size = batch_size;
+        readback.batch_started_at = None;
+        readback.batch_in_progress = false;
+        readback.frame_due = false;
+        readback.textures_rendered_in_batch = 0;
+        readback.frame_waiting_for_render = None;
+        readback.rendered_batch_frames.clear();
+        readback.rendered_batch_frames.reserve(batch_size);
+        readback.frame_interval = std::time::Duration::from_secs_f64(1.0 / fps as f64);
+        readback.frame_accumulator = std::time::Duration::ZERO;
+        readback.pending_requests.clear();
 
         senders.preview = None;
         senders.twitch = None;
         senders.custom = Some(custom_sender);
+        self.custom_stream_state.set_fps(fps);
         self.custom_stream_state.set_active(true);
         self.status = "Custom host streaming".to_owned();
         stats.with_mut(|stats| stats.reset_custom_session());
@@ -290,10 +327,19 @@ impl StreamControl {
         senders: &mut RawFrameSenders,
         stats: &SharedStats,
         audio_target: &DirectStreamAudioTarget,
+        readback: &mut StreamReadback,
     ) {
         if self.custom_sender.is_some() {
             self.custom_stream_state.set_active(false);
             senders.custom = None;
+            readback.pending_requests.clear();
+            readback.batch_started_at = None;
+            readback.batch_in_progress = false;
+            readback.frame_due = false;
+            readback.frame_accumulator = std::time::Duration::ZERO;
+            readback.textures_rendered_in_batch = 0;
+            readback.frame_waiting_for_render = None;
+            readback.rendered_batch_frames.clear();
             audio_target.clear();
             self.status = "Custom host stopped".to_owned();
             stats.with_mut(|stats| {
@@ -361,12 +407,14 @@ pub(crate) struct CustomFpsInputBox;
 #[derive(Clone, Resource)]
 pub(crate) struct CustomStreamState {
     active: Arc<AtomicBool>,
+    fps: Arc<AtomicU32>,
 }
 
 impl CustomStreamState {
     pub(crate) fn new() -> Self {
         Self {
             active: Arc::new(AtomicBool::new(false)),
+            fps: Arc::new(AtomicU32::new(1)),
         }
     }
 
@@ -376,6 +424,14 @@ impl CustomStreamState {
 
     fn set_active(&self, active: bool) {
         self.active.store(active, Ordering::Relaxed);
+    }
+
+    pub(crate) fn fps(&self) -> u32 {
+        self.fps.load(Ordering::Relaxed).max(1)
+    }
+
+    fn set_fps(&self, fps: u32) {
+        self.fps.store(fps.max(1), Ordering::Relaxed);
     }
 }
 
@@ -495,9 +551,13 @@ pub(crate) fn handle_stream_control_interactions(
     local_chat: Option<Res<LocalChatHub>>,
     chat_login: Option<Res<TwitchChatLogin>>,
     mut images: ResMut<Assets<Image>>,
+    mut palette_materials: ResMut<Assets<PaletteMaterial>>,
     mut target: ResMut<DirectStreamTarget>,
     mut readback: ResMut<StreamReadback>,
+    mut gpu_palette: Option<ResMut<GpuPalettePipeline>>,
     mut camera_targets: Query<&mut RenderTarget>,
+    mut quad_transforms: Query<&mut Transform>,
+    config: Res<AppConfig>,
     mut controls: Query<
         (
             &Interaction,
@@ -583,9 +643,13 @@ pub(crate) fn handle_stream_control_interactions(
                         &audio_target,
                         chat_login.as_deref(),
                         &mut images,
+                        &mut palette_materials,
                         &mut target,
                         &mut readback,
+                        gpu_palette.as_deref_mut(),
                         &mut camera_targets,
+                        &mut quad_transforms,
+                        &config,
                     );
                     *color = BackgroundColor(Color::srgb(0.10, 0.36, 0.22));
                 }
@@ -596,7 +660,7 @@ pub(crate) fn handle_stream_control_interactions(
             match *interaction {
                 Interaction::Pressed => {
                     control.focused_input = None;
-                    control.stop(&mut senders, &stats, &audio_target);
+                    control.stop(&mut senders, &stats, &audio_target, &mut readback);
                     *color = BackgroundColor(Color::srgb(0.38, 0.11, 0.12));
                 }
                 Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.30, 0.09, 0.10)),

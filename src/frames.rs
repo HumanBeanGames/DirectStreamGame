@@ -2,7 +2,10 @@ use crate::stats::SharedStats;
 use bevy::prelude::*;
 use crossbeam_channel::Sender;
 use ffmpeg_next::frame;
-use std::sync::{Arc, Condvar, Mutex};
+use std::{
+    sync::{Arc, Condvar, Mutex},
+    time::Instant,
+};
 
 type DirectStreamFrameProcessor = Box<dyn for<'a> FnMut(DirectStreamFrame<'a>) + Send + Sync>;
 
@@ -48,7 +51,7 @@ impl EncodedFrameHub {
 #[derive(Clone, Resource)]
 pub(crate) struct RawFrameSenders {
     pub(crate) preview: Option<Sender<RawFrame>>,
-    pub(crate) custom: Option<Sender<RawFrame>>,
+    pub(crate) custom: Option<Sender<IndexedFrame>>,
     pub(crate) twitch: Option<RawFrameHub>,
     pub(crate) stats: SharedStats,
 }
@@ -58,6 +61,14 @@ pub(crate) struct RawFrame {
     pub(crate) bgra: Vec<u8>,
     pub(crate) width: u32,
     pub(crate) height: u32,
+}
+
+#[derive(Clone)]
+pub(crate) struct IndexedFrame {
+    pub(crate) indices: Vec<u8>,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) captured_at: Instant,
 }
 
 #[derive(Clone)]

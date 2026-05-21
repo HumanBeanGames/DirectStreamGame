@@ -7,6 +7,7 @@ use crate::{
         poll_twitch_chat, start_twitch_chat_listener,
     },
     direct_text::DirectTextPlugin,
+    gpu_palette::GpuPalettePlugin,
     scene::{setup_direct_stream_scene, update_stats_window},
     stream_control::{
         handle_palette_bias_sliders, handle_stream_control_interactions, handle_stream_key_typing,
@@ -21,7 +22,7 @@ impl Plugin for DirectStreamPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<StreamAudioClip>()
             .init_resource::<StreamAudioMixer>()
-            .add_plugins(DirectTextPlugin)
+            .add_plugins((GpuPalettePlugin, DirectTextPlugin))
             .add_message::<PlayStreamSound>()
             .add_message::<TwitchChatMessage>()
             .add_message::<TwitchChatCommand>()

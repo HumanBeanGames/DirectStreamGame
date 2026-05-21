@@ -70,10 +70,18 @@
     let height = 0;
     let tileSize = 8;
     let palette = [];
+    let tileCache = [];
     let framebuffer = new Uint8Array(0);
     let image = ctx.createImageData(1, 1);
     let pending = new Uint8Array(0);
+    let frameQueue = [];
     let streamReady = false;
+    let streamFps = 5;
+    let frameIntervalMs = 1000 / streamFps;
+    let playbackBufferSeconds = 1;
+    let playbackRunning = false;
+    let playbackStarted = false;
+    let nextPlaybackAt = 0;
     let audioContext = null;
     let audioGain = null;
     let audioNode = null;
@@ -102,10 +110,25 @@
       height = 0;
       tileSize = 8;
       palette = [];
+      tileCache = [];
       framebuffer = new Uint8Array(0);
       image = ctx.createImageData(1, 1);
       pending = new Uint8Array(0);
+      frameQueue = [];
       streamReady = false;
+      playbackRunning = false;
+      playbackStarted = false;
+      nextPlaybackAt = 0;
+    }
+
+    function setStreamTiming(fps, bufferSeconds) {
+      if (Number.isFinite(fps) && fps > 0) {
+        streamFps = Math.min(120, Math.max(1, fps));
+        frameIntervalMs = 1000 / streamFps;
+      }
+      if (Number.isFinite(bufferSeconds) && bufferSeconds >= 0) {
+        playbackBufferSeconds = Math.min(5, bufferSeconds);
+      }
     }
 
     function appendBytes(a, b) {
@@ -150,6 +173,7 @@
       player.style.aspectRatio = `${width} / ${height}`;
       framebuffer = new Uint8Array(width * height);
       image = ctx.createImageData(width, height);
+      tileCache.length = 0;
       streamReady = true;
       pending = pending.slice(headerLength);
       return true;
@@ -160,16 +184,74 @@
       let offset = 0;
       while (pending.length - offset >= 4) {
         const frameLength = readU32LE(pending, offset);
+        if (frameLength === 0) {
+          frameQueue.push(null);
+          offset += 4;
+          continue;
+        }
         if (pending.length - offset - 4 < frameLength) {
           break;
         }
 
         const frame = pending.slice(offset + 4, offset + 4 + frameLength);
-        drawFrame(frame);
+        frameQueue.push(frame);
         offset += 4 + frameLength;
       }
 
       pending = pending.slice(offset);
+      startPlaybackLoop();
+    }
+
+    function startPlaybackLoop() {
+      if (playbackRunning) return;
+      playbackRunning = true;
+      nextPlaybackAt = performance.now();
+      requestAnimationFrame(playbackTick);
+    }
+
+    function playbackTick(now) {
+      if (!playbackRunning) return;
+      if (!streamOnline || !streamReady) {
+        playbackRunning = false;
+        playbackStarted = false;
+        return;
+      }
+
+      const bufferFrames = Math.max(1, Math.ceil(streamFps * playbackBufferSeconds));
+      if (!playbackStarted) {
+        if (frameQueue.length < bufferFrames) {
+          requestAnimationFrame(playbackTick);
+          return;
+        }
+        playbackStarted = true;
+        nextPlaybackAt = now;
+      }
+
+      if (frameQueue.length === 0) {
+        playbackStarted = false;
+        nextPlaybackAt = now + frameIntervalMs;
+        requestAnimationFrame(playbackTick);
+        return;
+      }
+
+      while (frameQueue[0] === null) {
+        tileCache.length = 0;
+        frameQueue.shift();
+        if (frameQueue.length === 0) {
+          requestAnimationFrame(playbackTick);
+          return;
+        }
+      }
+
+      if (now >= nextPlaybackAt) {
+        drawFrame(frameQueue.shift());
+        nextPlaybackAt += frameIntervalMs;
+        if (now - nextPlaybackAt > frameIntervalMs * 4) {
+          nextPlaybackAt = now + frameIntervalMs;
+        }
+      }
+
+      requestAnimationFrame(playbackTick);
     }
 
     function drawFrame(frame) {
@@ -183,6 +265,7 @@
 
       if (frameType === 0) {
         framebuffer.set(payload.slice(0, framebuffer.length));
+        seedTileCacheFromFramebuffer();
       } else if (frameType === 1) {
         applyDelta(payload);
       } else {
@@ -209,6 +292,7 @@
         const decoded = decodeTile(payload, cursor, tileX, tileY);
         cursor = decoded.cursor;
         writeTile(tileX, tileY, decoded.tile);
+        rememberTile(decoded.tile);
       }
     }
 
@@ -235,9 +319,31 @@
         }
       } else if (mode === 4) {
         cursor = decodeRle(tile, bytes, cursor, true);
+      } else if (mode === 5) {
+        const index = readU16LE(bytes, cursor);
+        cursor += 2;
+        if (tileCache[index]) {
+          tile.set(tileCache[index]);
+        }
       }
 
       return { tile, cursor };
+    }
+
+    function rememberTile(tile) {
+      if (tileCache.length >= 4096) return;
+      tileCache.push(new Uint8Array(tile));
+    }
+
+    function seedTileCacheFromFramebuffer() {
+      tileCache.length = 0;
+      const tilesX = width / tileSize;
+      const tilesY = height / tileSize;
+      for (let tileY = 0; tileY < tilesY; tileY++) {
+        for (let tileX = 0; tileX < tilesX; tileX++) {
+          rememberTile(readTile(tileX, tileY));
+        }
+      }
     }
 
     function decodeRle(tile, bytes, cursor, xor) {
@@ -287,14 +393,25 @@
     async function connect() {
       while (true) {
         try {
+          while (!streamOnline) {
+            await new Promise(resolve => setTimeout(resolve, 250));
+          }
           resetStreamState();
           const response = await fetch("https://game.humanbeangames.com/palette.bin?t=" + Date.now(), { cache: "no-store" });
+          if (!response.ok) {
+            throw new Error(`stream failed: ${response.status}`);
+          }
+          setStreamTiming(
+            Number(response.headers.get("X-Stream-Fps")),
+            Number(response.headers.get("X-Playback-Buffer-Seconds")),
+          );
           const reader = response.body.getReader();
           while (true) {
             const { value, done } = await reader.read();
             if (done) break;
             pending = appendBytes(pending, value);
             consumeFrames();
+            if (!streamOnline) break;
           }
         } catch (error) {
           console.error(error);

@@ -7,6 +7,7 @@ mod constants;
 mod demo;
 mod direct_text;
 mod frames;
+mod gpu_palette;
 mod palette;
 pub mod palette_lut;
 mod plugin;

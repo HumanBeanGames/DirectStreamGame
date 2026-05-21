@@ -1,44 +1,26 @@
 use crate::{
-    frames::{DirectStreamFrame, DirectStreamFrameProcessors, RawFrame, RawFrameSenders},
+    frames::{
+        DirectStreamFrame, DirectStreamFrameProcessors, IndexedFrame, RawFrame, RawFrameSenders,
+    },
     public_types::DirectStreamTarget,
     scene::StreamReadback,
     stream_control::StreamControl,
 };
-use bevy::{
-    prelude::*,
-    render::gpu_readback::{Readback, ReadbackComplete},
-};
+use bevy::{prelude::*, render::gpu_readback::ReadbackComplete};
 use crossbeam_channel::Sender;
+use std::time::Instant;
 
 pub(crate) fn request_stream_readback(
-    mut commands: Commands,
-    time: Res<Time>,
-    senders: Res<RawFrameSenders>,
-    stream_control: Res<StreamControl>,
-    mut readback: ResMut<StreamReadback>,
+    _time: Res<Time>,
+    _senders: Res<RawFrameSenders>,
+    _stream_control: Res<StreamControl>,
+    _readback: ResMut<StreamReadback>,
 ) {
-    if !stream_control.should_capture() {
-        return;
-    }
-
-    let preview_full = senders.preview.as_ref().is_some_and(Sender::is_full);
-    let custom_full = senders.custom.as_ref().is_some_and(Sender::is_full);
-    if readback.in_flight || preview_full || custom_full {
-        return;
-    }
-
-    readback.timer.tick(time.delta());
-    if !readback.timer.just_finished() {
-        return;
-    }
-
-    readback.in_flight = true;
-    commands
-        .spawn(Readback::texture(readback.image.clone()))
-        .observe(queue_readback_frame);
+    // Readback requests are now issued by cycle_camera_render_targets
+    // when all textures in the batch have been rendered to
 }
 
-fn queue_readback_frame(
+pub(crate) fn queue_readback_frame(
     event: On<ReadbackComplete>,
     mut commands: Commands,
     senders: Res<RawFrameSenders>,
@@ -46,7 +28,15 @@ fn queue_readback_frame(
     mut processors: ResMut<DirectStreamFrameProcessors>,
     mut readback: ResMut<StreamReadback>,
 ) {
-    readback.in_flight = false;
+    let callback_started = Instant::now();
+    let pending = readback.pending_requests.remove(&event.entity);
+    senders
+        .stats
+        .with_mut(|stats| stats.custom_pending_readbacks = readback.pending_requests.len());
+    let captured_at = pending
+        .as_ref()
+        .map(|pending| pending.captured_at)
+        .unwrap_or(callback_started);
     commands.entity(event.entity).despawn();
 
     let preview_full = senders.preview.as_ref().is_some_and(Sender::is_full);
@@ -59,8 +49,61 @@ fn queue_readback_frame(
             }
             if custom_full {
                 stats.custom_frames_dropped += 1;
+                stats.custom_queue_full_drops += 1;
             }
         });
+        finish_readback_batch_if_complete(&mut readback, &senders);
+        return;
+    }
+
+    if target.output_is_indexed {
+        if let Some(pending) = pending {
+            senders.stats.with_mut(|stats| {
+                stats.record_custom_readback_wait(
+                    callback_started
+                        .duration_since(pending.requested_at)
+                        .as_secs_f64()
+                        * 1000.0,
+                );
+            });
+        }
+
+        let row_bytes = target.width as usize;
+        let aligned_row_bytes =
+            bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(row_bytes);
+        let indices = if row_bytes == aligned_row_bytes {
+            event.data.clone()
+        } else {
+            event
+                .data
+                .chunks(aligned_row_bytes)
+                .take(target.height as usize)
+                .flat_map(|row| row[..row_bytes.min(row.len())].iter().copied())
+                .collect()
+        };
+
+        senders.stats.with_mut(|stats| stats.frames_captured += 1);
+
+        if let Some(custom) = &senders.custom
+            && custom
+                .try_send(IndexedFrame {
+                    indices,
+                    width: target.width,
+                    height: target.height,
+                    captured_at,
+                })
+                .is_err()
+        {
+            senders.stats.with_mut(|stats| {
+                stats.frames_dropped += 1;
+                stats.custom_frames_dropped += 1;
+                stats.custom_queue_full_drops += 1;
+            });
+        }
+        senders.stats.with_mut(|stats| {
+            stats.record_custom_readback_cpu(callback_started.elapsed().as_secs_f64() * 1000.0);
+        });
+        finish_readback_batch_if_complete(&mut readback, &senders);
         return;
     }
 
@@ -109,18 +152,26 @@ fn queue_readback_frame(
             width: target.width,
             height: target.height,
         });
-    } else if let Some(custom) = &senders.custom
-        && custom
-            .try_send(RawFrame {
-                bgra,
-                width: target.width,
-                height: target.height,
-            })
-            .is_err()
-    {
+    }
+}
+
+fn finish_readback_batch_if_complete(readback: &mut StreamReadback, senders: &RawFrameSenders) {
+    if !readback.pending_requests.is_empty() {
         senders.stats.with_mut(|stats| {
-            stats.frames_dropped += 1;
-            stats.custom_frames_dropped += 1;
+            stats.custom_pending_readbacks = readback.pending_requests.len();
+            stats.custom_batch_buffered_frames = readback.rendered_batch_frames.len();
+        });
+        return;
+    }
+
+    if let Some(batch_start) = readback.batch_started_at.take() {
+        let batch_latency_ms = batch_start.elapsed().as_secs_f64() * 1000.0;
+        senders.stats.with_mut(|stats| {
+            stats.custom_batch_size = readback.batch_size;
+            stats.custom_batch_latency_ms = batch_latency_ms;
+            stats.custom_pending_readbacks = 0;
+            stats.custom_batch_buffered_frames = readback.rendered_batch_frames.len();
         });
     }
+    readback.batch_in_progress = false;
 }

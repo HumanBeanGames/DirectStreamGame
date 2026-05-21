@@ -1,6 +1,8 @@
 use crate::{
-    config::{AppConfig, WindowMode},
+    config::{AppConfig, WindowMode, effective_custom_batch_size},
     constants::{STREAM_FPS, STREAM_HEIGHT, STREAM_WIDTH, WEB_ADDR},
+    gpu_palette::{PaletteMaterial, make_stream_source_image, spawn_custom_host_pipeline},
+    palette::load_palette_runtime,
     public_types::DirectStreamTarget,
     stats::{SharedStats, StatsText},
     stream_control::{
@@ -13,45 +15,55 @@ use crate::{
     },
 };
 use bevy::{
-    asset::RenderAssetUsages,
-    camera::RenderTarget,
+    camera::{RenderTarget, visibility::RenderLayers},
     prelude::*,
-    render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
     ui::RelativeCursorPosition,
 };
-use std::time::Instant;
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
+
+const MAX_IN_FLIGHT_READBACKS: usize = 30;
+
+pub(crate) struct PendingReadback {
+    pub(crate) requested_at: Instant,
+    pub(crate) captured_at: Instant,
+    pub(crate) output_index: usize,
+}
+
+pub(crate) struct RenderedBatchFrame {
+    pub(crate) output_index: usize,
+    pub(crate) captured_at: Instant,
+}
 
 #[derive(Resource)]
 pub(crate) struct StreamReadback {
-    pub(crate) image: Handle<Image>,
-    pub(crate) timer: Timer,
-    pub(crate) in_flight: bool,
+    pub(crate) images: Vec<Handle<Image>>,
+    pub(crate) frame_interval: Duration,
+    pub(crate) frame_accumulator: Duration,
+    pub(crate) frame_due: bool,
+    pub(crate) max_in_flight: usize,
+    pub(crate) pending_requests: HashMap<Entity, PendingReadback>,
+    pub(crate) batch_size: usize,
+    pub(crate) batch_started_at: Option<Instant>,
+    pub(crate) batch_in_progress: bool,
+    pub(crate) textures_rendered_in_batch: usize,
+    pub(crate) frame_waiting_for_render: Option<RenderedBatchFrame>,
+    pub(crate) rendered_batch_frames: Vec<RenderedBatchFrame>,
 }
 
 pub(crate) fn setup_direct_stream_scene(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut palette_materials: ResMut<Assets<PaletteMaterial>>,
     config: Res<AppConfig>,
 ) {
-    let size = Extent3d {
-        width: config.stream_width,
-        height: config.stream_height,
-        depth_or_array_layers: 1,
-    };
-
-    let mut stream_image = Image::new_fill(
-        size,
-        TextureDimension::D2,
-        &[0, 0, 0, 255],
-        TextureFormat::Bgra8UnormSrgb,
-        RenderAssetUsages::default(),
-    );
-    stream_image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING
-        | TextureUsages::COPY_DST
-        | TextureUsages::COPY_SRC
-        | TextureUsages::RENDER_ATTACHMENT;
-
-    let stream_image = images.add(stream_image);
+    let stream_image = images.add(make_stream_source_image(
+        config.stream_width,
+        config.stream_height,
+    ));
 
     let stream_camera = commands
         .spawn((
@@ -62,6 +74,7 @@ pub(crate) fn setup_direct_stream_scene(
                 ..default()
             },
             RenderTarget::Image(stream_image.clone().into()),
+            RenderLayers::layer(0),
         ))
         .id();
 
@@ -78,18 +91,53 @@ pub(crate) fn setup_direct_stream_scene(
         }
     }
 
-    commands.insert_resource(StreamReadback {
-        image: stream_image.clone(),
-        timer: Timer::from_seconds(1.0 / config.stream_fps as f32, TimerMode::Repeating),
-        in_flight: false,
-    });
-    commands.insert_resource(DirectStreamTarget {
+    let mut target = DirectStreamTarget {
         camera: stream_camera,
-        image: stream_image,
+        overlay_camera: stream_camera,
+        image: stream_image.clone(),
+        output_image: stream_image.clone(),
+        output_is_indexed: false,
+        overlay_layer: 0,
         width: config.stream_width,
         height: config.stream_height,
         fps: config.stream_fps,
-    });
+    };
+
+    if config.custom_host {
+        let (palette_colors, palette_bias) = load_palette_runtime(&config.palette_config_path);
+        let batch_size =
+            effective_custom_batch_size(config.custom_host_batch_size, config.stream_fps);
+        let pipeline = spawn_custom_host_pipeline(
+            &mut commands,
+            &mut images,
+            &mut meshes,
+            &mut palette_materials,
+            config.stream_width,
+            config.stream_height,
+            stream_image.clone(),
+            &palette_colors,
+            palette_bias,
+            &mut target,
+            batch_size,
+        );
+        let pipeline_clone = pipeline.clone();
+        commands.insert_resource(pipeline);
+        commands.insert_resource(StreamReadback {
+            images: pipeline_clone.output_images.clone(),
+            frame_interval: Duration::from_secs_f64(1.0 / config.stream_fps as f64),
+            frame_accumulator: Duration::ZERO,
+            frame_due: false,
+            max_in_flight: MAX_IN_FLIGHT_READBACKS,
+            pending_requests: HashMap::default(),
+            batch_size,
+            batch_started_at: None,
+            batch_in_progress: false,
+            textures_rendered_in_batch: 0,
+            frame_waiting_for_render: None,
+            rendered_batch_frames: Vec::with_capacity(batch_size),
+        });
+    }
+    commands.insert_resource(target);
 }
 
 fn spawn_stats_window(commands: &mut Commands, custom_host: bool, prebaked_palette: bool) {
@@ -501,6 +549,70 @@ fn custom_host_stats_text(
         stat_line("frames read", &stats.frames_read.to_string()),
         stat_line("frames encoded", &stats.frames_encoded.to_string()),
         stat_line("frames dropped", &stats.frames_dropped.to_string()),
+        stat_line("sent fps", &format!("{:.2} fps", stats.custom_actual_fps)),
+        stat_line("app fps", &format!("{:.2} fps", stats.custom_app_fps)),
+        stat_line("batch size", &stats.custom_batch_size.to_string()),
+        stat_line(
+            "batch buffered",
+            &stats.custom_batch_buffered_frames.to_string(),
+        ),
+        stat_line(
+            "pending readbacks",
+            &stats.custom_pending_readbacks.to_string(),
+        ),
+        stat_line(
+            "batch latency",
+            &format!("{:.2} ms", stats.custom_batch_latency_ms),
+        ),
+        stat_line(
+            "http batch",
+            &format!(
+                "{} last / {:.1} avg",
+                stats.custom_http_batch_last_frames, stats.custom_http_batch_avg_frames
+            ),
+        ),
+        stat_line(
+            "readback wait",
+            &format!(
+                "{:.2} ms last / {:.2} ms avg",
+                stats.custom_readback_wait_last_ms, stats.custom_readback_wait_avg_ms
+            ),
+        ),
+        stat_line(
+            "readback cpu",
+            &format!(
+                "{:.2} ms last / {:.2} ms avg",
+                stats.custom_readback_cpu_last_ms, stats.custom_readback_cpu_avg_ms
+            ),
+        ),
+        stat_line(
+            "encode",
+            &format!(
+                "{:.2} ms last / {:.2} ms avg",
+                stats.custom_encode_last_ms, stats.custom_encode_avg_ms
+            ),
+        ),
+        stat_line(
+            "record write",
+            &format!(
+                "{:.2} ms last / {:.2} ms avg",
+                stats.custom_record_last_ms, stats.custom_record_avg_ms
+            ),
+        ),
+        stat_line(
+            "publish",
+            &format!(
+                "{:.2} ms last / {:.2} ms avg",
+                stats.custom_publish_last_ms, stats.custom_publish_avg_ms
+            ),
+        ),
+        stat_line(
+            "pipeline total",
+            &format!(
+                "{:.2} ms last / {:.2} ms avg",
+                stats.custom_pipeline_last_ms, stats.custom_pipeline_avg_ms
+            ),
+        ),
         String::new(),
         "custom host".to_owned(),
         stat_line(
@@ -524,16 +636,28 @@ fn custom_host_stats_text(
         stat_line(
             "tile modes",
             &format!(
-                "raw {} solid {} rle {} span {} xor {} skipped {}",
+                "raw {} solid {} rle {} span {} xor {} cached {} skipped {}",
                 stats.custom_raw_tiles_sent,
                 stats.custom_solid_tiles_sent,
                 stats.custom_rle_tiles_sent,
                 stats.custom_span_tiles_sent,
                 stats.custom_xor_tiles_sent,
+                stats.custom_cached_tiles_sent,
                 stats.custom_skipped_tiles
             ),
         ),
         stat_line("packet drops", &stats.custom_frames_dropped.to_string()),
+        stat_line(
+            "queue full drops",
+            &stats.custom_queue_full_drops.to_string(),
+        ),
+        stat_line(
+            "sender waits",
+            &format!(
+                "{} timeouts / {} wakeups",
+                stats.custom_sender_wait_timeouts, stats.custom_sender_wait_wakeups
+            ),
+        ),
         stat_line("bytes sent", &stats.custom_bytes_sent.to_string()),
         stat_line(
             "audio packets",

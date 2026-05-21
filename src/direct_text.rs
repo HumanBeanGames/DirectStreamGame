@@ -1,6 +1,6 @@
-use crate::{DirectStreamFrame, DirectStreamFrameAppExt};
-use bevy::prelude::*;
-use std::sync::{Arc, Mutex};
+use crate::{gpu_palette::GpuPalettePipeline, public_types::DirectStreamTarget};
+use bevy::{camera::visibility::RenderLayers, prelude::*};
+use std::collections::HashSet;
 
 pub struct DirectTextPlugin;
 
@@ -13,15 +13,7 @@ const GLYPH_ON_THRESHOLD: f32 = 0.5;
 
 impl Plugin for DirectTextPlugin {
     fn build(&self, app: &mut App) {
-        let state = DirectTextState::default();
-        let shared = state.entries.clone();
-        app.insert_resource(state)
-            .add_direct_stream_frame_processor(move |mut frame| {
-                if let Ok(entries) = shared.lock() {
-                    draw_direct_text_entries(&mut frame, &entries);
-                }
-            })
-            .add_systems(Update, sync_direct_text_entries);
+        app.add_systems(Update, sync_direct_text_overlays);
     }
 }
 
@@ -63,70 +55,82 @@ impl DirectText {
     }
 }
 
-#[derive(Clone)]
-struct DirectTextEntry {
-    text: String,
-    x: u32,
-    y: u32,
-    font_size: f32,
-    threshold: Option<f32>,
-    color: [u8; 4],
+#[derive(Component, Clone, Copy)]
+struct DirectTextOverlayPixel {
+    owner: Entity,
 }
 
-#[derive(Resource, Default)]
-struct DirectTextState {
-    entries: Arc<Mutex<Vec<DirectTextEntry>>>,
-}
-
-fn sync_direct_text_entries(state: Res<DirectTextState>, query: Query<&DirectText>) {
-    let Ok(mut entries) = state.entries.lock() else {
+fn sync_direct_text_overlays(
+    mut commands: Commands,
+    target: Res<DirectStreamTarget>,
+    gpu_palette: Option<Res<GpuPalettePipeline>>,
+    changed_text: Query<(Entity, &DirectText), Or<(Added<DirectText>, Changed<DirectText>)>>,
+    all_text: Query<(Entity, &DirectText)>,
+    existing: Query<(Entity, &DirectTextOverlayPixel)>,
+    mut removed_text: RemovedComponents<DirectText>,
+) {
+    let removed_owners: HashSet<Entity> = removed_text.read().collect();
+    let target_changed = target.is_changed();
+    if !target_changed && changed_text.is_empty() && removed_owners.is_empty() {
         return;
-    };
-    entries.clear();
-    entries.extend(query.iter().map(|text| {
-        let color = text.color;
-        DirectTextEntry {
-            text: text.text.clone(),
-            x: text.x,
-            y: text.y,
-            font_size: text.font_size.max(0.1),
-            threshold: text.threshold.map(|threshold| threshold.clamp(0.0, 1.0)),
-            color: [
-                (color.blue * 255.0).round() as u8,
-                (color.green * 255.0).round() as u8,
-                (color.red * 255.0).round() as u8,
-                (color.alpha * 255.0).round() as u8,
-            ],
-        }
-    }));
-}
-
-fn draw_direct_text_entries(frame: &mut DirectStreamFrame<'_>, entries: &[DirectTextEntry]) {
-    for entry in entries {
-        draw_text(frame, entry);
     }
-}
 
-fn draw_text(frame: &mut DirectStreamFrame<'_>, entry: &DirectTextEntry) {
-    let scale = resolve_bitmap_scale(entry.font_size);
-    let threshold = entry.threshold.unwrap_or(GLYPH_ON_THRESHOLD).clamp(0.0, 1.0);
-    let mut cursor_x = entry.x as f32;
-    let mut cursor_y = entry.y as f32;
-    let start_x = cursor_x;
-    let advance = BITMAP_FONT_ADVANCE * scale;
-    let line_height = BITMAP_FONT_LINE_HEIGHT * scale;
+    let rebuild_owners: HashSet<Entity> = if target_changed {
+        all_text.iter().map(|(entity, _)| entity).collect()
+    } else {
+        changed_text.iter().map(|(entity, _)| entity).collect()
+    };
 
-    for character in entry.text.chars() {
-        match character {
-            '\n' => {
-                cursor_x = start_x;
-                cursor_y += line_height;
-            }
-            '\r' => {}
-            _ => {
-                let glyph = glyph_columns(character);
-                draw_bitmap_glyph(frame, cursor_x, cursor_y, scale, threshold, entry.color, glyph);
-                cursor_x += advance;
+    for (entity, overlay) in &existing {
+        if removed_owners.contains(&overlay.owner) || rebuild_owners.contains(&overlay.owner) {
+            commands.entity(entity).despawn();
+        }
+    }
+
+    if rebuild_owners.is_empty() {
+        return;
+    }
+
+    let overlay_layer = RenderLayers::layer(target.overlay_layer);
+    let left = -(target.width as f32) * 0.5;
+    let top = target.height as f32 * 0.5;
+
+    for (owner, text) in &all_text {
+        if !rebuild_owners.contains(&owner) {
+            continue;
+        }
+        let scale = resolve_bitmap_scale(text.font_size);
+        let threshold = text.threshold.unwrap_or(GLYPH_ON_THRESHOLD).clamp(0.0, 1.0);
+        let color = overlay_color(text, &target, gpu_palette.as_deref());
+        let mut cursor_x = text.x as f32;
+        let mut cursor_y = text.y as f32;
+        let start_x = cursor_x;
+        let advance = BITMAP_FONT_ADVANCE * scale;
+        let line_height = BITMAP_FONT_LINE_HEIGHT * scale;
+
+        for character in text.text.chars() {
+            match character {
+                '\n' => {
+                    cursor_x = start_x;
+                    cursor_y += line_height;
+                }
+                '\r' => {}
+                _ => {
+                    spawn_bitmap_glyph(
+                        &mut commands,
+                        &overlay_layer,
+                        owner,
+                        color,
+                        left,
+                        top,
+                        cursor_x,
+                        cursor_y,
+                        scale,
+                        threshold,
+                        glyph_columns(character),
+                    );
+                    cursor_x += advance;
+                }
             }
         }
     }
@@ -140,63 +144,78 @@ fn quantize_bitmap_scale(scale: f32) -> f32 {
     scale.round().max(1.0)
 }
 
-fn draw_bitmap_glyph(
-    frame: &mut DirectStreamFrame<'_>,
+fn spawn_bitmap_glyph(
+    commands: &mut Commands,
+    overlay_layer: &RenderLayers,
+    owner: Entity,
+    color: Color,
+    left: f32,
+    top: f32,
     x: f32,
     y: f32,
     scale: f32,
     threshold: f32,
-    color: [u8; 4],
     glyph_columns: [u8; BITMAP_FONT_WIDTH],
 ) {
-    let glyph_width = BITMAP_FONT_WIDTH as f32 * scale;
-    let glyph_height = BITMAP_FONT_HEIGHT as f32 * scale;
-    let min_x = x.floor() as i32;
-    let min_y = y.floor() as i32;
-    let max_x = (x + glyph_width).ceil() as i32;
-    let max_y = (y + glyph_height).ceil() as i32;
+    if threshold > 1.0 {
+        return;
+    }
 
-    for pixel_y in min_y..max_y {
-        for pixel_x in min_x..max_x {
-            let coverage = glyph_pixel_coverage(glyph_columns, x, y, scale, pixel_x, pixel_y);
-            if coverage >= threshold {
-                fill_rect(frame, pixel_x, pixel_y, 1, 1, color);
+    for column in 0..BITMAP_FONT_WIDTH {
+        for row in 0..BITMAP_FONT_HEIGHT {
+            if glyph_bit_is_on(glyph_columns, column, row) {
+                let pixel_x = left + x + column as f32 * scale + scale * 0.5;
+                let pixel_y = top - y - row as f32 * scale - scale * 0.5;
+                commands.spawn((
+                    Sprite {
+                        color,
+                        custom_size: Some(Vec2::splat(scale)),
+                        ..default()
+                    },
+                    Transform::from_xyz(pixel_x, pixel_y, 0.0),
+                    overlay_layer.clone(),
+                    DirectTextOverlayPixel { owner },
+                ));
             }
         }
     }
 }
 
-fn glyph_pixel_coverage(
-    glyph_columns: [u8; BITMAP_FONT_WIDTH],
-    glyph_x: f32,
-    glyph_y: f32,
-    scale: f32,
-    pixel_x: i32,
-    pixel_y: i32,
-) -> f32 {
-    let pixel_min_x = pixel_x as f32;
-    let pixel_max_x = pixel_min_x + 1.0;
-    let pixel_min_y = pixel_y as f32;
-    let pixel_max_y = pixel_min_y + 1.0;
-    let mut coverage = 0.0;
-
-    for column in 0..BITMAP_FONT_WIDTH {
-        for row in 0..BITMAP_FONT_HEIGHT {
-            if !glyph_bit_is_on(glyph_columns, column, row) {
-                continue;
-            }
-
-            let source_min_x = glyph_x + column as f32 * scale;
-            let source_max_x = source_min_x + scale;
-            let source_min_y = glyph_y + row as f32 * scale;
-            let source_max_y = source_min_y + scale;
-            let overlap_x = (pixel_max_x.min(source_max_x) - pixel_min_x.max(source_min_x)).max(0.0);
-            let overlap_y = (pixel_max_y.min(source_max_y) - pixel_min_y.max(source_min_y)).max(0.0);
-            coverage += overlap_x * overlap_y;
-        }
+fn overlay_color(
+    text: &DirectText,
+    target: &DirectStreamTarget,
+    gpu_palette: Option<&GpuPalettePipeline>,
+) -> Color {
+    if target.output_is_indexed
+        && let Some(gpu_palette) = gpu_palette
+    {
+        let palette_index = nearest_palette_index(text.color, &gpu_palette.palette_colors);
+        return Color::linear_rgba(palette_index as f32 / 255.0, 0.0, 0.0, 1.0);
     }
 
-    coverage.clamp(0.0, 1.0)
+    Color::srgba(
+        text.color.red,
+        text.color.green,
+        text.color.blue,
+        text.color.alpha,
+    )
+}
+
+fn nearest_palette_index(color: Srgba, palette: &[[u8; 4]]) -> u8 {
+    let mut best_index = 0;
+    let mut best_distance = f32::MAX;
+    for (index, [r, g, b, _]) in palette.iter().enumerate() {
+        let dr = color.red - f32::from(*r) / 255.0;
+        let dg = color.green - f32::from(*g) / 255.0;
+        let db = color.blue - f32::from(*b) / 255.0;
+        let da = color.alpha - 1.0;
+        let distance = dr * dr + dg * dg + db * db + da * da;
+        if distance < best_distance {
+            best_distance = distance;
+            best_index = index as u8;
+        }
+    }
+    best_index
 }
 
 fn glyph_bit_is_on(glyph_columns: [u8; BITMAP_FONT_WIDTH], column: usize, row: usize) -> bool {
@@ -300,27 +319,3 @@ fn glyph_columns(character: char) -> [u8; BITMAP_FONT_WIDTH] {
         _ => [0x01, 0x15, 0x03],
     }
 }
-
-fn fill_rect(
-    frame: &mut DirectStreamFrame<'_>,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    color: [u8; 4],
-) {
-    let frame_width = frame.width() as i32;
-    let frame_height = frame.height() as i32;
-    let row_bytes = frame.row_bytes();
-    let bgra = frame.bgra_mut();
-
-    for yy in y.max(0)..(y + height).min(frame_height) {
-        for xx in x.max(0)..(x + width).min(frame_width) {
-            let offset = yy as usize * row_bytes + xx as usize * 4;
-            if offset + 3 < bgra.len() {
-                bgra[offset..offset + 4].copy_from_slice(&color);
-            }
-        }
-    }
-}
-

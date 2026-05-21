@@ -158,7 +158,11 @@ impl LocalChatHub {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn block_identity(&self, identity_hash: impl Into<String>, reason: impl Into<String>) {
+    pub(crate) fn block_identity(
+        &self,
+        identity_hash: impl Into<String>,
+        reason: impl Into<String>,
+    ) {
         if let Ok(mut state) = self.state.lock() {
             state
                 .blocked_identities
@@ -634,8 +638,8 @@ fn local_chat_name_from_hash(hash: &str) -> String {
         "Merry", "Nimble", "Quiet", "Ruby", "Silver", "Sunny", "Velvet",
     ];
     const CREATURES: &[&str] = &[
-        "Dragon", "Sprite", "Phoenix", "Griffin", "Wyvern", "Unicorn", "Kelpie", "Dryad",
-        "Golem", "Pixie", "Wisp", "Sphinx", "Kirin", "Sylph", "Basilisk", "Chimera",
+        "Dragon", "Sprite", "Phoenix", "Griffin", "Wyvern", "Unicorn", "Kelpie", "Dryad", "Golem",
+        "Pixie", "Wisp", "Sphinx", "Kirin", "Sylph", "Basilisk", "Chimera",
     ];
     const SYMBOLS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 

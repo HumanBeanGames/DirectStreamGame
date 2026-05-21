@@ -685,8 +685,7 @@ fn palette_lab_html() -> String {
     function greyColor(value) {
       if (value <= 0) return [0, 0, 0, 255];
       if (value >= 1) return [255, 255, 255, 255];
-      const grey = srgbByte(value);
-      return [grey, grey, grey, 255];
+      return oklchColor(value, 0, 0);
     }
 
     function generatePalette(settings) {

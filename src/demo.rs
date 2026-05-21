@@ -1,6 +1,7 @@
 use crate::{
-    DirectText, DirectStreamSet, PlayStreamSound, StreamAudioClip, TwitchChatCommand, TwitchChatSender,
-    TwitchCommandAppExt, app::direct_stream_app, public_types::DirectStreamTarget,
+    DirectStreamSet, DirectText, PlayStreamSound, StreamAudioClip, TwitchChatCommand,
+    TwitchChatSender, TwitchCommandAppExt, app::direct_stream_app,
+    public_types::DirectStreamTarget,
 };
 use bevy::{
     asset::RenderAssetUsages,
@@ -9,8 +10,17 @@ use bevy::{
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
     window::FileDragAndDrop,
 };
+use crossbeam_channel::Receiver;
 use ffmpeg_next as ffmpeg;
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
 const DEMO_MUSIC_PATH: &str = "music/Elijah_K - Iron.wav";
 const DEMO_SFX_PATH: &str = "sfx/boing_x.wav";
@@ -29,17 +39,26 @@ pub struct DemoMusicStarted(bool);
 
 pub struct DemoVideoBackground {
     image: Handle<Image>,
-    decoder: Option<DemoVideoDecoder>,
-    timer: Timer,
+    worker: Option<DemoVideoWorker>,
 }
 
 impl Default for DemoVideoBackground {
     fn default() -> Self {
         Self {
             image: Handle::default(),
-            decoder: None,
-            timer: Timer::from_seconds(1.0 / 30.0, TimerMode::Repeating),
+            worker: None,
         }
+    }
+}
+
+pub struct DemoVideoWorker {
+    receiver: Receiver<Vec<u8>>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for DemoVideoWorker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
     }
 }
 
@@ -79,8 +98,7 @@ pub fn setup_demo_scene(
     ));
     if let Some(video_background) = video_background.as_mut() {
         video_background.image = background;
-        video_background.decoder = None;
-        video_background.timer = Timer::from_seconds(1.0 / 30.0, TimerMode::Repeating);
+        video_background.worker = None;
     }
 
     commands
@@ -149,12 +167,9 @@ pub fn handle_demo_video_drop(
             continue;
         }
 
-        match DemoVideoDecoder::open(path_buf, target.width, target.height) {
-            Ok(decoder) => {
-                let frame_seconds = decoder.frame_seconds;
-                background.timer =
-                    Timer::from_seconds(frame_seconds.max(1.0 / 120.0), TimerMode::Repeating);
-                background.decoder = Some(decoder);
+        match DemoVideoWorker::spawn(path_buf.clone(), target.width, target.height) {
+            Ok(worker) => {
+                background.worker = Some(worker);
                 eprintln!("Demo video loaded: {}", path_buf.display());
             }
             Err(err) => eprintln!("Could not load demo video {}: {err}", path_buf.display()),
@@ -163,25 +178,71 @@ pub fn handle_demo_video_drop(
 }
 
 pub fn update_demo_video_background(
-    time: Res<Time>,
     mut background: Option<NonSendMut<DemoVideoBackground>>,
     mut images: ResMut<Assets<Image>>,
 ) {
     let Some(background) = background.as_mut() else {
         return;
     };
-    if !background.timer.tick(time.delta()).just_finished() {
-        return;
-    }
     let image_handle = background.image.clone();
-    let Some(decoder) = background.decoder.as_mut() else {
+    let Some(worker) = background.worker.as_mut() else {
         return;
     };
-    let Some(frame) = decoder.next_frame() else {
+
+    let mut latest_frame = None;
+    while let Ok(frame) = worker.receiver.try_recv() {
+        latest_frame = Some(frame);
+    }
+
+    let Some(frame) = latest_frame else {
         return;
     };
     if let Some(image) = images.get_mut(&image_handle) {
         image.data = Some(frame);
+    }
+}
+
+impl DemoVideoWorker {
+    fn spawn(path: PathBuf, output_width: u32, output_height: u32) -> Result<Self, String> {
+        let frame_seconds =
+            DemoVideoDecoder::open(&path, output_width, output_height)?.frame_seconds;
+        let (sender, receiver) = crossbeam_channel::bounded(4);
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+
+        thread::spawn(move || {
+            let mut decoder = match DemoVideoDecoder::open(&path, output_width, output_height) {
+                Ok(decoder) => decoder,
+                Err(err) => {
+                    eprintln!(
+                        "Could not start demo video worker {}: {err}",
+                        path.display()
+                    );
+                    return;
+                }
+            };
+            let frame_interval = Duration::from_secs_f32(frame_seconds.max(1.0 / 120.0));
+            let mut next_frame_at = Instant::now();
+
+            while !thread_stop.load(Ordering::Relaxed) {
+                match decoder.next_frame() {
+                    Some(frame) => {
+                        let _ = sender.try_send(frame);
+                    }
+                    None => thread::sleep(Duration::from_millis(2)),
+                }
+
+                next_frame_at += frame_interval;
+                let now = Instant::now();
+                if next_frame_at > now {
+                    thread::sleep(next_frame_at - now);
+                } else if now.duration_since(next_frame_at) > frame_interval {
+                    next_frame_at = now + frame_interval;
+                }
+            }
+        });
+
+        Ok(Self { receiver, stop })
     }
 }
 

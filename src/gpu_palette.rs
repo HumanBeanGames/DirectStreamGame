@@ -5,7 +5,7 @@ use crate::{
     stream_control::StreamControl,
 };
 use bevy::{
-    asset::RenderAssetUsages,
+    asset::{RenderAssetUsages, load_internal_asset, uuid_handle},
     camera::{RenderTarget, visibility::RenderLayers},
     prelude::*,
     reflect::TypePath,
@@ -13,19 +13,26 @@ use bevy::{
     render::render_resource::{
         AsBindGroup, Extent3d, TextureDimension, TextureFormat, TextureUsages,
     },
-    shader::ShaderRef,
+    shader::{Shader, ShaderRef},
     sprite_render::{Material2d, Material2dPlugin},
 };
 use std::time::Instant;
 
 pub(crate) const GPU_PALETTE_LAYER: usize = 1;
 pub(crate) const GPU_DIRECT_TEXT_LAYER: usize = 2;
-const PALETTE_SHADER_PATH: &str = "shaders/palette_material_2d.wgsl";
+const PALETTE_SHADER_HANDLE: Handle<Shader> = uuid_handle!("b69538c2-4fa1-4a12-89a5-32986e423f4d");
 
 pub(crate) struct GpuPalettePlugin;
 
 impl Plugin for GpuPalettePlugin {
     fn build(&self, app: &mut App) {
+        load_internal_asset!(
+            app,
+            PALETTE_SHADER_HANDLE,
+            "../assets/shaders/palette_material_2d.wgsl",
+            Shader::from_wgsl
+        );
+
         app.add_plugins(Material2dPlugin::<PaletteMaterial>::default())
             .add_systems(Update, sync_palette_material_bias)
             .add_systems(Update, cycle_camera_render_targets);
@@ -45,7 +52,7 @@ pub(crate) struct PaletteMaterial {
 
 impl Material2d for PaletteMaterial {
     fn fragment_shader() -> ShaderRef {
-        PALETTE_SHADER_PATH.into()
+        ShaderRef::Handle(PALETTE_SHADER_HANDLE)
     }
 }
 

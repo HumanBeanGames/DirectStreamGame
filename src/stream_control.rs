@@ -95,10 +95,6 @@ impl StreamControl {
         self.twitch_handle.is_some() || self.custom_stream_state.is_active()
     }
 
-    pub(crate) fn should_capture(&self) -> bool {
-        self.is_streaming() || self.preview_sender.is_some()
-    }
-
     fn start(
         &mut self,
         senders: &mut RawFrameSenders,
@@ -255,6 +251,7 @@ impl StreamControl {
         target.fps = fps;
         readback.images = gpu_palette.output_images.clone();
         readback.batch_size = batch_size;
+        readback.next_readback_entity = 0;
         readback.batch_started_at = None;
         readback.batch_in_progress = false;
         readback.frame_due = false;

@@ -73,6 +73,8 @@
     let tileCache = [];
     let framebuffer = new Uint8Array(0);
     let image = ctx.createImageData(1, 1);
+    let tileScratch = new Uint8Array(64);
+    let dirtyTileIndices = [];
     let pending = new Uint8Array(0);
     let frameQueue = [];
     let streamReady = false;
@@ -113,6 +115,7 @@
       tileCache = [];
       framebuffer = new Uint8Array(0);
       image = ctx.createImageData(1, 1);
+      dirtyTileIndices.length = 0;
       pending = new Uint8Array(0);
       frameQueue = [];
       streamReady = false;
@@ -266,13 +269,13 @@
       if (frameType === 0) {
         framebuffer.set(payload.slice(0, framebuffer.length));
         seedTileCacheFromFramebuffer();
+        renderFramebuffer();
       } else if (frameType === 1) {
         applyDelta(payload);
+        renderDirtyTiles();
       } else {
         return;
       }
-
-      renderFramebuffer();
     }
 
     function applyDelta(payload) {
@@ -281,6 +284,7 @@
       const tileCount = tilesX * tilesY;
       const maskLength = Math.ceil(tileCount / 8);
       let cursor = maskLength;
+      dirtyTileIndices.length = 0;
 
       for (let tileIndex = 0; tileIndex < tileCount; tileIndex++) {
         if ((payload[Math.floor(tileIndex / 8)] & (1 << (tileIndex % 8))) === 0) {
@@ -289,19 +293,19 @@
 
         const tileX = tileIndex % tilesX;
         const tileY = Math.floor(tileIndex / tilesX);
-        const decoded = decodeTile(payload, cursor, tileX, tileY);
-        cursor = decoded.cursor;
-        writeTile(tileX, tileY, decoded.tile);
-        rememberTile(decoded.tile);
+        cursor = decodeTile(payload, cursor, tileX, tileY, tileScratch);
+        writeTile(tileX, tileY, tileScratch);
+        rememberTile(tileScratch);
+        dirtyTileIndices.push(tileIndex);
       }
     }
 
-    function decodeTile(bytes, cursor, tileX, tileY) {
+    function decodeTile(bytes, cursor, tileX, tileY, tile) {
       const mode = bytes[cursor++];
-      const tile = readTile(tileX, tileY);
+      readTile(tileX, tileY, tile);
 
       if (mode === 0) {
-        tile.set(bytes.slice(cursor, cursor + 64));
+        tile.set(bytes.subarray(cursor, cursor + 64));
         cursor += 64;
       } else if (mode === 1) {
         tile.fill(bytes[cursor++]);
@@ -313,7 +317,7 @@
         for (let span = 0; span < spanCount; span++) {
           out += bytes[cursor++];
           const len = bytes[cursor++];
-          tile.set(bytes.slice(cursor, cursor + len), out);
+          tile.set(bytes.subarray(cursor, cursor + len), out);
           cursor += len;
           out += len;
         }
@@ -327,7 +331,7 @@
         }
       }
 
-      return { tile, cursor };
+      return cursor;
     }
 
     function rememberTile(tile) {
@@ -341,7 +345,8 @@
       const tilesY = height / tileSize;
       for (let tileY = 0; tileY < tilesY; tileY++) {
         for (let tileX = 0; tileX < tilesX; tileX++) {
-          rememberTile(readTile(tileX, tileY));
+          readTile(tileX, tileY, tileScratch);
+          rememberTile(tileScratch);
         }
       }
     }
@@ -360,8 +365,7 @@
       return cursor;
     }
 
-    function readTile(tileX, tileY) {
-      const tile = new Uint8Array(64);
+    function readTile(tileX, tileY, tile = new Uint8Array(64)) {
       for (let y = 0; y < tileSize; y++) {
         for (let x = 0; x < tileSize; x++) {
           tile[y * tileSize + x] = framebuffer[(tileY * tileSize + y) * width + tileX * tileSize + x];
@@ -373,7 +377,15 @@
     function writeTile(tileX, tileY, tile) {
       for (let y = 0; y < tileSize; y++) {
         for (let x = 0; x < tileSize; x++) {
-          framebuffer[(tileY * tileSize + y) * width + tileX * tileSize + x] = tile[y * tileSize + x];
+          const pixelIndex = (tileY * tileSize + y) * width + tileX * tileSize + x;
+          const paletteIndex = tile[y * tileSize + x];
+          framebuffer[pixelIndex] = paletteIndex;
+          const color = palette[paletteIndex] || palette[0] || [0, 0, 0, 255];
+          const out = pixelIndex * 4;
+          image.data[out] = color[0];
+          image.data[out + 1] = color[1];
+          image.data[out + 2] = color[2];
+          image.data[out + 3] = color[3];
         }
       }
     }
@@ -388,6 +400,23 @@
         image.data[out + 3] = color[3];
       }
       ctx.putImageData(image, 0, 0);
+    }
+
+    function renderDirtyTiles() {
+      for (let i = 0; i < dirtyTileIndices.length; i++) {
+        const tileIndex = dirtyTileIndices[i];
+        const tileX = tileIndex % (width / tileSize);
+        const tileY = Math.floor(tileIndex / (width / tileSize));
+        ctx.putImageData(
+          image,
+          0,
+          0,
+          tileX * tileSize,
+          tileY * tileSize,
+          tileSize,
+          tileSize
+        );
+      }
     }
 
     async function connect() {

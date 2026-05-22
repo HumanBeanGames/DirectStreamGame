@@ -76,6 +76,7 @@ pub fn direct_stream_app() -> App {
             custom_stream_state.clone(),
             config.palette_config_path.clone(),
             config.prebaked_palette,
+            effective_custom_batch_size(config.custom_host_batch_size, config.stream_fps),
         );
     } else if preview_enabled {
         start_preview_encoder(preview_receiver, frame_hub.clone(), stats.clone());

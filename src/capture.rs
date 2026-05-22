@@ -6,7 +6,10 @@ use crate::{
     scene::StreamReadback,
     stream_control::StreamControl,
 };
-use bevy::{prelude::*, render::gpu_readback::ReadbackComplete};
+use bevy::{
+    prelude::*,
+    render::gpu_readback::{Readback, ReadbackComplete},
+};
 use crossbeam_channel::Sender;
 use std::time::Instant;
 
@@ -29,15 +32,18 @@ pub(crate) fn queue_readback_frame(
     mut readback: ResMut<StreamReadback>,
 ) {
     let callback_started = Instant::now();
-    let pending = readback.pending_requests.remove(&event.entity);
+    let Some(pending) = readback.pending_requests.remove(&event.entity) else {
+        commands.entity(event.entity).remove::<Readback>();
+        senders
+            .stats
+            .with_mut(|stats| stats.custom_pending_readbacks = readback.pending_requests.len());
+        return;
+    };
     senders
         .stats
         .with_mut(|stats| stats.custom_pending_readbacks = readback.pending_requests.len());
-    let captured_at = pending
-        .as_ref()
-        .map(|pending| pending.captured_at)
-        .unwrap_or(callback_started);
-    commands.entity(event.entity).despawn();
+    let captured_at = pending.captured_at;
+    commands.entity(event.entity).remove::<Readback>();
 
     let preview_full = senders.preview.as_ref().is_some_and(Sender::is_full);
     let custom_full = senders.custom.as_ref().is_some_and(Sender::is_full);
@@ -57,16 +63,14 @@ pub(crate) fn queue_readback_frame(
     }
 
     if target.output_is_indexed {
-        if let Some(pending) = pending {
-            senders.stats.with_mut(|stats| {
-                stats.record_custom_readback_wait(
-                    callback_started
-                        .duration_since(pending.requested_at)
-                        .as_secs_f64()
-                        * 1000.0,
-                );
-            });
-        }
+        senders.stats.with_mut(|stats| {
+            stats.record_custom_readback_wait(
+                callback_started
+                    .duration_since(pending.requested_at)
+                    .as_secs_f64()
+                    * 1000.0,
+            );
+        });
 
         let row_bytes = target.width as usize;
         let aligned_row_bytes =

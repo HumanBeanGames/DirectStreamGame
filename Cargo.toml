@@ -7,6 +7,10 @@ edition = "2024"
 name = "direct_stream_game"
 path = "src/lib.rs"
 
+[features]
+default = []
+cpu-palette-encoder = []
+
 [dependencies]
 arboard = "3.4.0"
 bevy = "0.18.1"

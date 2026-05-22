@@ -24,8 +24,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-const MAX_IN_FLIGHT_READBACKS: usize = 30;
-
 pub(crate) struct PendingReadback {
     pub(crate) requested_at: Instant,
     pub(crate) captured_at: Instant,
@@ -40,10 +38,11 @@ pub(crate) struct RenderedBatchFrame {
 #[derive(Resource)]
 pub(crate) struct StreamReadback {
     pub(crate) images: Vec<Handle<Image>>,
+    pub(crate) readback_entities: Vec<Entity>,
+    pub(crate) next_readback_entity: usize,
     pub(crate) frame_interval: Duration,
     pub(crate) frame_accumulator: Duration,
     pub(crate) frame_due: bool,
-    pub(crate) max_in_flight: usize,
     pub(crate) pending_requests: HashMap<Entity, PendingReadback>,
     pub(crate) batch_size: usize,
     pub(crate) batch_started_at: Option<Instant>,
@@ -128,13 +127,16 @@ pub(crate) fn setup_direct_stream_scene(
             batch_size,
         );
         let pipeline_clone = pipeline.clone();
+        let readback_entities =
+            spawn_readback_entities(&mut commands, pipeline_clone.output_images.len());
         commands.insert_resource(pipeline);
         commands.insert_resource(StreamReadback {
             images: pipeline_clone.output_images.clone(),
+            readback_entities,
+            next_readback_entity: 0,
             frame_interval: Duration::from_secs_f64(1.0 / config.stream_fps as f64),
             frame_accumulator: Duration::ZERO,
             frame_due: false,
-            max_in_flight: MAX_IN_FLIGHT_READBACKS,
             pending_requests: HashMap::default(),
             batch_size,
             batch_started_at: None,
@@ -145,6 +147,17 @@ pub(crate) fn setup_direct_stream_scene(
         });
     }
     commands.insert_resource(target);
+}
+
+fn spawn_readback_entities(commands: &mut Commands, count: usize) -> Vec<Entity> {
+    (0..count)
+        .map(|_| {
+            commands
+                .spawn_empty()
+                .observe(crate::capture::queue_readback_frame)
+                .id()
+        })
+        .collect()
 }
 
 fn spawn_stats_window(commands: &mut Commands, custom_host: bool, prebaked_palette: bool) {

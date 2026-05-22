@@ -10,7 +10,6 @@ use ffmpeg::{
 };
 use ffmpeg_next as ffmpeg;
 use std::{
-    collections::VecDeque,
     f32::consts::PI,
     fs,
     path::Path,
@@ -437,18 +436,23 @@ pub struct DirectStreamAudioTarget {
 }
 
 struct DirectStreamAudioBuffer {
-    interleaved_stereo_f32: VecDeque<f32>,
-    max_samples: usize,
+    samples: Vec<f32>,
+    read_index: usize,
+    len: usize,
 }
 
 impl DirectStreamAudioTarget {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(DirectStreamAudioBuffer {
-                interleaved_stereo_f32: VecDeque::new(),
-                max_samples: STREAM_AUDIO_SAMPLE_RATE as usize
-                    * STREAM_AUDIO_CHANNELS
-                    * STREAM_AUDIO_BUFFER_SECONDS,
+                samples: vec![
+                    0.0;
+                    STREAM_AUDIO_SAMPLE_RATE as usize
+                        * STREAM_AUDIO_CHANNELS
+                        * STREAM_AUDIO_BUFFER_SECONDS
+                ],
+                read_index: 0,
+                len: 0,
             })),
         }
     }
@@ -464,12 +468,7 @@ impl DirectStreamAudioTarget {
     pub fn push_stereo_f32(&self, interleaved_stereo: &[f32]) {
         if let Ok(mut buffer) = self.inner.lock() {
             for sample in interleaved_stereo {
-                if buffer.interleaved_stereo_f32.len() >= buffer.max_samples {
-                    buffer.interleaved_stereo_f32.pop_front();
-                }
-                buffer
-                    .interleaved_stereo_f32
-                    .push_back(normalize_stream_sample(*sample));
+                buffer.push(normalize_stream_sample(*sample));
             }
         }
     }
@@ -479,10 +478,7 @@ impl DirectStreamAudioTarget {
             for sample in mono {
                 let sample = normalize_stream_sample(*sample);
                 for channel_sample in [sample, sample] {
-                    if buffer.interleaved_stereo_f32.len() >= buffer.max_samples {
-                        buffer.interleaved_stereo_f32.pop_front();
-                    }
-                    buffer.interleaved_stereo_f32.push_back(channel_sample);
+                    buffer.push(channel_sample);
                 }
             }
         }
@@ -492,7 +488,7 @@ impl DirectStreamAudioTarget {
         let mut output = vec![0.0; frames * STREAM_AUDIO_CHANNELS];
         if let Ok(mut buffer) = self.inner.lock() {
             for sample in &mut output {
-                if let Some(next) = buffer.interleaved_stereo_f32.pop_front() {
+                if let Some(next) = buffer.pop() {
                     *sample = next;
                 } else {
                     break;
@@ -502,34 +498,69 @@ impl DirectStreamAudioTarget {
         output
     }
 
-    pub(crate) fn take_delayed_stereo_f32(
+    pub(crate) fn take_delayed_stereo_f32_into(
         &self,
         frames: usize,
         delay_frames: usize,
-    ) -> Option<Vec<f32>> {
+        output: &mut Vec<f32>,
+    ) -> bool {
         let sample_count = frames * STREAM_AUDIO_CHANNELS;
         let delay_sample_count = delay_frames * STREAM_AUDIO_CHANNELS;
         if let Ok(mut buffer) = self.inner.lock() {
-            if buffer.interleaved_stereo_f32.len() < sample_count + delay_sample_count {
-                return None;
+            if buffer.len < sample_count + delay_sample_count {
+                return false;
             }
 
-            let mut output = Vec::with_capacity(sample_count);
-            for _ in 0..sample_count {
-                if let Some(sample) = buffer.interleaved_stereo_f32.pop_front() {
-                    output.push(sample);
-                }
+            output.clear();
+            if output.capacity() < sample_count {
+                output.reserve(sample_count - output.capacity());
             }
-            Some(output)
+            for _ in 0..sample_count {
+                output.push(buffer.pop().unwrap_or(0.0));
+            }
+            true
         } else {
-            None
+            false
         }
     }
 
     pub(crate) fn clear(&self) {
         if let Ok(mut buffer) = self.inner.lock() {
-            buffer.interleaved_stereo_f32.clear();
+            buffer.clear();
         }
+    }
+}
+
+impl DirectStreamAudioBuffer {
+    fn push(&mut self, sample: f32) {
+        let capacity = self.samples.len();
+        if capacity == 0 {
+            return;
+        }
+
+        let write_index = (self.read_index + self.len) % capacity;
+        self.samples[write_index] = sample;
+        if self.len == capacity {
+            self.read_index = (self.read_index + 1) % capacity;
+        } else {
+            self.len += 1;
+        }
+    }
+
+    fn pop(&mut self) -> Option<f32> {
+        if self.len == 0 {
+            return None;
+        }
+
+        let sample = self.samples[self.read_index];
+        self.read_index = (self.read_index + 1) % self.samples.len();
+        self.len -= 1;
+        Some(sample)
+    }
+
+    fn clear(&mut self) {
+        self.read_index = 0;
+        self.len = 0;
     }
 }
 
@@ -611,6 +642,8 @@ pub(crate) fn start_custom_audio_packet_pump(
         let mut last_right = 0.0f32;
         let mut synthesized_previous_packet = false;
         let mut downsample_state = AudioDownsampleState::new();
+        let mut samples = Vec::with_capacity(frames_per_packet * STREAM_AUDIO_CHANNELS);
+        let mut packet = Vec::with_capacity(frames_per_packet);
 
         loop {
             if !active.is_active() {
@@ -624,9 +657,7 @@ pub(crate) fn start_custom_audio_packet_pump(
                 continue;
             }
 
-            let samples = if let Some(mut samples) =
-                audio.take_delayed_stereo_f32(frames_per_packet, delay_frames)
-            {
+            if audio.take_delayed_stereo_f32_into(frames_per_packet, delay_frames, &mut samples) {
                 if synthesized_previous_packet {
                     smooth_packet_start(&mut samples, last_left, last_right);
                 }
@@ -636,18 +667,22 @@ pub(crate) fn start_custom_audio_packet_pump(
                 }
                 started = true;
                 synthesized_previous_packet = false;
-                samples
             } else if started {
                 synthesized_previous_packet = true;
-                fade_to_silence_packet(frames_per_packet, &mut last_left, &mut last_right)
+                fade_to_silence_packet_into(
+                    frames_per_packet,
+                    &mut last_left,
+                    &mut last_right,
+                    &mut samples,
+                );
             } else {
                 thread::sleep(Duration::from_millis(5));
                 continue;
-            };
+            }
 
-            let packet = pcm_mulaw_8khz_mono_packet(&samples, &mut downsample_state);
+            pcm_mulaw_8khz_mono_packet_into(&samples, &mut downsample_state, &mut packet);
             let packet_len = packet.len() as u64;
-            hub.publish(packet);
+            hub.publish(packet.clone());
             stats.with_mut(|stats| {
                 stats.custom_audio_packets_sent += 1;
                 stats.custom_audio_bytes_sent += packet_len;
@@ -666,12 +701,16 @@ pub(crate) fn start_custom_audio_packet_pump(
 
 struct AudioDownsampleState {
     lowpass_sample: f32,
+    lowpass_alpha: f32,
 }
 
 impl AudioDownsampleState {
     fn new() -> Self {
         Self {
             lowpass_sample: 0.0,
+            lowpass_alpha: 1.0
+                - (-2.0 * PI * CUSTOM_AUDIO_LOWPASS_CUTOFF_HZ / STREAM_AUDIO_SAMPLE_RATE as f32)
+                    .exp(),
         }
     }
 
@@ -680,18 +719,23 @@ impl AudioDownsampleState {
     }
 
     fn lowpass(&mut self, sample: f32) -> f32 {
-        let alpha = 1.0
-            - (-2.0 * PI * CUSTOM_AUDIO_LOWPASS_CUTOFF_HZ / STREAM_AUDIO_SAMPLE_RATE as f32).exp();
-        self.lowpass_sample += alpha * (sample - self.lowpass_sample);
+        self.lowpass_sample += self.lowpass_alpha * (sample - self.lowpass_sample);
         self.lowpass_sample
     }
 }
 
-fn pcm_mulaw_8khz_mono_packet(samples: &[f32], state: &mut AudioDownsampleState) -> Vec<u8> {
+fn pcm_mulaw_8khz_mono_packet_into(
+    samples: &[f32],
+    state: &mut AudioDownsampleState,
+    packet: &mut Vec<u8>,
+) {
     let downsample_factor = (STREAM_AUDIO_SAMPLE_RATE / CUSTOM_AUDIO_SAMPLE_RATE).max(1) as usize;
     let source_frames = samples.len() / STREAM_AUDIO_CHANNELS;
     let output_frames = source_frames / downsample_factor;
-    let mut packet = Vec::with_capacity(output_frames);
+    packet.clear();
+    if packet.capacity() < output_frames {
+        packet.reserve(output_frames - packet.capacity());
+    }
 
     for output_frame in 0..output_frames {
         let mut sum = 0.0;
@@ -709,8 +753,6 @@ fn pcm_mulaw_8khz_mono_packet(samples: &[f32], state: &mut AudioDownsampleState)
         let mono = if count == 0 { 0.0 } else { sum / count as f32 };
         packet.push(linear_to_mulaw(mono));
     }
-
-    packet
 }
 
 fn linear_to_mulaw(sample: f32) -> u8 {
@@ -735,8 +777,14 @@ fn smooth_packet_start(samples: &mut [f32], last_left: f32, last_right: f32) {
     }
 }
 
-fn fade_to_silence_packet(frames: usize, last_left: &mut f32, last_right: &mut f32) -> Vec<f32> {
-    let mut samples = vec![0.0; frames * STREAM_AUDIO_CHANNELS];
+fn fade_to_silence_packet_into(
+    frames: usize,
+    last_left: &mut f32,
+    last_right: &mut f32,
+    samples: &mut Vec<f32>,
+) {
+    samples.clear();
+    samples.resize(frames * STREAM_AUDIO_CHANNELS, 0.0);
     for frame in 0..frames {
         let t = 1.0 - frame as f32 / frames as f32;
         samples[frame * STREAM_AUDIO_CHANNELS] = *last_left * t;
@@ -744,7 +792,6 @@ fn fade_to_silence_packet(frames: usize, last_left: &mut f32, last_right: &mut f
     }
     *last_left = 0.0;
     *last_right = 0.0;
-    samples
 }
 
 fn last_stereo_frame(samples: &[f32]) -> Option<[f32; 2]> {

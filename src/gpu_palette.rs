@@ -338,13 +338,21 @@ pub(crate) fn cycle_camera_render_targets(
         readback.batch_in_progress = true;
         readback.batch_started_at.get_or_insert_with(Instant::now);
 
-        let batch_frames = readback.rendered_batch_frames.drain(..).collect::<Vec<_>>();
-        for batch_frame in batch_frames {
+        let mut batch_frames = readback
+            .rendered_batch_frames
+            .drain(..)
+            .collect::<Vec<_>>()
+            .into_iter();
+        while let Some(batch_frame) = batch_frames.next() {
             let current_image = readback.images[batch_frame.output_index].clone();
-            let readback_entity = commands
-                .spawn(Readback::texture(current_image))
-                .observe(crate::capture::queue_readback_frame)
-                .id();
+            let Some(readback_entity) = next_available_readback_entity(&mut readback) else {
+                readback.rendered_batch_frames.push(batch_frame);
+                readback.rendered_batch_frames.extend(batch_frames);
+                break;
+            };
+            commands
+                .entity(readback_entity)
+                .insert(Readback::texture(current_image));
             readback.pending_requests.insert(
                 readback_entity,
                 PendingReadback {
@@ -397,6 +405,23 @@ fn update_readback_diagnostics(stats: &crate::stats::SharedStats, readback: &Str
         stats.custom_batch_buffered_frames = readback.rendered_batch_frames.len()
             + usize::from(readback.frame_waiting_for_render.is_some());
     });
+}
+
+fn next_available_readback_entity(readback: &mut StreamReadback) -> Option<Entity> {
+    if readback.readback_entities.is_empty() {
+        return None;
+    }
+
+    for _ in 0..readback.readback_entities.len() {
+        let index = readback.next_readback_entity % readback.readback_entities.len();
+        readback.next_readback_entity = (index + 1) % readback.readback_entities.len();
+        let entity = readback.readback_entities[index];
+        if !readback.pending_requests.contains_key(&entity) {
+            return Some(entity);
+        }
+    }
+
+    None
 }
 
 fn output_image_count(batch_size: usize) -> usize {

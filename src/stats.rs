@@ -262,12 +262,6 @@ impl StreamStats {
         self.twitch_started_at = None;
     }
 
-    pub(crate) fn record_custom_frame_sent(&mut self) {
-        let now = Instant::now();
-        self.custom_frame_samples.push_back(now);
-        self.refresh_custom_fps(now);
-    }
-
     pub(crate) fn record_custom_frame_batch_sent(
         &mut self,
         frames: usize,

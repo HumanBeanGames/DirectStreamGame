@@ -464,10 +464,11 @@ fn stream_palette(
             stats.custom_cached_tiles_sent += encoded_batch.tile_counts.cached;
             stats.custom_skipped_tiles += encoded_batch.tile_counts.skipped;
             stats.latest_frame_bytes = encoded_batch.bytes / batch.len().max(1);
-            for _ in 0..encoded_batch.packets.len() {
-                stats.custom_frames_sent += 1;
-                stats.record_custom_frame_sent();
-            }
+            stats.custom_frames_sent += encoded_batch.packets.len() as u64;
+            stats.record_custom_frame_batch_sent(
+                encoded_batch.packets.len(),
+                Duration::from_secs_f64(1.0 / active.fps().max(1) as f64),
+            );
         });
     }
     stats.with_mut(|stats| stats.stream_clients = stats.stream_clients.saturating_sub(1));

@@ -1,5 +1,6 @@
 use crate::{
     palette::SharedPaletteBias,
+    palette_lut::PaletteLookup,
     public_types::DirectStreamTarget,
     scene::{PendingReadback, RenderedBatchFrame, StreamReadback},
     stream_control::StreamControl,
@@ -48,6 +49,10 @@ pub(crate) struct PaletteMaterial {
     pub(crate) source_image: Handle<Image>,
     #[texture(3)]
     pub(crate) palette_texture: Handle<Image>,
+    #[uniform(4)]
+    pub(crate) lookup_params: Vec4,
+    #[texture(5)]
+    pub(crate) lookup_texture: Handle<Image>,
 }
 
 impl Material2d for PaletteMaterial {
@@ -132,6 +137,25 @@ pub(crate) fn make_palette_texture(colors: &[[u8; 4]]) -> Image {
     image
 }
 
+pub(crate) fn make_lookup_texture(lookup: Option<&PaletteLookup>) -> Image {
+    let data = lookup
+        .map(|lookup| lookup.entries().to_vec())
+        .unwrap_or_else(|| vec![0; 4096 * 4096]);
+    let mut image = Image::new_fill(
+        Extent3d {
+            width: 4096,
+            height: 4096,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &data,
+        TextureFormat::R8Unorm,
+        RenderAssetUsages::default(),
+    );
+    image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
+    image
+}
+
 pub(crate) fn spawn_custom_host_pipeline(
     commands: &mut Commands,
     images: &mut Assets<Image>,
@@ -142,6 +166,7 @@ pub(crate) fn spawn_custom_host_pipeline(
     source_image: Handle<Image>,
     palette_colors: &[[u8; 4]],
     palette_bias: crate::palette::PaletteBias,
+    prebaked_lookup: Option<&PaletteLookup>,
     target: &mut DirectStreamTarget,
     batch_size: usize,
 ) -> GpuPalettePipeline {
@@ -150,10 +175,13 @@ pub(crate) fn spawn_custom_host_pipeline(
         .collect();
     let first_output = output_images.first().cloned().unwrap();
     let palette_texture = images.add(make_palette_texture(palette_colors));
+    let lookup_texture = images.add(make_lookup_texture(prebaked_lookup));
     let material = materials.add(PaletteMaterial {
         params: palette_material_params(&palette_bias, palette_colors.len()),
         source_image,
         palette_texture,
+        lookup_params: palette_lookup_params(prebaked_lookup.is_some()),
+        lookup_texture,
     });
 
     let palette_camera = commands
@@ -217,6 +245,7 @@ pub(crate) fn retarget_custom_host_pipeline(
     width: u32,
     height: u32,
     source_image: Handle<Image>,
+    prebaked_lookup: Option<&PaletteLookup>,
     target: &mut DirectStreamTarget,
     batch_size: usize,
 ) -> Result<(), ()> {
@@ -239,6 +268,8 @@ pub(crate) fn retarget_custom_host_pipeline(
 
     if let Some(material) = materials.get_mut(&pipeline.material) {
         material.source_image = source_image;
+        material.lookup_texture = images.add(make_lookup_texture(prebaked_lookup));
+        material.lookup_params = palette_lookup_params(prebaked_lookup.is_some());
     } else {
         return Err(());
     }
@@ -378,5 +409,14 @@ fn palette_material_params(bias: &crate::palette::PaletteBias, palette_count: us
         bias.chroma,
         bias.hue,
         palette_count.max(1) as f32,
+    )
+}
+
+fn palette_lookup_params(prebaked_lookup_active: bool) -> Vec4 {
+    Vec4::new(
+        if prebaked_lookup_active { 1.0 } else { 0.0 },
+        0.0,
+        0.0,
+        0.0,
     )
 }

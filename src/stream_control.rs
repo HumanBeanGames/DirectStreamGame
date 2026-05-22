@@ -7,7 +7,9 @@ use crate::{
         GpuPalettePipeline, PaletteMaterial, make_stream_source_image,
         retarget_custom_host_pipeline,
     },
-    palette::{PaletteBias, SharedPaletteBias},
+    palette::{
+        PaletteBias, SharedPaletteBias, load_palette_config_runtime, load_prebaked_lookup_runtime,
+    },
     public_types::DirectStreamTarget,
     scene::StreamReadback,
     stats::SharedStats,
@@ -213,6 +215,11 @@ impl StreamControl {
             return;
         };
         let batch_size = effective_custom_batch_size(config.custom_host_batch_size, fps);
+        let palette_config = load_palette_config_runtime(&config.palette_config_path);
+        let palette_lookup = self
+            .prebaked_palette
+            .then(|| load_prebaked_lookup_runtime(&config.palette_config_path, &palette_config))
+            .flatten();
 
         let image = images.add(make_stream_source_image(width, height));
 
@@ -232,6 +239,7 @@ impl StreamControl {
             width,
             height,
             image.clone(),
+            palette_lookup.as_ref(),
             target,
             batch_size,
         )

@@ -61,7 +61,7 @@ impl AppConfig {
             } else if arg == "--custom-host" {
                 custom_host = true;
                 window_mode = WindowMode::Stats;
-            } else if arg == "--prebaked" {
+            } else if arg == "--prebaked" || arg == "--use_prebaked_lookup" {
                 prebaked_palette = true;
             } else if let Some(width) = arg.strip_prefix("--stream-width=") {
                 stream_width = width.parse().unwrap_or(stream_width);

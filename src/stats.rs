@@ -268,6 +268,25 @@ impl StreamStats {
         self.refresh_custom_fps(now);
     }
 
+    pub(crate) fn record_custom_frame_batch_sent(
+        &mut self,
+        frames: usize,
+        frame_interval: Duration,
+    ) {
+        if frames == 0 {
+            return;
+        }
+
+        let now = Instant::now();
+        let batch_duration = frame_interval.mul_f64(frames.saturating_sub(1) as f64);
+        let first_frame_time = now.checked_sub(batch_duration).unwrap_or(now);
+        for index in 0..frames {
+            self.custom_frame_samples
+                .push_back(first_frame_time + frame_interval.mul_f64(index as f64));
+        }
+        self.refresh_custom_fps(now);
+    }
+
     pub(crate) fn record_custom_app_frame(&mut self) {
         let now = Instant::now();
         self.custom_app_frame_samples.push_back(now);
@@ -280,14 +299,20 @@ impl StreamStats {
             self.custom_app_frame_samples.pop_front();
         }
 
-        let Some(oldest) = self.custom_app_frame_samples.front().copied() else {
+        if self.custom_app_frame_samples.len() < 2 {
             self.custom_app_fps = 0.0;
             return;
-        };
+        }
+
+        let oldest = self
+            .custom_app_frame_samples
+            .front()
+            .copied()
+            .expect("length checked");
 
         let elapsed = now.duration_since(oldest).as_secs_f64();
         self.custom_app_fps = if elapsed > 0.0 {
-            self.custom_app_frame_samples.len() as f64 / elapsed
+            (self.custom_app_frame_samples.len() - 1) as f64 / elapsed
         } else {
             0.0
         };
@@ -313,10 +338,16 @@ impl StreamStats {
             self.custom_frame_samples.pop_front();
         }
 
-        let Some(oldest) = self.custom_frame_samples.front().copied() else {
+        if self.custom_frame_samples.len() < 2 {
             self.custom_actual_fps = 0.0;
             return;
-        };
+        }
+
+        let oldest = self
+            .custom_frame_samples
+            .front()
+            .copied()
+            .expect("length checked");
 
         let elapsed = now.duration_since(oldest).as_secs_f64();
         if elapsed <= 0.0 {
@@ -324,7 +355,7 @@ impl StreamStats {
             return;
         }
 
-        let frame_count = self.custom_frame_samples.len();
+        let frame_count = self.custom_frame_samples.len() - 1;
         self.custom_actual_fps = frame_count as f64 / elapsed;
     }
 }

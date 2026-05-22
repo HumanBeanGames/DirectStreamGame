@@ -4,6 +4,10 @@ struct PaletteParams {
     bias: vec4<f32>,
 };
 
+struct LookupParams {
+    active: vec4<f32>,
+};
+
 @group(#{MATERIAL_BIND_GROUP}) @binding(0)
 var<uniform> palette_params: PaletteParams;
 
@@ -15,6 +19,12 @@ var source_sampler: sampler;
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(3)
 var palette_texture: texture_2d<f32>;
+
+@group(#{MATERIAL_BIND_GROUP}) @binding(4)
+var<uniform> lookup_params: LookupParams;
+
+@group(#{MATERIAL_BIND_GROUP}) @binding(5)
+var lookup_texture: texture_2d<f32>;
 
 fn rgb_to_oklab(rgb: vec3<f32>) -> vec3<f32> {
     let l = 0.41222146 * rgb.r + 0.53633255 * rgb.g + 0.051445995 * rgb.b;
@@ -59,9 +69,36 @@ fn biased_distance_squared(color: vec3<f32>, palette_color: vec3<f32>, bias: vec
     return bias.x * dl * dl + bias.y * dc * dc + bias.z * dh * dh;
 }
 
+fn linear_to_srgb_channel(value: f32) -> f32 {
+    let clamped = clamp(value, 0.0, 1.0);
+    if clamped <= 0.0031308 {
+        return clamped * 12.92;
+    }
+    return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn linear_to_srgb(rgb: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        linear_to_srgb_channel(rgb.r),
+        linear_to_srgb_channel(rgb.g),
+        linear_to_srgb_channel(rgb.b)
+    );
+}
+
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let source = textureSample(source_image, source_sampler, mesh.uv).rgb;
+    if lookup_params.active.x > 0.5 {
+        let source_u8 = vec3<u32>(round(linear_to_srgb(source) * 255.0));
+        let lookup_index = source_u8.r * 65536u + source_u8.g * 256u + source_u8.b;
+        let lookup_coord = vec2<i32>(
+            i32(lookup_index % 4096u),
+            i32(lookup_index / 4096u)
+        );
+        let palette_index = textureLoad(lookup_texture, lookup_coord, 0).r;
+        return vec4<f32>(palette_index, 0.0, 0.0, 1.0);
+    }
+
     let bias = palette_params.bias.xyz;
     let palette_count = u32(max(palette_params.bias.w, 1.0));
 

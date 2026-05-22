@@ -1,7 +1,8 @@
 use crate::{
     frames::{IndexedFrame, RawFrame},
     palette_lut::{
-        PaletteConfig, PaletteLookup, PaletteMatching, default_palette_config, load_palette_config,
+        PaletteConfig, PaletteLookup, PaletteMatching, default_palette_config,
+        default_palette_lookup, load_lookup, load_palette_config, sibling_lut_path,
     },
     stats::SharedStats,
     stream_control::CustomStreamState,
@@ -47,7 +48,16 @@ impl Default for PaletteBias {
 }
 
 pub(crate) fn load_palette_runtime(path: impl AsRef<Path>) -> (Vec<[u8; 4]>, PaletteBias) {
-    let palette_config = load_palette_config(path.as_ref()).unwrap_or_else(|err| {
+    let palette_config = load_palette_config_runtime(path.as_ref());
+
+    (
+        palette_config.colors,
+        PaletteBias::from(palette_config.matching),
+    )
+}
+
+pub(crate) fn load_palette_config_runtime(path: &Path) -> PaletteConfig {
+    load_palette_config(path).unwrap_or_else(|err| {
         eprintln!("Could not load palette.toml, using embedded default palette: {err}");
         default_palette_config().unwrap_or_else(|fallback_err| {
             eprintln!(
@@ -58,12 +68,32 @@ pub(crate) fn load_palette_runtime(path: impl AsRef<Path>) -> (Vec<[u8; 4]>, Pal
                 matching: PaletteMatching::default(),
             }
         })
-    });
+    })
+}
 
-    (
-        palette_config.colors,
-        PaletteBias::from(palette_config.matching),
-    )
+pub(crate) fn load_prebaked_lookup_runtime(
+    path: &Path,
+    config: &PaletteConfig,
+) -> Option<PaletteLookup> {
+    let sibling_path = sibling_lut_path(path);
+    match load_lookup(&sibling_path, config) {
+        Ok(lookup) => Some(lookup),
+        Err(sibling_err) => match default_palette_lookup(config) {
+            Ok(lookup) => {
+                eprintln!(
+                    "Could not load sibling lookup {}, using embedded default ipsmap: {sibling_err}",
+                    sibling_path.display()
+                );
+                Some(lookup)
+            }
+            Err(default_err) => {
+                eprintln!(
+                    "Could not load prebaked lookup; falling back to live GPU matching. sibling: {sibling_err}; embedded: {default_err}"
+                );
+                None
+            }
+        },
+    }
 }
 
 impl From<PaletteMatching> for PaletteBias {
@@ -377,10 +407,14 @@ pub(crate) fn start_palette_preview_encoder(
     use_prebaked_lookup: bool,
 ) {
     let palette_config_path = palette_config_path.as_ref().to_owned();
-    let (palette_colors, palette_matching) = load_palette_runtime(&palette_config_path);
+    let palette_config = load_palette_config_runtime(&palette_config_path);
+    let palette_colors = palette_config.colors.clone();
+    let palette_matching = PaletteBias::from(palette_config.matching);
     palette_bias.set(palette_matching);
 
-    let _ = use_prebaked_lookup;
+    if use_prebaked_lookup {
+        let _ = load_prebaked_lookup_runtime(&palette_config_path, &palette_config);
+    }
 
     thread::spawn(move || {
         let mut publisher = IndexedFramePublisher::new(palette_colors);

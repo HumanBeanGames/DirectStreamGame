@@ -2,7 +2,7 @@ use crate::{
     config::{AppConfig, WindowMode, effective_custom_batch_size},
     constants::{STREAM_FPS, STREAM_HEIGHT, STREAM_WIDTH, WEB_ADDR},
     gpu_palette::{PaletteMaterial, make_stream_source_image, spawn_custom_host_pipeline},
-    palette::load_palette_runtime,
+    palette::{load_palette_config_runtime, load_prebaked_lookup_runtime},
     public_types::DirectStreamTarget,
     stats::{SharedStats, StatsText},
     stream_control::{
@@ -104,7 +104,13 @@ pub(crate) fn setup_direct_stream_scene(
     };
 
     if config.custom_host {
-        let (palette_colors, palette_bias) = load_palette_runtime(&config.palette_config_path);
+        let palette_config = load_palette_config_runtime(&config.palette_config_path);
+        let palette_lookup = config
+            .prebaked_palette
+            .then(|| load_prebaked_lookup_runtime(&config.palette_config_path, &palette_config))
+            .flatten();
+        let palette_colors = palette_config.colors.clone();
+        let palette_bias = crate::palette::PaletteBias::from(palette_config.matching);
         let batch_size =
             effective_custom_batch_size(config.custom_host_batch_size, config.stream_fps);
         let pipeline = spawn_custom_host_pipeline(
@@ -117,6 +123,7 @@ pub(crate) fn setup_direct_stream_scene(
             stream_image.clone(),
             &palette_colors,
             palette_bias,
+            palette_lookup.as_ref(),
             &mut target,
             batch_size,
         );

@@ -7,8 +7,9 @@ use crate::{
         STATS_WINDOW_HEIGHT, STATS_WINDOW_WIDTH, STREAM_HEIGHT, STREAM_WIDTH, WINDOW_TITLE,
     },
     frames::{DirectStreamFrameProcessors, EncodedFrameHub, IndexedFrame, RawFrameSenders},
-    palette::{PaletteBias, PaletteFrameHub, SharedPaletteBias, start_palette_preview_encoder},
-    palette_lut::load_palette_config,
+    palette::{
+        PaletteFrameHub, SharedPaletteBias, load_palette_runtime, start_palette_preview_encoder,
+    },
     preview::start_preview_encoder,
     stats::SharedStats,
     stream_control::{CustomStreamState, StreamControl},
@@ -26,10 +27,9 @@ pub fn direct_stream_app() -> App {
     let custom_stream_state = CustomStreamState::new();
     let stats = SharedStats::new();
     let palette_bias = SharedPaletteBias::new();
-    if config.custom_host
-        && let Ok(palette_config) = load_palette_config(&config.palette_config_path)
-    {
-        palette_bias.set(PaletteBias::from(palette_config.matching));
+    if config.custom_host {
+        let (_, matching) = load_palette_runtime(&config.palette_config_path);
+        palette_bias.set(matching);
     }
     let (preview_sender, preview_receiver) = crossbeam_channel::bounded(2);
     let custom_frame_capacity = (config.stream_fps as usize * 30)

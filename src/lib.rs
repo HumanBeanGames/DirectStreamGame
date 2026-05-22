@@ -35,6 +35,7 @@ pub use demo::{
 };
 pub use direct_text::{DirectText, DirectTextPlugin};
 pub use frames::{DirectStreamFrame, DirectStreamFrameAppExt};
+pub use palette_lut::{DEFAULT_PALETTE_IPSMAP, DEFAULT_PALETTE_TOML};
 pub use plugin::DirectStreamPlugin;
 pub use public_types::{DirectStreamSet, DirectStreamTarget};
 pub use web::static_palette_stream_page_html;

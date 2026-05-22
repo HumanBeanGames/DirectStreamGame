@@ -1,6 +1,8 @@
 use crate::{
     frames::{IndexedFrame, RawFrame},
-    palette_lut::{PaletteConfig, PaletteLookup, PaletteMatching, load_palette_config},
+    palette_lut::{
+        PaletteConfig, PaletteLookup, PaletteMatching, default_palette_config, load_palette_config,
+    },
     stats::SharedStats,
     stream_control::CustomStreamState,
 };
@@ -46,11 +48,16 @@ impl Default for PaletteBias {
 
 pub(crate) fn load_palette_runtime(path: impl AsRef<Path>) -> (Vec<[u8; 4]>, PaletteBias) {
     let palette_config = load_palette_config(path.as_ref()).unwrap_or_else(|err| {
-        eprintln!("Could not load palette.toml, using default palette: {err}");
-        PaletteConfig {
-            colors: default_palette(),
-            matching: PaletteMatching::default(),
-        }
+        eprintln!("Could not load palette.toml, using embedded default palette: {err}");
+        default_palette_config().unwrap_or_else(|fallback_err| {
+            eprintln!(
+                "Could not parse embedded default palette, using generated fallback: {fallback_err}"
+            );
+            PaletteConfig {
+                colors: default_palette(),
+                matching: PaletteMatching::default(),
+            }
+        })
     });
 
     (

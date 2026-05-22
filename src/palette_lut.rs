@@ -1,10 +1,13 @@
 use std::{
     fs,
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
 };
 
 pub const LUT_ENTRY_COUNT: usize = 256 * 256 * 256;
+pub const DEFAULT_PALETTE_TOML: &str = include_str!("default_pallette/default_pallette.toml");
+pub const DEFAULT_PALETTE_IPSMAP: &[u8] =
+    include_bytes!("default_pallette/default_pallette.ipsmap");
 const LUT_MAGIC: &[u8; 8] = b"IPSMAP1\0";
 
 #[derive(Clone, Copy, Debug)]
@@ -48,6 +51,10 @@ impl PaletteLookup {
 pub fn load_palette_config(path: impl AsRef<Path>) -> Result<PaletteConfig, String> {
     let contents = fs::read_to_string(path).map_err(|err| err.to_string())?;
     parse_palette_config(&contents)
+}
+
+pub fn default_palette_config() -> Result<PaletteConfig, String> {
+    parse_palette_config(DEFAULT_PALETTE_TOML)
 }
 
 pub fn parse_palette_config(contents: &str) -> Result<PaletteConfig, String> {
@@ -166,10 +173,23 @@ pub fn load_lookup(
     path: impl AsRef<Path>,
     config: &PaletteConfig,
 ) -> Result<PaletteLookup, String> {
-    let mut file = fs::File::open(path).map_err(|err| err.to_string())?;
-    let mut header = [0u8; 30];
-    file.read_exact(&mut header)
-        .map_err(|err| err.to_string())?;
+    let bytes = fs::read(path).map_err(|err| err.to_string())?;
+    decode_lookup(&bytes, config)
+}
+
+pub fn default_palette_lookup(config: &PaletteConfig) -> Result<PaletteLookup, String> {
+    decode_lookup(DEFAULT_PALETTE_IPSMAP, config)
+}
+
+pub fn decode_lookup(bytes: &[u8], config: &PaletteConfig) -> Result<PaletteLookup, String> {
+    if bytes.len() < 30 {
+        return Err(format!(
+            "LUT has {} bytes, expected at least 30",
+            bytes.len()
+        ));
+    }
+
+    let header = &bytes[0..30];
 
     if &header[0..8] != LUT_MAGIC {
         return Err("LUT magic/version mismatch".to_owned());
@@ -186,9 +206,7 @@ pub fn load_lookup(
         return Err("LUT color count does not match palette".to_owned());
     }
 
-    let mut entries = Vec::new();
-    file.read_to_end(&mut entries)
-        .map_err(|err| err.to_string())?;
+    let entries = bytes[30..].to_vec();
     if entries.len() != LUT_ENTRY_COUNT {
         return Err(format!(
             "LUT has {} entries, expected {LUT_ENTRY_COUNT}",
@@ -324,5 +342,23 @@ fn srgb_to_linear(value: f32) -> f32 {
         value / 12.92
     } else {
         ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_default_palette_and_lookup_match() {
+        let config = default_palette_config().expect("embedded default palette parses");
+
+        assert!(!config.colors.is_empty());
+        assert!(config.colors.len() <= 256);
+
+        let lookup = default_palette_lookup(&config).expect("embedded default lookup matches");
+
+        assert_eq!(lookup.entries().len(), LUT_ENTRY_COUNT);
+        assert_eq!(lookup.hash(), palette_hash(&config));
     }
 }

@@ -5,7 +5,7 @@ struct PaletteParams {
 };
 
 struct LookupParams {
-    active: vec4<f32>,
+    flags: vec4<f32>,
 };
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0)
@@ -88,7 +88,7 @@ fn linear_to_srgb(rgb: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let source = textureSample(source_image, source_sampler, mesh.uv).rgb;
-    if lookup_params.active.x > 0.5 {
+    if lookup_params.flags.x > 0.5 {
         let source_u8 = vec3<u32>(round(linear_to_srgb(source) * 255.0));
         let lookup_index = source_u8.r * 65536u + source_u8.g * 256u + source_u8.b;
         let lookup_coord = vec2<i32>(

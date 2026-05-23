@@ -26,7 +26,13 @@
     .irc-input { display: flex; gap: 6px; padding: 10px; border-top: 1px solid #303847; }
     .irc-input input { flex: 1; min-width: 0; background: #111722; color: #eef3f8; border: 1px solid #3a4353; border-radius: 4px; padding: 7px 8px; }
     .irc-input button { border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 7px 10px; }
-    @media (max-width: 900px) { .stage { grid-template-columns: 1fr; } .player { width: min(calc(100vw - 32px), calc(100vh - 280px), 960px); margin-inline: auto; } .irc { min-height: 220px; } }
+    .irc-log p.mentioned-me { color: #fff7d6; background: rgba(247, 197, 72, 0.18); margin-inline: -4px; padding: 2px 4px; border-left: 2px solid #f7c548; }
+    .side { min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; }
+    .panels { display: grid; gap: 8px; }
+    .panel { border: 1px solid #303847; background: #0b0d12; }
+    .panel h2 { margin: 0; padding: 9px 12px; border-bottom: 1px solid #303847; font-size: 14px; }
+    .panel pre { margin: 0; padding: 10px 12px; white-space: pre-wrap; color: #dbe4ef; font: 13px Consolas, monospace; }
+    @media (max-width: 900px) { .stage { grid-template-columns: 1fr; } .player { width: min(calc(100vw - 32px), calc(100vh - 360px), 960px); margin-inline: auto; } .side { min-height: 300px; } .irc { min-height: 220px; } }
   </style>
 </head>
 <body>
@@ -41,16 +47,19 @@
           <input id="volumeSlider" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="Volume">
         </div>
       </div>
-      <aside class="irc">
-        <h2>IRC</h2>
-        <div class="irc-log" id="ircLog">
-          <p><strong>system</strong> custom host chat panel ready</p>
-        </div>
-        <form class="irc-input" id="ircForm">
-          <input id="ircInput" autocomplete="off" placeholder="chat message">
-          <button type="submit">Send</button>
-        </form>
-      </aside>
+      <div class="side">
+        <aside class="irc">
+          <h2>IRC</h2>
+          <div class="irc-log" id="ircLog">
+            <p><strong>system</strong> custom host chat panel ready</p>
+          </div>
+          <form class="irc-input" id="ircForm">
+            <input id="ircInput" autocomplete="off" placeholder="chat message">
+            <button type="submit">Send</button>
+          </form>
+        </aside>
+        <section class="panels" id="customPanels"></section>
+      </div>
     </div>
   </main>
   <script>
@@ -64,6 +73,7 @@
     const ircForm = document.getElementById("ircForm");
     const ircInput = document.getElementById("ircInput");
     const ircLog = document.getElementById("ircLog");
+    const customPanels = document.getElementById("customPanels");
     ctx.imageSmoothingEnabled = false;
 
     let width = 0;
@@ -100,6 +110,7 @@
     let lastChatId = 0;
     let chatGeneration = null;
     let shownChatIds = new Set();
+    let currentViewer = null;
     let lastAudioLeft = 0;
     let lastAudioRight = 0;
     let lastTransportSample = null;
@@ -749,6 +760,21 @@
       }
     });
 
+    canvas.addEventListener("click", event => {
+      if (!width || !height) return;
+      const rect = canvas.getBoundingClientRect();
+      const normalizedX = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+      const normalizedY = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+      const x = Math.min(width - 1, Math.max(0, Math.floor(normalizedX * width)));
+      const y = Math.min(height - 1, Math.max(0, Math.floor(normalizedY * height)));
+      fetch("https://game.humanbeangames.com/stream-click", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ x, y, normalized_x: normalizedX, normalized_y: normalizedY }),
+        cache: "no-store",
+      }).catch(error => console.error(error));
+    });
+
     ircForm.addEventListener("submit", event => {
       event.preventDefault();
       const message = ircInput.value.trim();
@@ -779,6 +805,9 @@
         shownChatIds.clear();
         clearChatLog();
       }
+      if (feed.viewer) {
+        currentViewer = feed.viewer;
+      }
       if (Number.isFinite(feed.generation) && chatGeneration !== feed.generation) {
         chatGeneration = feed.generation;
         lastChatId = 0;
@@ -789,7 +818,7 @@
         for (const message of feed.messages) {
           if (shownChatIds.has(message.id)) continue;
           shownChatIds.add(message.id);
-          appendChatLine(message.name || "unknown", message.text || "");
+          appendChatLine(message);
           lastChatId = Math.max(lastChatId, Number(message.id) || lastChatId);
         }
       }
@@ -807,6 +836,26 @@
           appendSystemLine("chat feed offline");
         }
         await new Promise(resolve => setTimeout(resolve, 650));
+      }
+    }
+
+    async function fetchCustomPanels() {
+      const response = await fetch("https://game.humanbeangames.com/custom-panels?t=" + Date.now(), { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`panel fetch failed: ${response.status}`);
+      }
+      const data = await response.json();
+      renderPanels(Array.isArray(data.panels) ? data.panels : []);
+    }
+
+    async function pollCustomPanels() {
+      while (true) {
+        try {
+          await fetchCustomPanels();
+        } catch (error) {
+          console.error(error);
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
 
@@ -828,19 +877,52 @@
       appendSystemLine("chat panel ready");
     }
 
-    function appendChatLine(displayName, message) {
+    function appendChatLine(message) {
       const row = document.createElement("p");
+      row.dataset.chatId = String(message.id || "");
       const name = document.createElement("strong");
-      name.textContent = displayName;
+      name.textContent = message.name || "unknown";
       row.appendChild(name);
-      row.append(" " + message);
+      row.append(" " + (message.text || ""));
+      if (isMentionedMe(message)) {
+        row.classList.add("mentioned-me");
+      }
       ircLog.appendChild(row);
       ircLog.scrollTop = ircLog.scrollHeight;
+      if (Number.isFinite(message.expires_at_ms)) {
+        const delay = Math.max(0, message.expires_at_ms - Date.now());
+        setTimeout(() => row.remove(), delay);
+      }
+    }
+
+    function isMentionedMe(message) {
+      if (!currentViewer || !Array.isArray(message.mentions)) return false;
+      const names = [
+        currentViewer.name || "",
+        currentViewer.identity || "",
+      ].map(value => value.toLowerCase()).filter(Boolean);
+      return message.mentions.some(mention => names.includes(String(mention).toLowerCase()));
+    }
+
+    function renderPanels(panels) {
+      customPanels.textContent = "";
+      for (const panel of panels) {
+        const section = document.createElement("article");
+        section.className = "panel";
+        const title = document.createElement("h2");
+        title.textContent = panel.title || panel.id || "Panel";
+        const body = document.createElement("pre");
+        body.textContent = panel.body || "";
+        section.appendChild(title);
+        section.appendChild(body);
+        customPanels.appendChild(section);
+      }
     }
 
     connect();
     pollStreamStatus();
     pollChatFeed();
+    pollCustomPanels();
   </script>
 </body>
 </html>

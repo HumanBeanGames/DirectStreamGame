@@ -2,10 +2,11 @@ use crate::{
     audio::CustomAudioPacketHub,
     chat::LocalChatHub,
     constants::{
-        AUDIO_STREAM_PATH, CUSTOM_AUDIO_CHANNELS, CUSTOM_AUDIO_SAMPLE_RATE, LOCAL_CHAT_FEED_PATH,
-        LOCAL_CHAT_PATH, PALETTE_STREAM_PATH, STREAM_HEIGHT, STREAM_PATH, STREAM_STATUS_PATH,
-        STREAM_WIDTH, WEB_ADDR,
+        AUDIO_STREAM_PATH, CUSTOM_AUDIO_CHANNELS, CUSTOM_AUDIO_SAMPLE_RATE, CUSTOM_PANELS_PATH,
+        LOCAL_CHAT_FEED_PATH, LOCAL_CHAT_PATH, PALETTE_STREAM_PATH, STREAM_CLICK_PATH,
+        STREAM_HEIGHT, STREAM_PATH, STREAM_STATUS_PATH, STREAM_WIDTH, WEB_ADDR,
     },
+    custom_host::{CustomHostPanelHub, StreamPointerClick, StreamPointerClickHub},
     frames::EncodedFrameHub,
     palette::PaletteFrameHub,
     stats::SharedStats,
@@ -15,7 +16,7 @@ use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 const CUSTOM_STREAM_SERVER_DELAY: Duration = Duration::ZERO;
@@ -28,6 +29,8 @@ pub(crate) enum LocalStreamSource {
         frames: PaletteFrameHub,
         audio: CustomAudioPacketHub,
         chat: LocalChatHub,
+        panels: CustomHostPanelHub,
+        clicks: StreamPointerClickHub,
         active: CustomStreamState,
     },
 }
@@ -98,13 +101,25 @@ fn handle_web_request(mut stream: TcpStream, source: LocalStreamSource, stats: S
         }
     } else if path.starts_with(LOCAL_CHAT_FEED_PATH) {
         if let LocalStreamSource::Palette { chat, .. } = source {
-            serve_local_chat_feed(stream, path, chat);
+            serve_local_chat_feed(stream, path, &request, peer_addr, chat);
         } else {
             serve_not_found(stream);
         }
     } else if path.starts_with(LOCAL_CHAT_PATH) {
         if let LocalStreamSource::Palette { chat, .. } = source {
             submit_local_chat(stream, &request, peer_addr, chat);
+        } else {
+            serve_not_found(stream);
+        }
+    } else if path.starts_with(CUSTOM_PANELS_PATH) {
+        if let LocalStreamSource::Palette { panels, .. } = source {
+            serve_custom_panels(stream, panels);
+        } else {
+            serve_not_found(stream);
+        }
+    } else if path.starts_with(STREAM_CLICK_PATH) {
+        if let LocalStreamSource::Palette { chat, clicks, .. } = source {
+            submit_stream_click(stream, &request, peer_addr, chat, clicks);
         } else {
             serve_not_found(stream);
         }
@@ -243,26 +258,115 @@ fn submit_local_chat(
     let _ = stream.write_all(response.as_bytes());
 }
 
-fn serve_local_chat_feed(mut stream: TcpStream, path: &str, chat: LocalChatHub) {
+fn serve_local_chat_feed(
+    mut stream: TcpStream,
+    path: &str,
+    request: &str,
+    peer_addr: Option<SocketAddr>,
+    chat: LocalChatHub,
+) {
     let after = query_param(path, "after")
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0);
+    let identity_source = local_chat_identity(request, peer_addr);
+    let (viewer_identity, viewer_name) = chat.viewer_for_identity(&identity_source);
+    chat.purge_expired(current_time_millis());
     let generation = chat.generation();
     let latest_id = chat.latest_id();
-    let entries = chat.entries_after(after);
-    let mut body = format!(r#"{{"generation":{generation},"latest":{latest_id},"messages":["#);
+    let entries = chat.entries_after(after, Some(&viewer_identity), Some(&viewer_name));
+    let mut body = format!(
+        r#"{{"generation":{generation},"latest":{latest_id},"viewer":{{"identity":"{}","name":"{}"}},"messages":["#,
+        json_escape(&viewer_identity),
+        json_escape(&viewer_name)
+    );
     for (index, entry) in entries.iter().enumerate() {
         if index > 0 {
             body.push(',');
         }
+        let expires_at_ms = entry
+            .ttl_ms
+            .map(|ttl| entry.created_at_ms.saturating_add(ttl));
+        let mentions = entry
+            .mentions
+            .iter()
+            .map(|mention| format!(r#""{}""#, json_escape(mention)))
+            .collect::<Vec<_>>()
+            .join(",");
         body.push_str(&format!(
-            r#"{{"id":{},"name":"{}","text":"{}"}}"#,
+            r#"{{"id":{},"name":"{}","user":"{}","text":"{}","created_at_ms":{},"expires_at_ms":{},"mentions":[{}]}}"#,
             entry.id,
             json_escape(&entry.display_name),
-            json_escape(&entry.text)
+            json_escape(&entry.user),
+            json_escape(&entry.text),
+            entry.created_at_ms,
+            expires_at_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_owned()),
+            mentions
         ));
     }
     body.push_str("]}");
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = stream.write_all(response.as_bytes());
+}
+
+fn serve_custom_panels(mut stream: TcpStream, panels: CustomHostPanelHub) {
+    let panels = panels.snapshot();
+    let mut body = r#"{"panels":["#.to_owned();
+    for (index, panel) in panels.iter().enumerate() {
+        if index > 0 {
+            body.push(',');
+        }
+        body.push_str(&format!(
+            r#"{{"id":"{}","title":"{}","body":"{}","revision":{}}}"#,
+            json_escape(&panel.id),
+            json_escape(&panel.title),
+            json_escape(&panel.body),
+            panel.revision
+        ));
+    }
+    body.push_str("]}");
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = stream.write_all(response.as_bytes());
+}
+
+fn submit_stream_click(
+    mut stream: TcpStream,
+    request: &str,
+    peer_addr: Option<SocketAddr>,
+    chat: LocalChatHub,
+    clicks: StreamPointerClickHub,
+) {
+    let body = request_body(request);
+    let Some(x) = json_u32_field(body, "x") else {
+        serve_bad_request(stream);
+        return;
+    };
+    let Some(y) = json_u32_field(body, "y") else {
+        serve_bad_request(stream);
+        return;
+    };
+    let normalized_x = json_f32_field(body, "normalized_x").unwrap_or(0.0);
+    let normalized_y = json_f32_field(body, "normalized_y").unwrap_or(0.0);
+    let identity_source = local_chat_identity(request, peer_addr);
+    let (identity, display_name) = chat.viewer_for_identity(&identity_source);
+    clicks.submit(StreamPointerClick {
+        identity,
+        display_name,
+        x,
+        y,
+        normalized_x,
+        normalized_y,
+    });
+    let body = r#"{"ok":true}"#;
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
         body.len(),
@@ -301,6 +405,39 @@ fn first_forwarded_ip(value: String) -> Option<String> {
         .map(str::trim)
         .find(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn current_time_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
+fn request_body(request: &str) -> &str {
+    request
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap_or("")
+}
+
+fn json_u32_field(body: &str, name: &str) -> Option<u32> {
+    json_number_field(body, name).and_then(|value| value.parse::<u32>().ok())
+}
+
+fn json_f32_field(body: &str, name: &str) -> Option<f32> {
+    json_number_field(body, name).and_then(|value| value.parse::<f32>().ok())
+}
+
+fn json_number_field<'a>(body: &'a str, name: &str) -> Option<&'a str> {
+    let key = format!(r#""{name}""#);
+    let (_, rest) = body.split_once(&key)?;
+    let (_, rest) = rest.split_once(':')?;
+    let rest = rest.trim_start();
+    let end = rest
+        .find(|ch: char| !(ch.is_ascii_digit() || ch == '.' || ch == '-'))
+        .unwrap_or(rest.len());
+    (end > 0).then(|| &rest[..end])
 }
 
 fn json_escape(value: &str) -> String {
@@ -555,6 +692,8 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     let local_chat_url = format!("{backend}{LOCAL_CHAT_PATH}");
     let stream_status_url = format!("{backend}{STREAM_STATUS_PATH}");
     let local_chat_feed_url = format!("{backend}{LOCAL_CHAT_FEED_PATH}");
+    let custom_panels_url = format!("{backend}{CUSTOM_PANELS_PATH}");
+    let stream_click_url = format!("{backend}{STREAM_CLICK_PATH}");
 
     format!(
         r#"<!doctype html>
@@ -585,7 +724,13 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     .irc-input {{ display: flex; gap: 6px; padding: 10px; border-top: 1px solid #303847; }}
     .irc-input input {{ flex: 1; min-width: 0; background: #111722; color: #eef3f8; border: 1px solid #3a4353; border-radius: 4px; padding: 7px 8px; }}
     .irc-input button {{ border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 7px 10px; }}
-    @media (max-width: 900px) {{ .stage {{ grid-template-columns: 1fr; }} .player {{ width: min(calc(100vw - 32px), calc(100vh - 280px), 960px); margin-inline: auto; }} .irc {{ min-height: 220px; }} }}
+    .irc-log p.mentioned-me {{ color: #fff7d6; background: rgba(247, 197, 72, 0.18); margin-inline: -4px; padding: 2px 4px; border-left: 2px solid #f7c548; }}
+    .side {{ min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; }}
+    .panels {{ display: grid; gap: 8px; }}
+    .panel {{ border: 1px solid #303847; background: #0b0d12; }}
+    .panel h2 {{ margin: 0; padding: 9px 12px; border-bottom: 1px solid #303847; font-size: 14px; }}
+    .panel pre {{ margin: 0; padding: 10px 12px; white-space: pre-wrap; color: #dbe4ef; font: 13px Consolas, monospace; }}
+    @media (max-width: 900px) {{ .stage {{ grid-template-columns: 1fr; }} .player {{ width: min(calc(100vw - 32px), calc(100vh - 360px), 960px); margin-inline: auto; }} .side {{ min-height: 300px; }} .irc {{ min-height: 220px; }} }}
   </style>
 </head>
 <body>
@@ -600,16 +745,19 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
           <input id="volumeSlider" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="Volume">
         </div>
       </div>
-      <aside class="irc">
-        <h2>IRC</h2>
-        <div class="irc-log" id="ircLog">
-          <p><strong>system</strong> custom host chat panel ready</p>
-        </div>
-        <form class="irc-input" id="ircForm">
-          <input id="ircInput" autocomplete="off" placeholder="chat message">
-          <button type="submit">Send</button>
-        </form>
-      </aside>
+      <div class="side">
+        <aside class="irc">
+          <h2>IRC</h2>
+          <div class="irc-log" id="ircLog">
+            <p><strong>system</strong> custom host chat panel ready</p>
+          </div>
+          <form class="irc-input" id="ircForm">
+            <input id="ircInput" autocomplete="off" placeholder="chat message">
+            <button type="submit">Send</button>
+          </form>
+        </aside>
+        <section class="panels" id="customPanels"></section>
+      </div>
     </div>
   </main>
   <script>
@@ -623,6 +771,7 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     const ircForm = document.getElementById("ircForm");
     const ircInput = document.getElementById("ircInput");
     const ircLog = document.getElementById("ircLog");
+    const customPanels = document.getElementById("customPanels");
     ctx.imageSmoothingEnabled = false;
 
     let width = 0;
@@ -659,6 +808,7 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     let lastChatId = 0;
     let chatGeneration = null;
     let shownChatIds = new Set();
+    let currentViewer = null;
     let lastAudioLeft = 0;
     let lastAudioRight = 0;
     let lastTransportSample = null;
@@ -1308,6 +1458,21 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
       }}
     }});
 
+    canvas.addEventListener("click", event => {{
+      if (!width || !height) return;
+      const rect = canvas.getBoundingClientRect();
+      const normalizedX = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+      const normalizedY = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+      const x = Math.min(width - 1, Math.max(0, Math.floor(normalizedX * width)));
+      const y = Math.min(height - 1, Math.max(0, Math.floor(normalizedY * height)));
+      fetch("{stream_click_url}", {{
+        method: "POST",
+        headers: {{ "Content-Type": "application/json" }},
+        body: JSON.stringify({{ x, y, normalized_x: normalizedX, normalized_y: normalizedY }}),
+        cache: "no-store",
+      }}).catch(error => console.error(error));
+    }});
+
     ircForm.addEventListener("submit", event => {{
       event.preventDefault();
       const message = ircInput.value.trim();
@@ -1338,6 +1503,9 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
         shownChatIds.clear();
         clearChatLog();
       }}
+      if (feed.viewer) {{
+        currentViewer = feed.viewer;
+      }}
       if (Number.isFinite(feed.generation) && chatGeneration !== feed.generation) {{
         chatGeneration = feed.generation;
         lastChatId = 0;
@@ -1348,7 +1516,7 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
         for (const message of feed.messages) {{
           if (shownChatIds.has(message.id)) continue;
           shownChatIds.add(message.id);
-          appendChatLine(message.name || "unknown", message.text || "");
+          appendChatLine(message);
           lastChatId = Math.max(lastChatId, Number(message.id) || lastChatId);
         }}
       }}
@@ -1366,6 +1534,26 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
           appendSystemLine("chat feed offline");
         }}
         await new Promise(resolve => setTimeout(resolve, 650));
+      }}
+    }}
+
+    async function fetchCustomPanels() {{
+      const response = await fetch("{custom_panels_url}?t=" + Date.now(), {{ cache: "no-store" }});
+      if (!response.ok) {{
+        throw new Error(`panel fetch failed: ${{response.status}}`);
+      }}
+      const data = await response.json();
+      renderPanels(Array.isArray(data.panels) ? data.panels : []);
+    }}
+
+    async function pollCustomPanels() {{
+      while (true) {{
+        try {{
+          await fetchCustomPanels();
+        }} catch (error) {{
+          console.error(error);
+        }}
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }}
     }}
 
@@ -1387,19 +1575,52 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
       appendSystemLine("chat panel ready");
     }}
 
-    function appendChatLine(displayName, message) {{
+    function appendChatLine(message) {{
       const row = document.createElement("p");
+      row.dataset.chatId = String(message.id || "");
       const name = document.createElement("strong");
-      name.textContent = displayName;
+      name.textContent = message.name || "unknown";
       row.appendChild(name);
-      row.append(" " + message);
+      row.append(" " + (message.text || ""));
+      if (isMentionedMe(message)) {{
+        row.classList.add("mentioned-me");
+      }}
       ircLog.appendChild(row);
       ircLog.scrollTop = ircLog.scrollHeight;
+      if (Number.isFinite(message.expires_at_ms)) {{
+        const delay = Math.max(0, message.expires_at_ms - Date.now());
+        setTimeout(() => row.remove(), delay);
+      }}
+    }}
+
+    function isMentionedMe(message) {{
+      if (!currentViewer || !Array.isArray(message.mentions)) return false;
+      const names = [
+        currentViewer.name || "",
+        currentViewer.identity || "",
+      ].map(value => value.toLowerCase()).filter(Boolean);
+      return message.mentions.some(mention => names.includes(String(mention).toLowerCase()));
+    }}
+
+    function renderPanels(panels) {{
+      customPanels.textContent = "";
+      for (const panel of panels) {{
+        const section = document.createElement("article");
+        section.className = "panel";
+        const title = document.createElement("h2");
+        title.textContent = panel.title || panel.id || "Panel";
+        const body = document.createElement("pre");
+        body.textContent = panel.body || "";
+        section.appendChild(title);
+        section.appendChild(body);
+        customPanels.appendChild(section);
+      }}
     }}
 
     connect();
     pollStreamStatus();
     pollChatFeed();
+    pollCustomPanels();
   </script>
 </body>
 </html>"#

@@ -6,6 +6,7 @@ use crate::{
         TwitchChatCommand, TwitchChatMessage, dispatch_twitch_chat_commands, poll_local_chat,
         poll_twitch_chat, start_twitch_chat_listener,
     },
+    custom_host::{StreamPointerClick, poll_stream_pointer_clicks},
     direct_text::DirectTextPlugin,
     gpu_palette::GpuPalettePlugin,
     scene::{setup_direct_stream_scene, update_stats_window},
@@ -26,6 +27,7 @@ impl Plugin for DirectStreamPlugin {
             .add_message::<PlayStreamSound>()
             .add_message::<TwitchChatMessage>()
             .add_message::<TwitchChatCommand>()
+            .add_message::<StreamPointerClick>()
             .add_systems(
                 Startup,
                 (
@@ -44,6 +46,7 @@ impl Plugin for DirectStreamPlugin {
                     )
                         .chain(),
                     mix_stream_audio,
+                    poll_stream_pointer_clicks,
                     request_stream_readback,
                     handle_stream_key_typing,
                     handle_stream_control_interactions,

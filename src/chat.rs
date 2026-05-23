@@ -42,6 +42,61 @@ pub struct TwitchChatRoles {
     pub staff: bool,
 }
 
+#[derive(Clone)]
+pub enum ChatAudience {
+    All,
+    ViewerIdentity(String),
+    ViewerName(String),
+}
+
+#[derive(Clone)]
+pub struct LocalChatEntryOptions {
+    pub display_name: String,
+    pub text: String,
+    pub ttl_ms: Option<u64>,
+    pub audience: ChatAudience,
+    pub mentions: Vec<String>,
+}
+
+impl LocalChatEntryOptions {
+    pub fn system(message: impl Into<String>) -> Self {
+        let text = message.into();
+        Self {
+            display_name: "system".to_owned(),
+            mentions: mentions_from_text(&text),
+            text,
+            ttl_ms: None,
+            audience: ChatAudience::All,
+        }
+    }
+
+    pub fn named(display_name: impl Into<String>, message: impl Into<String>) -> Self {
+        let text = message.into();
+        Self {
+            display_name: display_name.into(),
+            mentions: mentions_from_text(&text),
+            text,
+            ttl_ms: None,
+            audience: ChatAudience::All,
+        }
+    }
+
+    pub fn with_ttl(mut self, ttl: Duration) -> Self {
+        self.ttl_ms = Some(ttl.as_millis().min(u128::from(u64::MAX)) as u64);
+        self
+    }
+
+    pub fn for_viewer_identity(mut self, identity: impl Into<String>) -> Self {
+        self.audience = ChatAudience::ViewerIdentity(identity.into());
+        self
+    }
+
+    pub fn for_viewer_name(mut self, name: impl Into<String>) -> Self {
+        self.audience = ChatAudience::ViewerName(name.into());
+        self
+    }
+}
+
 #[derive(Clone, Resource, Default)]
 pub(crate) struct LocalChatHub {
     state: Arc<Mutex<LocalChatState>>,
@@ -82,6 +137,10 @@ pub(crate) struct LocalChatEntry {
     pub(crate) user: String,
     pub(crate) display_name: String,
     pub(crate) text: String,
+    pub(crate) created_at_ms: u64,
+    pub(crate) ttl_ms: Option<u64>,
+    pub(crate) audience: ChatAudience,
+    pub(crate) mentions: Vec<String>,
 }
 
 impl LocalChatHub {
@@ -96,16 +155,17 @@ impl LocalChatHub {
             return None;
         }
 
-        let display_name = state
-            .names_by_identity
-            .entry(identity_hash.clone())
-            .or_insert_with(|| local_chat_name_from_hash(&identity_hash))
-            .clone();
+        let display_name = display_name_for_identity_hash(&mut state, &identity_hash);
+        let text = message.into();
         let entry = LocalChatEntry {
             id: state.next_id,
             user: identity_hash.clone(),
             display_name: display_name.clone(),
-            text: message.into(),
+            mentions: mentions_from_text(&text),
+            text,
+            created_at_ms: current_time_millis(),
+            ttl_ms: None,
+            audience: ChatAudience::All,
         };
         state.next_id = state.next_id.wrapping_add(1);
         state.messages.push_back(LocalChatSubmission {
@@ -120,12 +180,19 @@ impl LocalChatHub {
         Some(display_name)
     }
 
-    pub(crate) fn entries_after(&self, last_seen_id: u64) -> Vec<LocalChatEntry> {
-        if let Ok(state) = self.state.lock() {
+    pub(crate) fn entries_after(
+        &self,
+        last_seen_id: u64,
+        viewer_identity: Option<&str>,
+        viewer_name: Option<&str>,
+    ) -> Vec<LocalChatEntry> {
+        if let Ok(mut state) = self.state.lock() {
+            purge_expired_locked(&mut state, current_time_millis());
             state
                 .history
                 .iter()
                 .filter(|entry| entry.id > last_seen_id)
+                .filter(|entry| entry_matches_audience(entry, viewer_identity, viewer_name))
                 .cloned()
                 .collect()
         } else {
@@ -141,6 +208,19 @@ impl LocalChatHub {
             .unwrap_or(0)
     }
 
+    pub(crate) fn viewer_for_identity(&self, identity: impl AsRef<str>) -> (String, String) {
+        let identity_hash = local_chat_identity_hash(identity.as_ref());
+        if let Ok(mut state) = self.state.lock() {
+            let display_name = display_name_for_identity_hash(&mut state, &identity_hash);
+            (identity_hash, display_name)
+        } else {
+            (
+                identity_hash.clone(),
+                local_chat_name_from_hash(&identity_hash),
+            )
+        }
+    }
+
     pub(crate) fn generation(&self) -> u64 {
         self.state
             .lock()
@@ -154,6 +234,12 @@ impl LocalChatHub {
             state.history.clear();
             state.next_id = 1;
             state.generation = state.generation.wrapping_add(1);
+        }
+    }
+
+    pub(crate) fn purge_expired(&self, now_ms: u64) {
+        if let Ok(mut state) = self.state.lock() {
+            purge_expired_locked(&mut state, now_ms);
         }
     }
 
@@ -183,17 +269,26 @@ impl LocalChatHub {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn append_system_message(
         &self,
         display_name: impl Into<String>,
         message: impl Into<String>,
     ) {
+        self.append_local_entry(LocalChatEntryOptions::named(display_name, message));
+    }
+
+    pub(crate) fn append_local_entry(&self, options: LocalChatEntryOptions) {
         if let Ok(mut state) = self.state.lock() {
             let entry = LocalChatEntry {
                 id: state.next_id,
                 user: "system".to_owned(),
-                display_name: display_name.into(),
-                text: message.into(),
+                display_name: options.display_name,
+                text: options.text,
+                created_at_ms: current_time_millis(),
+                ttl_ms: options.ttl_ms,
+                audience: options.audience,
+                mentions: options.mentions,
             };
             state.next_id = state.next_id.wrapping_add(1);
             state.history.push_back(entry);
@@ -289,9 +384,17 @@ impl TwitchChatSender {
     pub fn send(&self, message: impl Into<String>) {
         let message = message.into();
         if let Some(local_chat) = &self.local_chat {
-            local_chat.append_system_message("system", message.clone());
+            local_chat.append_local_entry(
+                LocalChatEntryOptions::system(message.clone()).with_ttl(Duration::from_secs(10)),
+            );
         }
         let _ = self.sender.send(message);
+    }
+
+    pub fn send_local(&self, entry: LocalChatEntryOptions) {
+        if let Some(local_chat) = &self.local_chat {
+            local_chat.append_local_entry(entry);
+        }
     }
 }
 
@@ -558,11 +661,64 @@ fn connect_and_read_chat(
 }
 
 fn anonymous_nick() -> String {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() % 1_000_000)
-        .unwrap_or(0);
+    let millis = current_time_millis() % 1_000_000;
     format!("justinfan{millis}")
+}
+
+fn current_time_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
+fn display_name_for_identity_hash(state: &mut LocalChatState, identity_hash: &str) -> String {
+    state
+        .names_by_identity
+        .entry(identity_hash.to_owned())
+        .or_insert_with(|| local_chat_name_from_hash(identity_hash))
+        .clone()
+}
+
+fn purge_expired_locked(state: &mut LocalChatState, now_ms: u64) {
+    state
+        .history
+        .retain(|entry| !entry_is_expired(entry, now_ms));
+}
+
+fn entry_is_expired(entry: &LocalChatEntry, now_ms: u64) -> bool {
+    entry
+        .ttl_ms
+        .is_some_and(|ttl| now_ms >= entry.created_at_ms.saturating_add(ttl))
+}
+
+fn entry_matches_audience(
+    entry: &LocalChatEntry,
+    viewer_identity: Option<&str>,
+    viewer_name: Option<&str>,
+) -> bool {
+    match &entry.audience {
+        ChatAudience::All => true,
+        ChatAudience::ViewerIdentity(identity) => viewer_identity == Some(identity.as_str()),
+        ChatAudience::ViewerName(name) => viewer_name
+            .map(|viewer_name| viewer_name.eq_ignore_ascii_case(name))
+            .unwrap_or(false),
+    }
+}
+
+fn mentions_from_text(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .filter_map(|word| {
+            word.strip_prefix('@')
+                .map(|mention| {
+                    mention.trim_matches(|ch: char| {
+                        !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_'
+                    })
+                })
+                .filter(|mention| !mention.is_empty())
+                .map(str::to_owned)
+        })
+        .collect()
 }
 
 fn parse_privmsg(line: &str) -> Option<TwitchChatMessage> {

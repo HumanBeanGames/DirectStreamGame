@@ -183,6 +183,26 @@ impl LocalChatHub {
         }
     }
 
+    pub(crate) fn append_system_message(
+        &self,
+        display_name: impl Into<String>,
+        message: impl Into<String>,
+    ) {
+        if let Ok(mut state) = self.state.lock() {
+            let entry = LocalChatEntry {
+                id: state.next_id,
+                user: "system".to_owned(),
+                display_name: display_name.into(),
+                text: message.into(),
+            };
+            state.next_id = state.next_id.wrapping_add(1);
+            state.history.push_back(entry);
+            while state.history.len() > 200 {
+                state.history.pop_front();
+            }
+        }
+    }
+
     fn drain(&self) -> Vec<LocalChatSubmission> {
         if let Ok(mut state) = self.state.lock() {
             state.messages.drain(..).collect()
@@ -205,6 +225,7 @@ pub(crate) struct TwitchChatReceiver {
 #[derive(Clone, Resource)]
 pub struct TwitchChatSender {
     sender: Sender<String>,
+    local_chat: Option<LocalChatHub>,
 }
 
 #[derive(Clone, Resource)]
@@ -266,7 +287,11 @@ impl TwitchCommandRouter {
 
 impl TwitchChatSender {
     pub fn send(&self, message: impl Into<String>) {
-        let _ = self.sender.send(message.into());
+        let message = message.into();
+        if let Some(local_chat) = &self.local_chat {
+            local_chat.append_system_message("system", message.clone());
+        }
+        let _ = self.sender.send(message);
     }
 }
 
@@ -285,7 +310,11 @@ impl TwitchChatLogin {
     }
 }
 
-pub(crate) fn start_twitch_chat_listener(mut commands: Commands, config: Res<AppConfig>) {
+pub(crate) fn start_twitch_chat_listener(
+    mut commands: Commands,
+    config: Res<AppConfig>,
+    local_chat: Option<Res<LocalChatHub>>,
+) {
     let channel = config
         .twitch_channel
         .trim()
@@ -299,6 +328,7 @@ pub(crate) fn start_twitch_chat_listener(mut commands: Commands, config: Res<App
     });
     commands.insert_resource(TwitchChatSender {
         sender: outgoing_sender,
+        local_chat: local_chat.map(|hub| hub.clone()),
     });
     commands.insert_resource(TwitchChatLogin {
         sender: login_sender.clone(),

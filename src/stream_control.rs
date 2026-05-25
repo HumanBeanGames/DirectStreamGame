@@ -386,32 +386,34 @@ pub(crate) fn handle_stream_key_typing(
 
 pub(crate) fn handle_stream_input_box_interactions(
     mut control: ResMut<StreamControl>,
-    mut custom_width_boxes: Query<
-        (&Interaction, &mut BackgroundColor),
-        (Changed<Interaction>, With<CustomWidthInputBox>),
-    >,
-    mut custom_height_boxes: Query<
-        (&Interaction, &mut BackgroundColor),
-        (Changed<Interaction>, With<CustomHeightInputBox>),
-    >,
-    mut custom_fps_boxes: Query<
-        (&Interaction, &mut BackgroundColor),
-        (Changed<Interaction>, With<CustomFpsInputBox>),
-    >,
+    mut input_boxes: ParamSet<(
+        Query<
+            (&Interaction, &mut BackgroundColor),
+            (Changed<Interaction>, With<CustomWidthInputBox>),
+        >,
+        Query<
+            (&Interaction, &mut BackgroundColor),
+            (Changed<Interaction>, With<CustomHeightInputBox>),
+        >,
+        Query<
+            (&Interaction, &mut BackgroundColor),
+            (Changed<Interaction>, With<CustomFpsInputBox>),
+        >,
+    )>,
 ) {
     handle_input_box_interactions(
         &mut control,
-        &mut custom_width_boxes,
+        &mut input_boxes.p0(),
         StreamControlInput::CustomWidth,
     );
     handle_input_box_interactions(
         &mut control,
-        &mut custom_height_boxes,
+        &mut input_boxes.p1(),
         StreamControlInput::CustomHeight,
     );
     handle_input_box_interactions(
         &mut control,
-        &mut custom_fps_boxes,
+        &mut input_boxes.p2(),
         StreamControlInput::CustomFps,
     );
 }
@@ -475,23 +477,19 @@ pub(crate) fn handle_stream_stop_interactions(
 pub(crate) fn handle_stream_misc_button_interactions(
     mut control: ResMut<StreamControl>,
     local_chat: Option<Res<LocalChatHub>>,
-    mut open_buttons: Query<
-        (&Interaction, &mut BackgroundColor),
-        (Changed<Interaction>, With<OpenStreamButton>),
-    >,
-    mut purge_buttons: Query<
-        (&Interaction, &mut BackgroundColor),
-        (Changed<Interaction>, With<PurgeChatButton>),
-    >,
+    mut buttons: ParamSet<(
+        Query<(&Interaction, &mut BackgroundColor), (Changed<Interaction>, With<OpenStreamButton>)>,
+        Query<(&Interaction, &mut BackgroundColor), (Changed<Interaction>, With<PurgeChatButton>)>,
+    )>,
 ) {
-    for (interaction, mut color) in &mut open_buttons {
+    for (interaction, mut color) in &mut buttons.p0() {
         if *interaction == Interaction::Pressed {
             control.open_custom_host();
         }
         *color = button_color(*interaction, Color::srgb(0.07, 0.10, 0.19));
     }
 
-    for (interaction, mut color) in &mut purge_buttons {
+    for (interaction, mut color) in &mut buttons.p1() {
         if *interaction == Interaction::Pressed {
             if let Some(chat) = &local_chat {
                 chat.purge();
@@ -528,18 +526,20 @@ pub(crate) fn handle_palette_bias_sliders(
 
 pub(crate) fn update_stream_control_ui(
     control: Res<StreamControl>,
-    mut status_text: Query<&mut Text, With<StreamControlStatusText>>,
-    mut custom_width_text: Query<&mut Text, With<CustomWidthInputText>>,
-    mut custom_height_text: Query<&mut Text, With<CustomHeightInputText>>,
-    mut custom_fps_text: Query<&mut Text, With<CustomFpsInputText>>,
-    mut slider_value_texts: Query<(&PaletteBiasSliderValueText, &mut Text)>,
+    mut texts: ParamSet<(
+        Query<&mut Text, With<StreamControlStatusText>>,
+        Query<&mut Text, With<CustomWidthInputText>>,
+        Query<&mut Text, With<CustomHeightInputText>>,
+        Query<&mut Text, With<CustomFpsInputText>>,
+        Query<(&PaletteBiasSliderValueText, &mut Text)>,
+    )>,
     mut slider_fills: Query<(&PaletteBiasSliderFill, &mut Node)>,
 ) {
     if !control.is_changed() {
         return;
     }
 
-    if let Ok(mut text) = status_text.single_mut() {
+    if let Ok(mut text) = texts.p0().single_mut() {
         **text = format!(
             "stream control: {} - {}",
             if control.is_streaming() {
@@ -550,17 +550,17 @@ pub(crate) fn update_stream_control_ui(
             control.status
         );
     }
-    if let Ok(mut text) = custom_width_text.single_mut() {
+    if let Ok(mut text) = texts.p1().single_mut() {
         **text = control.custom_width.clone();
     }
-    if let Ok(mut text) = custom_height_text.single_mut() {
+    if let Ok(mut text) = texts.p2().single_mut() {
         **text = control.custom_height.clone();
     }
-    if let Ok(mut text) = custom_fps_text.single_mut() {
+    if let Ok(mut text) = texts.p3().single_mut() {
         **text = control.custom_fps.clone();
     }
 
-    for (marker, mut text) in &mut slider_value_texts {
+    for (marker, mut text) in &mut texts.p4() {
         **text = format!("{:.2}", slider_value(control.palette_bias, marker.0));
     }
     for (marker, mut node) in &mut slider_fills {

@@ -136,30 +136,39 @@ fn sync_direct_world_sprites(
     mut commands: Commands,
     settings: Res<DirectWorldSpriteSettings>,
     target: Res<DirectStreamTarget>,
-    camera_query: Query<(&Camera, &GlobalTransform, Option<&RenderLayers>)>,
-    source_sprites: Query<
-        (Entity, &DirectWorldSprite, &GlobalTransform),
-        Without<DirectWorldSpriteRender>,
-    >,
-    mut render_sprites: Query<(
-        &mut DirectWorldSpriteRender,
-        &mut Mesh3d,
-        &mut MeshMaterial3d<StandardMaterial>,
-        &mut Transform,
-        &mut Visibility,
+    mut queries: ParamSet<(
+        Query<(&Camera, &GlobalTransform, Option<&RenderLayers>)>,
+        Query<(Entity, &DirectWorldSprite, &GlobalTransform), Without<DirectWorldSpriteRender>>,
+        Query<(
+            &mut DirectWorldSpriteRender,
+            &mut Mesh3d,
+            &mut MeshMaterial3d<StandardMaterial>,
+            &mut Transform,
+            &mut Visibility,
+        )>,
     )>,
     mut render_map: Local<DirectWorldSpriteRenderMap>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     atlases: Res<Assets<TextureAtlasLayout>>,
 ) {
-    let Ok((camera, camera_transform, camera_layers)) = camera_query.get(target.camera) else {
-        return;
+    let (camera, camera_transform, camera_layers) = {
+        let camera_query = queries.p0();
+        let Ok((camera, camera_transform, camera_layers)) = camera_query.get(target.camera) else {
+            return;
+        };
+        (camera.clone(), *camera_transform, camera_layers.cloned())
     };
+
+    let source_sprites = queries
+        .p1()
+        .iter()
+        .map(|(entity, sprite, transform)| (entity, sprite.clone(), *transform))
+        .collect::<Vec<_>>();
 
     let active_owners = source_sprites
         .iter()
-        .map(|(entity, _, _)| entity)
+        .map(|(entity, _, _)| *entity)
         .collect::<HashSet<_>>();
 
     render_map.0.retain(|owner, render_entity| {
@@ -172,28 +181,26 @@ fn sync_direct_world_sprites(
 
     if !settings.enabled {
         for render_entity in render_map.0.values().copied() {
-            if let Ok((_, _, _, _, mut visibility)) = render_sprites.get_mut(render_entity) {
+            if let Ok((_, _, _, _, mut visibility)) = queries.p2().get_mut(render_entity) {
                 *visibility = Visibility::Hidden;
             }
         }
         return;
     }
 
-    let render_layers = camera_layers
-        .cloned()
-        .unwrap_or_else(|| RenderLayers::layer(0));
+    let render_layers = camera_layers.unwrap_or_else(|| RenderLayers::layer(0));
 
     let mut visible_count = 0usize;
     for (owner, sprite, owner_transform) in &source_sprites {
         let render_transform = if visible_count < settings.max_sprites {
-            project_world_sprite(sprite, owner_transform, camera, camera_transform, &target)
+            project_world_sprite(sprite, owner_transform, &camera, &camera_transform, &target)
         } else {
             None
         };
 
         let Some(render_transform) = render_transform else {
-            if let Some(render_entity) = render_map.0.get(&owner).copied()
-                && let Ok((_, _, _, _, mut visibility)) = render_sprites.get_mut(render_entity)
+            if let Some(render_entity) = render_map.0.get(owner).copied()
+                && let Ok((_, _, _, _, mut visibility)) = queries.p2().get_mut(render_entity)
             {
                 *visibility = Visibility::Hidden;
             }
@@ -202,7 +209,7 @@ fn sync_direct_world_sprites(
 
         visible_count += 1;
         let atlas_frame = atlas_frame(sprite, &atlases);
-        let render_entity = if let Some(render_entity) = render_map.0.get(&owner).copied() {
+        let render_entity = if let Some(render_entity) = render_map.0.get(owner).copied() {
             render_entity
         } else {
             let mesh = meshes.add(sprite_mesh(atlas_frame));
@@ -225,45 +232,48 @@ fn sync_direct_world_sprites(
                     },
                 ))
                 .id();
-            render_map.0.insert(owner, render_entity);
+            render_map.0.insert(*owner, render_entity);
             continue;
         };
 
-        let Ok((mut render, mut mesh, mut material, mut transform, mut visibility)) =
-            render_sprites.get_mut(render_entity)
-        else {
-            render_map.0.remove(&owner);
-            continue;
-        };
-
-        if render.image != sprite.image
-            || render.atlas != sprite.atlas
-            || render.atlas_index != sprite.atlas_index
-            || render.atlas_frame != atlas_frame
         {
-            let next_mesh = meshes.add(sprite_mesh(atlas_frame));
-            mesh.0 = next_mesh.clone();
-            render.mesh = next_mesh;
-            render.image = sprite.image.clone();
-            render.atlas = sprite.atlas.clone();
-            render.atlas_index = sprite.atlas_index;
-            render.atlas_frame = atlas_frame;
-        }
+            let mut render_query = queries.p2();
+            let Ok((mut render, mut mesh, mut material, mut transform, mut visibility)) =
+                render_query.get_mut(render_entity)
+            else {
+                render_map.0.remove(owner);
+                continue;
+            };
 
-        render.depth_mode = sprite.depth_mode;
-        if render.material != material.0 {
-            material.0 = render.material.clone();
-        }
+            if render.image != sprite.image
+                || render.atlas != sprite.atlas
+                || render.atlas_index != sprite.atlas_index
+                || render.atlas_frame != atlas_frame
+            {
+                let next_mesh = meshes.add(sprite_mesh(atlas_frame));
+                mesh.0 = next_mesh.clone();
+                render.mesh = next_mesh;
+                render.image = sprite.image.clone();
+                render.atlas = sprite.atlas.clone();
+                render.atlas_index = sprite.atlas_index;
+                render.atlas_frame = atlas_frame;
+            }
 
-        if let Some(existing_material) = materials.get_mut(&render.material) {
-            existing_material.base_color = sprite.tint;
-            existing_material.base_color_texture = Some(sprite.image.clone());
-            existing_material.alpha_mode = alpha_mode(sprite.depth_mode);
-            existing_material.depth_bias = depth_bias(sprite);
-        }
+            render.depth_mode = sprite.depth_mode;
+            if render.material != material.0 {
+                material.0 = render.material.clone();
+            }
 
-        *transform = render_transform;
-        *visibility = Visibility::Visible;
+            if let Some(existing_material) = materials.get_mut(&render.material) {
+                existing_material.base_color = sprite.tint;
+                existing_material.base_color_texture = Some(sprite.image.clone());
+                existing_material.alpha_mode = alpha_mode(sprite.depth_mode);
+                existing_material.depth_bias = depth_bias(sprite);
+            }
+
+            *transform = render_transform;
+            *visibility = Visibility::Visible;
+        }
         commands.entity(render_entity).insert(render_layers.clone());
     }
 }

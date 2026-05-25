@@ -103,7 +103,6 @@ pub fn direct_stream_app() -> App {
         .insert_resource(RawFrameSenders {
             preview: preview_enabled.then_some(preview_sender),
             custom: None,
-            twitch: None,
             stats: stats.clone(),
         })
         .add_plugins(

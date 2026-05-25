@@ -484,20 +484,6 @@ impl DirectStreamAudioTarget {
         }
     }
 
-    pub(crate) fn take_stereo_f32(&self, frames: usize) -> Vec<f32> {
-        let mut output = vec![0.0; frames * STREAM_AUDIO_CHANNELS];
-        if let Ok(mut buffer) = self.inner.lock() {
-            for sample in &mut output {
-                if let Some(next) = buffer.pop() {
-                    *sample = next;
-                } else {
-                    break;
-                }
-            }
-        }
-        output
-    }
-
     pub(crate) fn take_delayed_stereo_f32_into(
         &self,
         frames: usize,

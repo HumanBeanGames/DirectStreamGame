@@ -19,20 +19,20 @@
     .player-controls[hidden] { display: none; }
     .player-controls button { appearance: none; border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 4px 8px; font: inherit; cursor: pointer; }
     .player-controls input { flex: 1; min-width: 0; }
-    .irc { min-height: 0; display: grid; grid-template-rows: auto 1fr auto; border: 1px solid #303847; background: #0b0d12; }
-    .irc h2 { margin: 0; padding: 10px 12px; border-bottom: 1px solid #303847; font-size: 14px; }
-    .irc-log { padding: 10px 12px; overflow: auto; color: #cbd5e1; font: 13px Consolas, monospace; }
-    .irc-log p { margin: 0 0 8px; }
-    .irc-input { display: flex; gap: 6px; padding: 10px; border-top: 1px solid #303847; }
-    .irc-input input { flex: 1; min-width: 0; background: #111722; color: #eef3f8; border: 1px solid #3a4353; border-radius: 4px; padding: 7px 8px; }
-    .irc-input button { border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 7px 10px; }
-    .irc-log p.mentioned-me { color: #fff7d6; background: rgba(247, 197, 72, 0.18); margin-inline: -4px; padding: 2px 4px; border-left: 2px solid #f7c548; }
+    .chat { min-height: 0; display: grid; grid-template-rows: auto 1fr auto; border: 1px solid #303847; background: #0b0d12; }
+    .chat h2 { margin: 0; padding: 10px 12px; border-bottom: 1px solid #303847; font-size: 14px; }
+    .chat-log { padding: 10px 12px; overflow: auto; color: #cbd5e1; font: 13px Consolas, monospace; }
+    .chat-log p { margin: 0 0 8px; }
+    .chat-input { display: flex; gap: 6px; padding: 10px; border-top: 1px solid #303847; }
+    .chat-input input { flex: 1; min-width: 0; background: #111722; color: #eef3f8; border: 1px solid #3a4353; border-radius: 4px; padding: 7px 8px; }
+    .chat-input button { border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 7px 10px; }
+    .chat-log p.mentioned-me { color: #fff7d6; background: rgba(247, 197, 72, 0.18); margin-inline: -4px; padding: 2px 4px; border-left: 2px solid #f7c548; }
     .side { min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; }
     .panels { display: grid; gap: 8px; }
     .panel { border: 1px solid #303847; background: #0b0d12; }
     .panel h2 { margin: 0; padding: 9px 12px; border-bottom: 1px solid #303847; font-size: 14px; }
     .panel pre { margin: 0; padding: 10px 12px; white-space: pre-wrap; color: #dbe4ef; font: 13px Consolas, monospace; }
-    @media (max-width: 900px) { .stage { grid-template-columns: 1fr; } .player { width: min(calc(100vw - 32px), calc(100vh - 360px), 960px); margin-inline: auto; } .side { min-height: 300px; } .irc { min-height: 220px; } }
+    @media (max-width: 900px) { .stage { grid-template-columns: 1fr; } .player { width: min(calc(100vw - 32px), calc(100vh - 360px), 960px); margin-inline: auto; } .side { min-height: 300px; } .chat { min-height: 220px; } }
   </style>
 </head>
 <body>
@@ -48,13 +48,13 @@
         </div>
       </div>
       <div class="side">
-        <aside class="irc">
-          <h2>IRC</h2>
-          <div class="irc-log" id="ircLog">
+        <aside class="chat">
+          <h2>Chat</h2>
+          <div class="chat-log" id="chatLog">
             <p><strong>system</strong> custom host chat panel ready</p>
           </div>
-          <form class="irc-input" id="ircForm">
-            <input id="ircInput" autocomplete="off" placeholder="chat message">
+          <form class="chat-input" id="chatForm">
+            <input id="chatInput" autocomplete="off" placeholder="chat message">
             <button type="submit">Send</button>
           </form>
         </aside>
@@ -70,9 +70,9 @@
     const playerControls = document.getElementById("playerControls");
     const muteButton = document.getElementById("muteButton");
     const volumeSlider = document.getElementById("volumeSlider");
-    const ircForm = document.getElementById("ircForm");
-    const ircInput = document.getElementById("ircInput");
-    const ircLog = document.getElementById("ircLog");
+    const chatForm = document.getElementById("chatForm");
+    const chatInput = document.getElementById("chatInput");
+    const chatLog = document.getElementById("chatLog");
     const customPanels = document.getElementById("customPanels");
     ctx.imageSmoothingEnabled = false;
 
@@ -775,11 +775,11 @@
       }).catch(error => console.error(error));
     });
 
-    ircForm.addEventListener("submit", event => {
+    chatForm.addEventListener("submit", event => {
       event.preventDefault();
-      const message = ircInput.value.trim();
+      const message = chatInput.value.trim();
       if (!message) return;
-      ircInput.value = "";
+      chatInput.value = "";
       fetch("https://game.humanbeangames.com/local-chat", {
         method: "POST",
         headers: { "Content-Type": "text/plain;charset=utf-8" },
@@ -860,7 +860,7 @@
     }
 
     function appendSystemLine(message) {
-      const last = ircLog.lastElementChild;
+      const last = chatLog.lastElementChild;
       if (last && last.dataset.system === message) return;
       const row = document.createElement("p");
       row.dataset.system = message;
@@ -868,12 +868,12 @@
       name.textContent = "system";
       row.appendChild(name);
       row.append(" " + message);
-      ircLog.appendChild(row);
-      ircLog.scrollTop = ircLog.scrollHeight;
+      chatLog.appendChild(row);
+      chatLog.scrollTop = chatLog.scrollHeight;
     }
 
     function clearChatLog() {
-      ircLog.textContent = "";
+      chatLog.textContent = "";
       appendSystemLine("chat panel ready");
     }
 
@@ -887,8 +887,8 @@
       if (isMentionedMe(message)) {
         row.classList.add("mentioned-me");
       }
-      ircLog.appendChild(row);
-      ircLog.scrollTop = ircLog.scrollHeight;
+      chatLog.appendChild(row);
+      chatLog.scrollTop = chatLog.scrollHeight;
       if (Number.isFinite(message.expires_at_ms)) {
         const delay = Math.max(0, message.expires_at_ms - Date.now());
         setTimeout(() => row.remove(), delay);

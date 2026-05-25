@@ -1,6 +1,6 @@
 use crate::{
     constants::{STREAM_FPS, STREAM_HEIGHT, STREAM_WIDTH},
-    frames::{EncodedFrameHub, RawFrame, copy_bgra_into_frame},
+    frames::{EncodedFrameHub, RawFrame},
     stats::SharedStats,
 };
 use crossbeam_channel::Receiver;
@@ -18,8 +18,7 @@ pub(crate) fn start_preview_encoder(
     stats: SharedStats,
 ) {
     thread::spawn(move || {
-        let mut encoder = match TwitchLikeJpegEncoder::new(STREAM_WIDTH, STREAM_HEIGHT, STREAM_FPS)
-        {
+        let mut encoder = match JpegPreviewEncoder::new(STREAM_WIDTH, STREAM_HEIGHT, STREAM_FPS) {
             Ok(encoder) => encoder,
             Err(err) => {
                 eprintln!("FFmpeg native initialization failed: {err}");
@@ -46,7 +45,7 @@ pub(crate) fn start_preview_encoder(
     });
 }
 
-struct TwitchLikeJpegEncoder {
+struct JpegPreviewEncoder {
     encoder: encoder::Video,
     scaler: ScaleContext,
     frame_index: i64,
@@ -54,7 +53,7 @@ struct TwitchLikeJpegEncoder {
     height: u32,
 }
 
-impl TwitchLikeJpegEncoder {
+impl JpegPreviewEncoder {
     fn new(width: u32, height: u32, fps: u32) -> Result<Self, ffmpeg::Error> {
         ffmpeg::init()?;
 
@@ -119,5 +118,18 @@ impl TwitchLikeJpegEncoder {
         }
 
         Ok(packets)
+    }
+}
+
+fn copy_bgra_into_frame(source: &[u8], destination: &mut frame::Video, width: u32, height: u32) {
+    let source_row_bytes = width as usize * 4;
+    let destination_stride = destination.stride(0);
+    let destination_data = destination.data_mut(0);
+
+    for row in 0..height as usize {
+        let source_start = row * source_row_bytes;
+        let destination_start = row * destination_stride;
+        destination_data[destination_start..destination_start + source_row_bytes]
+            .copy_from_slice(&source[source_start..source_start + source_row_bytes]);
     }
 }

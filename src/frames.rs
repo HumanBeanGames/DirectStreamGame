@@ -1,7 +1,6 @@
 use crate::stats::SharedStats;
 use bevy::prelude::*;
 use crossbeam_channel::Sender;
-use ffmpeg_next::frame;
 use std::{
     sync::{Arc, Condvar, Mutex},
     time::Instant,
@@ -52,7 +51,6 @@ impl EncodedFrameHub {
 pub(crate) struct RawFrameSenders {
     pub(crate) preview: Option<Sender<RawFrame>>,
     pub(crate) custom: Option<Sender<IndexedFrame>>,
-    pub(crate) twitch: Option<RawFrameHub>,
     pub(crate) stats: SharedStats,
 }
 
@@ -69,11 +67,6 @@ pub(crate) struct IndexedFrame {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) captured_at: Instant,
-}
-
-#[derive(Clone)]
-pub(crate) struct RawFrameHub {
-    inner: Arc<(Mutex<LatestRawFrame>, Condvar)>,
 }
 
 #[derive(Resource, Default)]
@@ -94,43 +87,6 @@ impl DirectStreamFrameProcessors {
         for processor in &mut self.processors {
             processor(frame.reborrow());
         }
-    }
-}
-
-#[derive(Default)]
-struct LatestRawFrame {
-    frame: Option<Arc<RawFrame>>,
-}
-
-impl RawFrameHub {
-    pub(crate) fn new() -> Self {
-        Self {
-            inner: Arc::new((Mutex::new(LatestRawFrame::default()), Condvar::new())),
-        }
-    }
-
-    pub(crate) fn publish(&self, frame: RawFrame) {
-        let (lock, ready) = &*self.inner;
-        if let Ok(mut latest) = lock.lock() {
-            latest.frame = Some(Arc::new(frame));
-            ready.notify_all();
-        }
-    }
-
-    pub(crate) fn wait_for_first_frame(&self) -> Option<Arc<RawFrame>> {
-        let (lock, ready) = &*self.inner;
-        let mut latest = lock.lock().ok()?;
-
-        while latest.frame.is_none() {
-            latest = ready.wait(latest).ok()?;
-        }
-
-        latest.frame.clone()
-    }
-
-    pub(crate) fn latest_frame(&self) -> Option<Arc<RawFrame>> {
-        let (lock, _) = &*self.inner;
-        lock.lock().ok()?.frame.clone()
     }
 }
 
@@ -193,23 +149,5 @@ impl DirectStreamFrameAppExt for bevy::prelude::App {
             .resource_mut::<DirectStreamFrameProcessors>()
             .register(processor);
         self
-    }
-}
-
-pub(crate) fn copy_bgra_into_frame(
-    source: &[u8],
-    destination: &mut frame::Video,
-    width: u32,
-    height: u32,
-) {
-    let source_row_bytes = width as usize * 4;
-    let destination_stride = destination.stride(0);
-    let destination_data = destination.data_mut(0);
-
-    for row in 0..height as usize {
-        let source_start = row * source_row_bytes;
-        let destination_start = row * destination_stride;
-        destination_data[destination_start..destination_start + source_row_bytes]
-            .copy_from_slice(&source[source_start..source_start + source_row_bytes]);
     }
 }

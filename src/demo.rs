@@ -1,6 +1,6 @@
 use crate::{
-    DirectStreamSet, DirectText, PlayStreamSound, StreamAudioClip, TwitchChatCommand,
-    TwitchChatSender, TwitchCommandAppExt, app::direct_stream_app,
+    DirectStreamSet, DirectText, PlayStreamSound, StreamAudioClip, StreamChatCommand,
+    StreamChatSender, StreamCommandAppExt, app::direct_stream_app,
     public_types::DirectStreamTarget,
 };
 use bevy::{
@@ -65,7 +65,7 @@ impl Drop for DemoVideoWorker {
 pub fn run_demo() {
     let mut app = direct_stream_app();
     app.insert_non_send_resource(DemoVideoBackground::default())
-        .add_twitch_command("boing", handle_demo_boing_command)
+        .add_stream_command("boing", handle_demo_boing_command)
         .add_systems(Startup, setup_demo_scene.after(DirectStreamSet::Setup))
         .add_systems(
             Update,
@@ -491,9 +491,9 @@ pub fn start_demo_music(
 }
 
 pub fn handle_demo_boing_command(
-    In(command): In<TwitchChatCommand>,
+    In(command): In<StreamChatCommand>,
     clip: Option<Res<DemoSfxClip>>,
-    chat: Option<Res<TwitchChatSender>>,
+    chat: Option<Res<StreamChatSender>>,
     mut events: MessageWriter<PlayStreamSound>,
 ) {
     let Some(clip) = clip else {

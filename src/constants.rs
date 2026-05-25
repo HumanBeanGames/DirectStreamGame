@@ -13,7 +13,6 @@ pub(crate) const STREAM_HEIGHT: u32 = 240;
 pub(crate) const STATS_WINDOW_WIDTH: u32 = 560;
 pub(crate) const STATS_WINDOW_HEIGHT: u32 = 680;
 pub(crate) const STREAM_FPS: u32 = 5;
-pub(crate) const TWITCH_VIDEO_BITRATE: usize = 350_000;
 pub(crate) const STREAM_AUDIO_SAMPLE_RATE: u32 = 48_000;
 pub(crate) const STREAM_AUDIO_CHANNELS: usize = 2;
 pub(crate) const CUSTOM_AUDIO_SAMPLE_RATE: u32 = 8_000;

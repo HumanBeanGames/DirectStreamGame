@@ -1,8 +1,8 @@
 use crate::{
     audio::DirectStreamAudioTarget,
-    chat::{LocalChatHub, TwitchChatLogin},
-    config::{AppConfig, effective_custom_batch_size, save_twitch_stream_key, twitch_rtmp_url},
-    frames::{IndexedFrame, RawFrameHub, RawFrameSenders},
+    chat::LocalChatHub,
+    config::{AppConfig, effective_custom_batch_size},
+    frames::{IndexedFrame, RawFrame, RawFrameSenders},
     gpu_palette::{
         GpuPalettePipeline, PaletteMaterial, make_stream_source_image,
         retarget_custom_host_pipeline,
@@ -13,27 +13,18 @@ use crate::{
     public_types::DirectStreamTarget,
     scene::StreamReadback,
     stats::SharedStats,
-    twitch::{TwitchStreamHandle, start_twitch_sink},
 };
 use bevy::{
     camera::RenderTarget, input::keyboard::KeyboardInput, prelude::*, ui::RelativeCursorPosition,
 };
 use crossbeam_channel::Sender;
-use std::{
-    process::Command,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU32, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU32, Ordering},
 };
-
-use crate::frames::RawFrame;
 
 #[derive(Resource)]
 pub(crate) struct StreamControl {
-    pub(crate) stream_key: String,
-    pub(crate) chat_bot_username: String,
-    pub(crate) chat_oauth_token: String,
     pub(crate) custom_width: String,
     pub(crate) custom_height: String,
     pub(crate) custom_fps: String,
@@ -41,16 +32,10 @@ pub(crate) struct StreamControl {
     pub(crate) prebaked_palette: bool,
     pub(crate) focused_input: Option<StreamControlInput>,
     pub(crate) status: String,
-    twitch_config_path: std::path::PathBuf,
-    twitch_channel: String,
-    ingest_server: String,
-    bandwidth_test: bool,
-    twitch_url_override: Option<String>,
     preview_sender: Option<Sender<RawFrame>>,
     custom_sender: Option<Sender<IndexedFrame>>,
     custom_stream_state: CustomStreamState,
     shared_palette_bias: SharedPaletteBias,
-    twitch_handle: Option<TwitchStreamHandle>,
 }
 
 impl StreamControl {
@@ -63,9 +48,6 @@ impl StreamControl {
     ) -> Self {
         let palette_bias = shared_palette_bias.get();
         Self {
-            stream_key: config.stream_key.clone(),
-            chat_bot_username: config.chat_bot_username.clone(),
-            chat_oauth_token: config.chat_oauth_token.clone(),
             custom_width: config.stream_width.to_string(),
             custom_height: config.stream_height.to_string(),
             custom_fps: config.stream_fps.to_string(),
@@ -73,34 +55,21 @@ impl StreamControl {
             prebaked_palette: config.prebaked_palette,
             focused_input: None,
             status: "Ready".to_owned(),
-            twitch_config_path: config.twitch_config_path.clone(),
-            twitch_channel: config.twitch_channel.clone(),
-            ingest_server: config.ingest_server.clone(),
-            bandwidth_test: config.bandwidth_test,
-            twitch_url_override: config.twitch_url_override.clone(),
             preview_sender,
             custom_sender,
             custom_stream_state,
             shared_palette_bias,
-            twitch_handle: None,
         }
     }
 
-    pub(crate) fn mark_started(&mut self, handle: TwitchStreamHandle) {
-        self.twitch_handle = Some(handle);
-        self.status = "Streaming".to_owned();
-    }
-
     pub(crate) fn is_streaming(&self) -> bool {
-        self.twitch_handle.is_some() || self.custom_stream_state.is_active()
+        self.custom_stream_state.is_active()
     }
 
     fn start(
         &mut self,
         senders: &mut RawFrameSenders,
         stats: &SharedStats,
-        audio_target: &DirectStreamAudioTarget,
-        chat_login: Option<&TwitchChatLogin>,
         images: &mut Assets<Image>,
         palette_materials: &mut Assets<PaletteMaterial>,
         target: &mut DirectStreamTarget,
@@ -115,88 +84,6 @@ impl StreamControl {
             return;
         }
 
-        if self.custom_sender.is_some() {
-            self.start_custom_host(
-                senders,
-                stats,
-                images,
-                palette_materials,
-                target,
-                readback,
-                gpu_palette,
-                camera_targets,
-                quad_transforms,
-                config,
-            );
-            return;
-        }
-
-        let stream_key = self.stream_key.trim();
-        if stream_key.is_empty() {
-            self.status = "Paste a Twitch stream key first".to_owned();
-            return;
-        }
-
-        if let Err(err) = save_twitch_stream_key(
-            &self.twitch_config_path,
-            &self.twitch_channel,
-            &self.chat_bot_username,
-            &self.chat_oauth_token,
-            &self.ingest_server,
-            stream_key,
-            self.bandwidth_test,
-        ) {
-            self.status = format!("Could not save twitch.toml: {err}");
-            return;
-        }
-
-        if let Some(chat_login) = chat_login {
-            chat_login.connect(
-                &self.twitch_channel,
-                &self.chat_bot_username,
-                &self.chat_oauth_token,
-            );
-        }
-
-        let Some(twitch_url) = self
-            .twitch_url_override
-            .clone()
-            .or_else(|| twitch_rtmp_url(&self.ingest_server, stream_key, self.bandwidth_test))
-        else {
-            self.status = "Invalid Twitch stream key".to_owned();
-            return;
-        };
-
-        let twitch_hub = RawFrameHub::new();
-        let handle = start_twitch_sink(
-            twitch_hub.clone(),
-            twitch_url,
-            stats.clone(),
-            audio_target.clone(),
-        );
-        senders.preview = None;
-        senders.twitch = Some(twitch_hub);
-        self.mark_started(handle);
-        self.status = "Streaming".to_owned();
-        stats.with_mut(|stats| {
-            stats.reset_twitch_session();
-            stats.twitch_stage = "starting";
-        });
-    }
-
-    fn start_custom_host(
-        &mut self,
-        senders: &mut RawFrameSenders,
-        stats: &SharedStats,
-        images: &mut Assets<Image>,
-        palette_materials: &mut Assets<PaletteMaterial>,
-        target: &mut DirectStreamTarget,
-        readback: &mut StreamReadback,
-        gpu_palette: Option<&mut GpuPalettePipeline>,
-        camera_targets: &mut Query<&mut RenderTarget>,
-        quad_transforms: &mut Query<&mut Transform>,
-        config: &AppConfig,
-    ) {
         let Some(custom_sender) = self.custom_sender.clone() else {
             self.status = "Custom host unavailable".to_owned();
             return;
@@ -205,18 +92,17 @@ impl StreamControl {
             self.status = "Use an 8-aligned square size 64-256 and fps 1-60".to_owned();
             return;
         };
-
         let Some(gpu_palette) = gpu_palette else {
             self.status = "GPU palette pipeline unavailable".to_owned();
             return;
         };
+
         let batch_size = effective_custom_batch_size(config.custom_host_batch_size, fps);
         let palette_config = load_palette_config_runtime(&config.palette_config_path);
         let palette_lookup = self
             .prebaked_palette
             .then(|| load_prebaked_lookup_runtime(&config.palette_config_path, &palette_config))
             .flatten();
-
         let image = images.add(make_stream_source_image(width, height));
 
         if let Ok(mut camera_target) = camera_targets.get_mut(target.camera) {
@@ -245,7 +131,7 @@ impl StreamControl {
             return;
         }
 
-        target.image = image.clone();
+        target.image = image;
         target.width = width;
         target.height = height;
         target.fps = fps;
@@ -264,12 +150,52 @@ impl StreamControl {
         readback.pending_requests.clear();
 
         senders.preview = None;
-        senders.twitch = None;
         senders.custom = Some(custom_sender);
         self.custom_stream_state.set_fps(fps);
         self.custom_stream_state.set_active(true);
         self.status = "Custom host streaming".to_owned();
         stats.with_mut(|stats| stats.reset_custom_session());
+    }
+
+    fn stop(
+        &mut self,
+        senders: &mut RawFrameSenders,
+        stats: &SharedStats,
+        audio_target: &DirectStreamAudioTarget,
+        readback: &mut StreamReadback,
+    ) {
+        if !self.is_streaming() {
+            self.status = "Not streaming".to_owned();
+            return;
+        }
+
+        self.custom_stream_state.set_active(false);
+        senders.custom = None;
+        if self.preview_sender.is_some() {
+            senders.preview = self.preview_sender.clone();
+        }
+        readback.pending_requests.clear();
+        readback.batch_started_at = None;
+        readback.batch_in_progress = false;
+        readback.frame_due = false;
+        readback.frame_accumulator = std::time::Duration::ZERO;
+        readback.textures_rendered_in_batch = 0;
+        readback.frame_waiting_for_render = None;
+        readback.rendered_batch_frames.clear();
+        audio_target.clear();
+        self.status = "Custom host stopped".to_owned();
+        stats.with_mut(|stats| {
+            stats.custom_stage = "stopped";
+            stats.custom_audio_packets_sent = 0;
+            stats.custom_audio_bytes_sent = 0;
+        });
+    }
+
+    fn open_custom_host(&mut self) {
+        match open_url("http://127.0.0.1:8080") {
+            Ok(()) => self.status = "Opened custom host preview".to_owned(),
+            Err(err) => self.status = format!("Could not open custom host: {err}"),
+        }
     }
 
     fn custom_dimensions(&self) -> Result<(u32, u32, u32), ()> {
@@ -326,88 +252,7 @@ impl StreamControl {
         };
         self.shared_palette_bias.set(self.palette_bias);
     }
-
-    fn stop(
-        &mut self,
-        senders: &mut RawFrameSenders,
-        stats: &SharedStats,
-        audio_target: &DirectStreamAudioTarget,
-        readback: &mut StreamReadback,
-    ) {
-        if self.custom_sender.is_some() {
-            self.custom_stream_state.set_active(false);
-            senders.custom = None;
-            readback.pending_requests.clear();
-            readback.batch_started_at = None;
-            readback.batch_in_progress = false;
-            readback.frame_due = false;
-            readback.frame_accumulator = std::time::Duration::ZERO;
-            readback.textures_rendered_in_batch = 0;
-            readback.frame_waiting_for_render = None;
-            readback.rendered_batch_frames.clear();
-            audio_target.clear();
-            self.status = "Custom host stopped".to_owned();
-            stats.with_mut(|stats| {
-                stats.custom_stage = "stopped";
-                stats.custom_audio_packets_sent = 0;
-                stats.custom_audio_bytes_sent = 0;
-            });
-            return;
-        }
-
-        let Some(handle) = self.twitch_handle.take() else {
-            self.status = "Not streaming".to_owned();
-            return;
-        };
-
-        handle.stop();
-        senders.twitch = None;
-        senders.custom = None;
-        if self.preview_sender.is_some() {
-            senders.preview = self.preview_sender.clone();
-        }
-        self.status = "Stopping stream".to_owned();
-        stats.with_mut(|stats| {
-            stats.twitch_stage = "stop requested";
-            stats.twitch_kbps = 0.0;
-        });
-    }
-
-    fn open_twitch_stream(&mut self) {
-        if self.custom_sender.is_some() {
-            match open_url("http://127.0.0.1:8080") {
-                Ok(()) => self.status = "Opened custom host preview".to_owned(),
-                Err(err) => self.status = format!("Could not open custom host: {err}"),
-            }
-            return;
-        }
-
-        let channel = self.twitch_channel.trim().trim_start_matches('#');
-        if channel.is_empty() || channel == "your_channel_name" {
-            self.status = "Set channel in twitch.toml first".to_owned();
-            return;
-        }
-
-        let url = format!("https://www.twitch.tv/{channel}");
-        match open_url(&url) {
-            Ok(()) => self.status = format!("Opened twitch.tv/{channel}"),
-            Err(err) => self.status = format!("Could not open Twitch URL: {err}"),
-        }
-    }
 }
-
-#[derive(Component)]
-pub(crate) struct StreamKeyInputBox;
-#[derive(Component)]
-pub(crate) struct ChatBotUsernameInputBox;
-#[derive(Component)]
-pub(crate) struct ChatOauthTokenInputBox;
-#[derive(Component)]
-pub(crate) struct CustomWidthInputBox;
-#[derive(Component)]
-pub(crate) struct CustomHeightInputBox;
-#[derive(Component)]
-pub(crate) struct CustomFpsInputBox;
 
 #[derive(Clone, Resource)]
 pub(crate) struct CustomStreamState {
@@ -458,11 +303,11 @@ impl PaletteBiasSlider {
 }
 
 #[derive(Component)]
-pub(crate) struct StreamKeyInputText;
+pub(crate) struct CustomWidthInputBox;
 #[derive(Component)]
-pub(crate) struct ChatBotUsernameInputText;
+pub(crate) struct CustomHeightInputBox;
 #[derive(Component)]
-pub(crate) struct ChatOauthTokenInputText;
+pub(crate) struct CustomFpsInputBox;
 #[derive(Component)]
 pub(crate) struct CustomWidthInputText;
 #[derive(Component)]
@@ -478,9 +323,6 @@ pub(crate) struct PaletteBiasSliderFill(pub(crate) PaletteBiasSlider);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StreamControlInput {
-    StreamKey,
-    ChatBotUsername,
-    ChatOauthToken,
     CustomWidth,
     CustomHeight,
     CustomFps,
@@ -488,16 +330,12 @@ pub(crate) enum StreamControlInput {
 
 #[derive(Component)]
 pub(crate) struct StreamControlStatusText;
-
 #[derive(Component)]
 pub(crate) struct StartStreamButton;
-
 #[derive(Component)]
 pub(crate) struct StopStreamButton;
-
 #[derive(Component)]
-pub(crate) struct OpenTwitchStreamButton;
-
+pub(crate) struct OpenStreamButton;
 #[derive(Component)]
 pub(crate) struct PurgeChatButton;
 
@@ -538,9 +376,7 @@ pub(crate) fn handle_stream_key_typing(
                 if keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]) {
                     continue;
                 }
-                if let Some(text) = &event.text
-                    && text.chars().all(is_printable_char)
-                {
+                if let Some(text) = &event.text {
                     push_focused_text(&mut control, focused_input, text);
                 }
             }
@@ -548,307 +384,215 @@ pub(crate) fn handle_stream_key_typing(
     }
 }
 
-pub(crate) fn handle_stream_control_interactions(
+pub(crate) fn handle_stream_input_box_interactions(
+    mut control: ResMut<StreamControl>,
+    mut custom_width_boxes: Query<
+        (&Interaction, &mut BackgroundColor),
+        (Changed<Interaction>, With<CustomWidthInputBox>),
+    >,
+    mut custom_height_boxes: Query<
+        (&Interaction, &mut BackgroundColor),
+        (Changed<Interaction>, With<CustomHeightInputBox>),
+    >,
+    mut custom_fps_boxes: Query<
+        (&Interaction, &mut BackgroundColor),
+        (Changed<Interaction>, With<CustomFpsInputBox>),
+    >,
+) {
+    handle_input_box_interactions(
+        &mut control,
+        &mut custom_width_boxes,
+        StreamControlInput::CustomWidth,
+    );
+    handle_input_box_interactions(
+        &mut control,
+        &mut custom_height_boxes,
+        StreamControlInput::CustomHeight,
+    );
+    handle_input_box_interactions(
+        &mut control,
+        &mut custom_fps_boxes,
+        StreamControlInput::CustomFps,
+    );
+}
+
+pub(crate) fn handle_stream_start_interactions(
     mut control: ResMut<StreamControl>,
     mut senders: ResMut<RawFrameSenders>,
     stats: Res<SharedStats>,
-    audio_target: Res<DirectStreamAudioTarget>,
-    local_chat: Option<Res<LocalChatHub>>,
-    chat_login: Option<Res<TwitchChatLogin>>,
+    mut readback: ResMut<StreamReadback>,
     mut images: ResMut<Assets<Image>>,
     mut palette_materials: ResMut<Assets<PaletteMaterial>>,
     mut target: ResMut<DirectStreamTarget>,
-    mut readback: ResMut<StreamReadback>,
     mut gpu_palette: Option<ResMut<GpuPalettePipeline>>,
     mut camera_targets: Query<&mut RenderTarget>,
     mut quad_transforms: Query<&mut Transform>,
     config: Res<AppConfig>,
-    mut controls: Query<
-        (
-            &Interaction,
-            &mut BackgroundColor,
-            Option<&StreamKeyInputBox>,
-            Option<&ChatBotUsernameInputBox>,
-            Option<&ChatOauthTokenInputBox>,
-            Option<&CustomWidthInputBox>,
-            Option<&CustomHeightInputBox>,
-            Option<&CustomFpsInputBox>,
-            Option<&StartStreamButton>,
-            Option<&StopStreamButton>,
-            Option<&OpenTwitchStreamButton>,
-            Option<&PurgeChatButton>,
-        ),
-        Changed<Interaction>,
+    mut start_buttons: Query<
+        (&Interaction, &mut BackgroundColor),
+        (Changed<Interaction>, With<StartStreamButton>),
     >,
 ) {
-    for (
-        interaction,
-        mut color,
-        key_box,
-        bot_box,
-        token_box,
-        width_box,
-        height_box,
-        fps_box,
-        start_button,
-        stop_button,
-        open_button,
-        purge_button,
-    ) in &mut controls
-    {
-        if key_box.is_some() {
-            set_input_interaction_color(
-                *interaction,
-                &mut color,
-                &mut control,
-                StreamControlInput::StreamKey,
+    for (interaction, mut color) in &mut start_buttons {
+        if *interaction == Interaction::Pressed {
+            let gpu_palette = gpu_palette.as_deref_mut();
+            control.start(
+                &mut senders,
+                &stats,
+                &mut images,
+                &mut palette_materials,
+                &mut target,
+                &mut readback,
+                gpu_palette,
+                &mut camera_targets,
+                &mut quad_transforms,
+                &config,
             );
-        } else if bot_box.is_some() {
-            set_input_interaction_color(
-                *interaction,
-                &mut color,
-                &mut control,
-                StreamControlInput::ChatBotUsername,
-            );
-        } else if token_box.is_some() {
-            set_input_interaction_color(
-                *interaction,
-                &mut color,
-                &mut control,
-                StreamControlInput::ChatOauthToken,
-            );
-        } else if width_box.is_some() {
-            set_input_interaction_color(
-                *interaction,
-                &mut color,
-                &mut control,
-                StreamControlInput::CustomWidth,
-            );
-        } else if height_box.is_some() {
-            set_input_interaction_color(
-                *interaction,
-                &mut color,
-                &mut control,
-                StreamControlInput::CustomHeight,
-            );
-        } else if fps_box.is_some() {
-            set_input_interaction_color(
-                *interaction,
-                &mut color,
-                &mut control,
-                StreamControlInput::CustomFps,
-            );
-        } else if start_button.is_some() {
-            match *interaction {
-                Interaction::Pressed => {
-                    control.focused_input = None;
-                    control.start(
-                        &mut senders,
-                        &stats,
-                        &audio_target,
-                        chat_login.as_deref(),
-                        &mut images,
-                        &mut palette_materials,
-                        &mut target,
-                        &mut readback,
-                        gpu_palette.as_deref_mut(),
-                        &mut camera_targets,
-                        &mut quad_transforms,
-                        &config,
-                    );
-                    *color = BackgroundColor(Color::srgb(0.10, 0.36, 0.22));
-                }
-                Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.08, 0.28, 0.18)),
-                Interaction::None => *color = BackgroundColor(Color::srgb(0.05, 0.20, 0.13)),
-            }
-        } else if stop_button.is_some() {
-            match *interaction {
-                Interaction::Pressed => {
-                    control.focused_input = None;
-                    control.stop(&mut senders, &stats, &audio_target, &mut readback);
-                    *color = BackgroundColor(Color::srgb(0.38, 0.11, 0.12));
-                }
-                Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.30, 0.09, 0.10)),
-                Interaction::None => *color = BackgroundColor(Color::srgb(0.21, 0.06, 0.07)),
-            }
-        } else if open_button.is_some() {
-            match *interaction {
-                Interaction::Pressed => {
-                    control.focused_input = None;
-                    control.open_twitch_stream();
-                    *color = BackgroundColor(Color::srgb(0.13, 0.19, 0.34));
-                }
-                Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.10, 0.15, 0.27)),
-                Interaction::None => *color = BackgroundColor(Color::srgb(0.07, 0.10, 0.19)),
-            }
-        } else if purge_button.is_some() {
-            match *interaction {
-                Interaction::Pressed => {
-                    control.focused_input = None;
-                    if let Some(local_chat) = local_chat.as_deref() {
-                        local_chat.purge();
-                        control.status = "Local chat purged".to_owned();
-                    } else {
-                        control.status = "Local chat unavailable".to_owned();
-                    }
-                    *color = BackgroundColor(Color::srgb(0.32, 0.18, 0.05));
-                }
-                Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.25, 0.14, 0.04)),
-                Interaction::None => *color = BackgroundColor(Color::srgb(0.17, 0.10, 0.04)),
-            }
-        } else if *interaction == Interaction::Pressed {
-            control.focused_input = None;
         }
+        *color = button_color(*interaction, Color::srgb(0.05, 0.20, 0.13));
+    }
+}
+
+pub(crate) fn handle_stream_stop_interactions(
+    mut control: ResMut<StreamControl>,
+    mut senders: ResMut<RawFrameSenders>,
+    stats: Res<SharedStats>,
+    audio_target: Res<DirectStreamAudioTarget>,
+    mut readback: ResMut<StreamReadback>,
+    mut stop_buttons: Query<
+        (&Interaction, &mut BackgroundColor),
+        (Changed<Interaction>, With<StopStreamButton>),
+    >,
+) {
+    for (interaction, mut color) in &mut stop_buttons {
+        if *interaction == Interaction::Pressed {
+            control.stop(&mut senders, &stats, &audio_target, &mut readback);
+        }
+        *color = button_color(*interaction, Color::srgb(0.21, 0.06, 0.07));
+    }
+}
+
+pub(crate) fn handle_stream_misc_button_interactions(
+    mut control: ResMut<StreamControl>,
+    local_chat: Option<Res<LocalChatHub>>,
+    mut open_buttons: Query<
+        (&Interaction, &mut BackgroundColor),
+        (Changed<Interaction>, With<OpenStreamButton>),
+    >,
+    mut purge_buttons: Query<
+        (&Interaction, &mut BackgroundColor),
+        (Changed<Interaction>, With<PurgeChatButton>),
+    >,
+) {
+    for (interaction, mut color) in &mut open_buttons {
+        if *interaction == Interaction::Pressed {
+            control.open_custom_host();
+        }
+        *color = button_color(*interaction, Color::srgb(0.07, 0.10, 0.19));
+    }
+
+    for (interaction, mut color) in &mut purge_buttons {
+        if *interaction == Interaction::Pressed {
+            if let Some(chat) = &local_chat {
+                chat.purge();
+                control.status = "Purged local chat".to_owned();
+            }
+        }
+        *color = button_color(*interaction, Color::srgb(0.17, 0.10, 0.04));
     }
 }
 
 pub(crate) fn handle_palette_bias_sliders(
-    mouse: Res<ButtonInput<MouseButton>>,
     mut control: ResMut<StreamControl>,
-    sliders: Query<(&Interaction, &RelativeCursorPosition, &PaletteBiasSlider), With<Button>>,
+    mut sliders: Query<
+        (
+            &Interaction,
+            &RelativeCursorPosition,
+            &PaletteBiasSlider,
+            &mut BackgroundColor,
+        ),
+        Changed<Interaction>,
+    >,
 ) {
-    if control.prebaked_palette {
-        return;
-    }
-
-    if !mouse.pressed(MouseButton::Left) {
-        return;
-    }
-
-    for (interaction, cursor, slider) in &sliders {
-        if !matches!(interaction, Interaction::Pressed | Interaction::Hovered) {
-            continue;
+    for (interaction, cursor, slider, mut color) in &mut sliders {
+        if *interaction == Interaction::Pressed && !control.prebaked_palette {
+            let value = cursor
+                .normalized
+                .map(|position| position.x.clamp(0.0, 1.0))
+                .unwrap_or(0.0);
+            control.set_palette_bias_slider(*slider, value);
         }
-
-        let Some(position) = cursor.normalized else {
-            continue;
-        };
-
-        if !(-0.5..=0.5).contains(&position.x) || !(-0.5..=0.5).contains(&position.y) {
-            continue;
-        }
-
-        control.set_palette_bias_slider(*slider, position.x + 0.5);
+        *color = button_color(*interaction, Color::srgb(0.08, 0.10, 0.14));
     }
 }
 
 pub(crate) fn update_stream_control_ui(
     control: Res<StreamControl>,
-    mut text_query: Query<(
-        &mut Text,
-        Option<&StreamKeyInputText>,
-        Option<&ChatBotUsernameInputText>,
-        Option<&ChatOauthTokenInputText>,
-        Option<&CustomWidthInputText>,
-        Option<&CustomHeightInputText>,
-        Option<&CustomFpsInputText>,
-        Option<&PaletteBiasSliderValueText>,
-        Option<&StreamControlStatusText>,
-    )>,
-    mut fill_query: Query<(&mut Node, &PaletteBiasSliderFill)>,
+    mut status_text: Query<&mut Text, With<StreamControlStatusText>>,
+    mut custom_width_text: Query<&mut Text, With<CustomWidthInputText>>,
+    mut custom_height_text: Query<&mut Text, With<CustomHeightInputText>>,
+    mut custom_fps_text: Query<&mut Text, With<CustomFpsInputText>>,
+    mut slider_value_texts: Query<(&PaletteBiasSliderValueText, &mut Text)>,
+    mut slider_fills: Query<(&PaletteBiasSliderFill, &mut Node)>,
 ) {
     if !control.is_changed() {
         return;
     }
 
-    for (
-        mut text,
-        key_text,
-        bot_text,
-        token_text,
-        width_text,
-        height_text,
-        fps_text,
-        bias_value_text,
-        status_text,
-    ) in &mut text_query
-    {
-        if key_text.is_some() {
-            text.0 = masked_input_text(
-                &control.stream_key,
-                control.focused_input == Some(StreamControlInput::StreamKey),
-                "paste stream key",
-            );
-        } else if bot_text.is_some() {
-            text.0 = plain_input_text(
-                &control.chat_bot_username,
-                control.focused_input == Some(StreamControlInput::ChatBotUsername),
-                "bot username",
-            );
-        } else if token_text.is_some() {
-            text.0 = masked_input_text(
-                &control.chat_oauth_token,
-                control.focused_input == Some(StreamControlInput::ChatOauthToken),
-                "chat oauth token",
-            );
-        } else if width_text.is_some() {
-            text.0 = plain_input_text(
-                &control.custom_width,
-                control.focused_input == Some(StreamControlInput::CustomWidth),
-                "width",
-            );
-        } else if height_text.is_some() {
-            text.0 = plain_input_text(
-                &control.custom_height,
-                control.focused_input == Some(StreamControlInput::CustomHeight),
-                "height",
-            );
-        } else if fps_text.is_some() {
-            text.0 = plain_input_text(
-                &control.custom_fps,
-                control.focused_input == Some(StreamControlInput::CustomFps),
-                "fps",
-            );
-        } else if let Some(bias_value_text) = bias_value_text {
-            text.0 = format!(
-                "{:.3}",
-                palette_bias_value(control.palette_bias, bias_value_text.0)
-            );
-        } else if status_text.is_some() {
-            let mode = if control.is_streaming() {
-                "live"
+    if let Ok(mut text) = status_text.single_mut() {
+        **text = format!(
+            "stream control: {} - {}",
+            if control.is_streaming() {
+                "streaming"
             } else {
                 "idle"
-            };
-            text.0 = format!("stream control: {mode} - {}", control.status);
-        }
+            },
+            control.status
+        );
+    }
+    if let Ok(mut text) = custom_width_text.single_mut() {
+        **text = control.custom_width.clone();
+    }
+    if let Ok(mut text) = custom_height_text.single_mut() {
+        **text = control.custom_height.clone();
+    }
+    if let Ok(mut text) = custom_fps_text.single_mut() {
+        **text = control.custom_fps.clone();
     }
 
-    for (mut node, fill) in &mut fill_query {
-        node.width = percent(palette_bias_value(control.palette_bias, fill.0) * 100.0);
+    for (marker, mut text) in &mut slider_value_texts {
+        **text = format!("{:.2}", slider_value(control.palette_bias, marker.0));
     }
-}
-
-fn is_printable_char(chr: char) -> bool {
-    let is_in_private_use_area = ('\u{e000}'..='\u{f8ff}').contains(&chr)
-        || ('\u{f0000}'..='\u{ffffd}').contains(&chr)
-        || ('\u{100000}'..='\u{10fffd}').contains(&chr);
-
-    !is_in_private_use_area && !chr.is_ascii_control()
-}
-
-fn push_focused_text(control: &mut StreamControl, input: StreamControlInput, text: &str) {
-    match input {
-        StreamControlInput::StreamKey => control.stream_key.push_str(text),
-        StreamControlInput::ChatBotUsername => control.chat_bot_username.push_str(text),
-        StreamControlInput::ChatOauthToken => control.chat_oauth_token.push_str(text),
-        StreamControlInput::CustomWidth => push_numeric_text(&mut control.custom_width, text),
-        StreamControlInput::CustomHeight => push_numeric_text(&mut control.custom_height, text),
-        StreamControlInput::CustomFps => push_numeric_text(&mut control.custom_fps, text),
+    for (marker, mut node) in &mut slider_fills {
+        node.width = percent((slider_value(control.palette_bias, marker.0) * 100.0) as f64);
     }
 }
 
-fn pop_focused_text(control: &mut StreamControl, input: StreamControlInput) {
-    match input {
-        StreamControlInput::StreamKey => {
-            control.stream_key.pop();
+fn handle_input_box_interactions<T: Component>(
+    control: &mut StreamControl,
+    query: &mut Query<(&Interaction, &mut BackgroundColor), (Changed<Interaction>, With<T>)>,
+    input: StreamControlInput,
+) {
+    for (interaction, mut color) in query {
+        if *interaction == Interaction::Pressed {
+            control.focused_input = Some(input);
         }
-        StreamControlInput::ChatBotUsername => {
-            control.chat_bot_username.pop();
+        *color = button_color(*interaction, Color::srgb(0.045, 0.055, 0.07));
+    }
+}
+
+fn push_focused_text(control: &mut StreamControl, focused_input: StreamControlInput, text: &str) {
+    for ch in text.chars().filter(|ch| ch.is_ascii_digit()) {
+        match focused_input {
+            StreamControlInput::CustomWidth => control.custom_width.push(ch),
+            StreamControlInput::CustomHeight => control.custom_height.push(ch),
+            StreamControlInput::CustomFps => control.custom_fps.push(ch),
         }
-        StreamControlInput::ChatOauthToken => {
-            control.chat_oauth_token.pop();
-        }
+    }
+}
+
+fn pop_focused_text(control: &mut StreamControl, focused_input: StreamControlInput) {
+    match focused_input {
         StreamControlInput::CustomWidth => {
             control.custom_width.pop();
         }
@@ -861,69 +605,7 @@ fn pop_focused_text(control: &mut StreamControl, input: StreamControlInput) {
     }
 }
 
-fn push_numeric_text(value: &mut String, text: &str) {
-    value.extend(text.chars().filter(|chr| chr.is_ascii_digit()));
-}
-
-fn set_input_interaction_color(
-    interaction: Interaction,
-    color: &mut BackgroundColor,
-    control: &mut StreamControl,
-    input: StreamControlInput,
-) {
-    match interaction {
-        Interaction::Pressed => {
-            control.focused_input = Some(input);
-            *color = BackgroundColor(Color::srgb(0.10, 0.15, 0.21));
-        }
-        Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.08, 0.12, 0.17)),
-        Interaction::None => {
-            *color = if control.focused_input == Some(input) {
-                BackgroundColor(Color::srgb(0.10, 0.15, 0.21))
-            } else {
-                BackgroundColor(Color::srgb(0.045, 0.055, 0.07))
-            };
-        }
-    }
-}
-
-fn masked_input_text(value: &str, focused: bool, placeholder: &str) -> String {
-    if value.is_empty() {
-        if focused {
-            "|".to_owned()
-        } else {
-            placeholder.to_owned()
-        }
-    } else {
-        let visible_chars = value.chars().count().min(6);
-        let tail: String = value
-            .chars()
-            .rev()
-            .take(visible_chars)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
-        let cursor = if focused { "|" } else { "" };
-        format!("...{tail}{cursor}")
-    }
-}
-
-fn plain_input_text(value: &str, focused: bool, placeholder: &str) -> String {
-    if value.is_empty() {
-        if focused {
-            "|".to_owned()
-        } else {
-            placeholder.to_owned()
-        }
-    } else if focused {
-        format!("{value}|")
-    } else {
-        value.to_owned()
-    }
-}
-
-fn palette_bias_value(bias: PaletteBias, slider: PaletteBiasSlider) -> f32 {
+fn slider_value(bias: PaletteBias, slider: PaletteBiasSlider) -> f32 {
     match slider {
         PaletteBiasSlider::Lightness => bias.lightness,
         PaletteBiasSlider::Chroma => bias.chroma,
@@ -931,31 +613,17 @@ fn palette_bias_value(bias: PaletteBias, slider: PaletteBiasSlider) -> f32 {
     }
 }
 
-fn open_url(url: &str) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .spawn()
-            .map(|_| ())
-            .map_err(|err| err.to_string())
+fn button_color(interaction: Interaction, base: Color) -> BackgroundColor {
+    match interaction {
+        Interaction::Pressed => BackgroundColor(Color::srgb(0.24, 0.32, 0.46)),
+        Interaction::Hovered => BackgroundColor(Color::srgb(0.13, 0.17, 0.24)),
+        Interaction::None => BackgroundColor(base),
     }
+}
 
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open")
-            .arg(url)
-            .spawn()
-            .map(|_| ())
-            .map_err(|err| err.to_string())
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        Command::new("xdg-open")
-            .arg(url)
-            .spawn()
-            .map(|_| ())
-            .map_err(|err| err.to_string())
-    }
+fn open_url(url: &str) -> std::io::Result<()> {
+    std::process::Command::new("cmd")
+        .args(["/C", "start", "", url])
+        .spawn()
+        .map(|_| ())
 }

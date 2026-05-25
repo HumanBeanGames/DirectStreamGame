@@ -7,6 +7,7 @@ mod constants;
 mod custom_host;
 mod demo;
 mod direct_text;
+mod direct_world_sprite;
 mod frames;
 mod gpu_palette;
 mod palette;
@@ -17,14 +18,13 @@ mod public_types;
 mod scene;
 mod stats;
 mod stream_control;
-mod twitch;
 mod web;
 
 pub use app::{direct_stream_app, run_with_game};
 pub use audio::{DirectStreamAudioTarget, PlayStreamSound, StreamAudioClip};
 pub use chat::{
-    ChatAudience, LocalChatEntryOptions, TwitchChatCommand, TwitchChatLogin, TwitchChatMessage,
-    TwitchChatRoles, TwitchChatSender, TwitchCommandAppExt, TwitchCommandRouter,
+    ChatAudience, LocalChatEntryOptions, StreamChatCommand, StreamChatMessage, StreamChatRoles,
+    StreamChatSender, StreamCommandAppExt, StreamCommandRouter,
 };
 pub use constants::{
     DIRECT_STREAM_AUDIO_CHANNELS, DIRECT_STREAM_AUDIO_SAMPLE_RATE, DIRECT_STREAM_FPS,
@@ -36,6 +36,10 @@ pub use demo::{
     pulse_hello_world_text, run_demo, setup_demo_scene, start_demo_music,
 };
 pub use direct_text::{DirectText, DirectTextPlugin};
+pub use direct_world_sprite::{
+    DirectWorldSprite, DirectWorldSpritePlugin, DirectWorldSpriteSettings, SpriteDepthMode,
+    SpriteFacing,
+};
 pub use frames::{DirectStreamFrame, DirectStreamFrameAppExt};
 pub use palette_lut::{DEFAULT_PALETTE_IPSMAP, DEFAULT_PALETTE_TOML};
 pub use plugin::DirectStreamPlugin;

@@ -149,14 +149,6 @@ pub(crate) fn queue_readback_frame(
             stats.preview_frames_dropped += 1;
         });
     }
-
-    if let Some(twitch) = &senders.twitch {
-        twitch.publish(RawFrame {
-            bgra,
-            width: target.width,
-            height: target.height,
-        });
-    }
 }
 
 fn finish_readback_batch_if_complete(readback: &mut StreamReadback, senders: &RawFrameSenders) {

@@ -51,6 +51,9 @@ pub struct LocalChatEntryOptions {
     pub ttl_ms: Option<u64>,
     pub audience: ChatAudience,
     pub mentions: Vec<String>,
+    pub display_name_color: Option<String>,
+    pub message_color: Option<String>,
+    pub css_class: Option<String>,
 }
 
 impl LocalChatEntryOptions {
@@ -62,6 +65,9 @@ impl LocalChatEntryOptions {
             text,
             ttl_ms: None,
             audience: ChatAudience::All,
+            display_name_color: None,
+            message_color: None,
+            css_class: None,
         }
     }
 
@@ -73,6 +79,9 @@ impl LocalChatEntryOptions {
             text,
             ttl_ms: None,
             audience: ChatAudience::All,
+            display_name_color: None,
+            message_color: None,
+            css_class: None,
         }
     }
 
@@ -88,6 +97,21 @@ impl LocalChatEntryOptions {
 
     pub fn for_viewer_name(mut self, name: impl Into<String>) -> Self {
         self.audience = ChatAudience::ViewerName(name.into());
+        self
+    }
+
+    pub fn with_display_name_color(mut self, color: impl Into<String>) -> Self {
+        self.display_name_color = sanitize_chat_color(color.into());
+        self
+    }
+
+    pub fn with_message_color(mut self, color: impl Into<String>) -> Self {
+        self.message_color = sanitize_chat_color(color.into());
+        self
+    }
+
+    pub fn with_css_class(mut self, class: impl Into<String>) -> Self {
+        self.css_class = sanitize_chat_class(class.into());
         self
     }
 }
@@ -136,6 +160,9 @@ pub(crate) struct LocalChatEntry {
     pub(crate) ttl_ms: Option<u64>,
     pub(crate) audience: ChatAudience,
     pub(crate) mentions: Vec<String>,
+    pub(crate) display_name_color: Option<String>,
+    pub(crate) message_color: Option<String>,
+    pub(crate) css_class: Option<String>,
 }
 
 impl LocalChatHub {
@@ -161,6 +188,9 @@ impl LocalChatHub {
             created_at_ms: current_time_millis(),
             ttl_ms: None,
             audience: ChatAudience::All,
+            display_name_color: Some(display_name_color_from_hash(&identity_hash)),
+            message_color: None,
+            css_class: None,
         };
         state.next_id = state.next_id.wrapping_add(1);
         state.messages.push_back(LocalChatSubmission {
@@ -273,6 +303,9 @@ impl LocalChatHub {
                 ttl_ms: options.ttl_ms,
                 audience: options.audience,
                 mentions: options.mentions,
+                display_name_color: options.display_name_color,
+                message_color: options.message_color,
+                css_class: options.css_class,
             };
             state.next_id = state.next_id.wrapping_add(1);
             state.history.push_back(entry);
@@ -455,6 +488,112 @@ fn entry_matches_audience(
     }
 }
 
+fn sanitize_chat_color(color: String) -> Option<String> {
+    let trimmed = color.trim();
+    if trimmed.len() > 64 {
+        return None;
+    }
+
+    if is_hex_color(trimmed)
+        || is_css_rgb_function(trimmed)
+        || is_css_hsl_function(trimmed)
+        || is_named_chat_color(trimmed)
+    {
+        Some(trimmed.to_owned())
+    } else {
+        None
+    }
+}
+
+fn is_hex_color(color: &str) -> bool {
+    let Some(hex) = color.strip_prefix('#') else {
+        return false;
+    };
+    matches!(hex.len(), 3 | 4 | 6 | 8) && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_css_rgb_function(color: &str) -> bool {
+    let Some(inner) = color
+        .strip_prefix("rgb(")
+        .and_then(|value| value.strip_suffix(')'))
+    else {
+        return false;
+    };
+    inner
+        .split(',')
+        .map(str::trim)
+        .all(|part| part.parse::<u8>().is_ok())
+        && inner.split(',').count() == 3
+}
+
+fn is_css_hsl_function(color: &str) -> bool {
+    let Some(inner) = color
+        .strip_prefix("hsl(")
+        .and_then(|value| value.strip_suffix(')'))
+    else {
+        return false;
+    };
+    let parts = inner.split_whitespace().collect::<Vec<_>>();
+    if parts.len() != 3 {
+        return false;
+    }
+    parts[0].parse::<u16>().is_ok_and(|hue| hue <= 360)
+        && parts[1]
+            .strip_suffix('%')
+            .and_then(|value| value.parse::<u8>().ok())
+            .is_some_and(|percent| percent <= 100)
+        && parts[2]
+            .strip_suffix('%')
+            .and_then(|value| value.parse::<u8>().ok())
+            .is_some_and(|percent| percent <= 100)
+}
+
+fn is_named_chat_color(color: &str) -> bool {
+    color
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte == b'-')
+        && matches!(
+            color,
+            "white"
+                | "black"
+                | "red"
+                | "green"
+                | "blue"
+                | "yellow"
+                | "cyan"
+                | "magenta"
+                | "orange"
+                | "purple"
+                | "pink"
+                | "lime"
+                | "teal"
+                | "gold"
+                | "silver"
+                | "gray"
+                | "grey"
+        )
+}
+
+fn sanitize_chat_class(class: String) -> Option<String> {
+    let tokens = class
+        .split_whitespace()
+        .filter(|token| {
+            !token.is_empty()
+                && token.len() <= 48
+                && token
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+        .take(4)
+        .collect::<Vec<_>>();
+
+    if tokens.is_empty() {
+        None
+    } else {
+        Some(tokens.join(" "))
+    }
+}
+
 fn mentions_from_text(text: &str) -> Vec<String> {
     text.split_whitespace()
         .filter_map(|word| {
@@ -512,4 +651,10 @@ fn local_chat_name_from_hash(hash: &str) -> String {
     let suffix_a = SYMBOLS[((value >> 16) as usize) % SYMBOLS.len()] as char;
     let suffix_b = SYMBOLS[((value >> 24) as usize) % SYMBOLS.len()] as char;
     format!("{adjective}{creature}-{suffix_a}{suffix_b}")
+}
+
+fn display_name_color_from_hash(hash: &str) -> String {
+    let value = u64::from_str_radix(hash, 16).unwrap_or(0);
+    let hue = value % 360;
+    format!("hsl({hue} 78% 68%)")
 }

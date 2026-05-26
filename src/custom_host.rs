@@ -10,8 +10,10 @@ pub struct CustomHostPanel {
     pub title: String,
     pub body: String,
     pub revision: u64,
-    pub region: CustomHostPanelRegion,
+    pub anchor: CustomHostPanelAnchor,
     pub order: i32,
+    pub size_hint: Option<CustomHostPanelSize>,
+    pub style_hint: Option<CustomHostPanelStyle>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -25,15 +27,72 @@ pub enum CustomHostPanelRegion {
 }
 
 impl CustomHostPanelRegion {
-    pub(crate) fn as_json_str(self) -> &'static str {
+    pub fn anchor(self) -> CustomHostPanelAnchor {
         match self {
-            CustomHostPanelRegion::LeftOfStream => "LeftOfStream",
-            CustomHostPanelRegion::RightOfStream => "RightOfStream",
-            CustomHostPanelRegion::BelowStream => "BelowStream",
-            CustomHostPanelRegion::AboveStream => "AboveStream",
-            CustomHostPanelRegion::SidePanelDefault => "SidePanelDefault",
+            CustomHostPanelRegion::LeftOfStream => CustomHostPanelAnchor::LeftOfStream,
+            CustomHostPanelRegion::RightOfStream => CustomHostPanelAnchor::RightOfStream,
+            CustomHostPanelRegion::BelowStream => CustomHostPanelAnchor::BelowStream,
+            CustomHostPanelRegion::AboveStream => CustomHostPanelAnchor::AboveStream,
+            CustomHostPanelRegion::SidePanelDefault => CustomHostPanelAnchor::RightOfStream,
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum CustomHostPanelAnchor {
+    LeftOfStream,
+    #[default]
+    RightOfStream,
+    AboveStream,
+    BelowStream,
+    OverlayTopLeft,
+    OverlayTopRight,
+    OverlayBottomLeft,
+    OverlayBottomRight,
+    NamedRegion(String),
+}
+
+impl CustomHostPanelAnchor {
+    pub(crate) fn as_json_str(&self) -> String {
+        match self {
+            CustomHostPanelAnchor::LeftOfStream => "LeftOfStream".to_owned(),
+            CustomHostPanelAnchor::RightOfStream => "RightOfStream".to_owned(),
+            CustomHostPanelAnchor::AboveStream => "AboveStream".to_owned(),
+            CustomHostPanelAnchor::BelowStream => "BelowStream".to_owned(),
+            CustomHostPanelAnchor::OverlayTopLeft => "OverlayTopLeft".to_owned(),
+            CustomHostPanelAnchor::OverlayTopRight => "OverlayTopRight".to_owned(),
+            CustomHostPanelAnchor::OverlayBottomLeft => "OverlayBottomLeft".to_owned(),
+            CustomHostPanelAnchor::OverlayBottomRight => "OverlayBottomRight".to_owned(),
+            CustomHostPanelAnchor::NamedRegion(region) => format!("NamedRegion:{region}"),
+        }
+    }
+
+    fn sort_key(&self) -> (u8, String) {
+        match self {
+            CustomHostPanelAnchor::LeftOfStream => (0, String::new()),
+            CustomHostPanelAnchor::RightOfStream => (1, String::new()),
+            CustomHostPanelAnchor::AboveStream => (2, String::new()),
+            CustomHostPanelAnchor::BelowStream => (3, String::new()),
+            CustomHostPanelAnchor::OverlayTopLeft => (4, String::new()),
+            CustomHostPanelAnchor::OverlayTopRight => (5, String::new()),
+            CustomHostPanelAnchor::OverlayBottomLeft => (6, String::new()),
+            CustomHostPanelAnchor::OverlayBottomRight => (7, String::new()),
+            CustomHostPanelAnchor::NamedRegion(region) => (8, region.clone()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CustomHostPanelSize {
+    pub min_width_px: Option<u32>,
+    pub max_width_px: Option<u32>,
+    pub min_height_px: Option<u32>,
+    pub max_height_px: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CustomHostPanelStyle {
+    pub css_class: Option<String>,
 }
 
 #[derive(Clone, Resource, Default)]
@@ -71,8 +130,10 @@ impl CustomHostPanelHub {
             title: title.into(),
             body: body.into(),
             revision: 0,
-            region: CustomHostPanelRegion::SidePanelDefault,
+            anchor: CustomHostPanelAnchor::RightOfStream,
             order: 0,
+            size_hint: None,
+            style_hint: None,
         });
     }
 
@@ -88,8 +149,30 @@ impl CustomHostPanelHub {
             title: title.into(),
             body: body.into(),
             revision: 0,
-            region,
+            anchor: region.anchor(),
             order: 0,
+            size_hint: None,
+            style_hint: None,
+        });
+    }
+
+    pub fn publish_text_at(
+        &self,
+        id: impl Into<String>,
+        title: impl Into<String>,
+        body: impl Into<String>,
+        anchor: CustomHostPanelAnchor,
+        order: i32,
+    ) {
+        self.publish(CustomHostPanel {
+            id: id.into(),
+            title: title.into(),
+            body: body.into(),
+            revision: 0,
+            anchor,
+            order,
+            size_hint: None,
+            style_hint: None,
         });
     }
 
@@ -100,13 +183,20 @@ impl CustomHostPanelHub {
         }
     }
 
+    pub fn clear_region(&self, anchor: CustomHostPanelAnchor) {
+        if let Ok(mut state) = self.state.lock() {
+            state.panels.retain(|_, panel| panel.anchor != anchor);
+            state.next_revision = state.next_revision.wrapping_add(1);
+        }
+    }
+
     pub fn snapshot(&self) -> Vec<CustomHostPanel> {
         let mut panels: Vec<CustomHostPanel> = self
             .state
             .lock()
             .map(|state| state.panels.values().cloned().collect())
             .unwrap_or_default();
-        panels.sort_by_key(|panel| (panel.region, panel.order, panel.id.clone()));
+        panels.sort_by_key(|panel| (panel.anchor.sort_key(), panel.order, panel.id.clone()));
         panels
     }
 }

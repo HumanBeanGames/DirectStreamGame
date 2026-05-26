@@ -6,7 +6,10 @@ use crate::{
         LOCAL_CHAT_FEED_PATH, LOCAL_CHAT_PATH, PALETTE_STREAM_PATH, STREAM_CLICK_PATH,
         STREAM_HEIGHT, STREAM_PATH, STREAM_STATUS_PATH, STREAM_WIDTH, WEB_ADDR,
     },
-    custom_host::{CustomHostPanelHub, StreamPointerClick, StreamPointerClickHub},
+    custom_host::{
+        CustomHostPanelHub, CustomHostPanelSize, CustomHostPanelStyle, StreamPointerClick,
+        StreamPointerClickHub,
+    },
     frames::EncodedFrameHub,
     palette::PaletteFrameHub,
     stats::SharedStats,
@@ -293,7 +296,7 @@ fn serve_local_chat_feed(
             .collect::<Vec<_>>()
             .join(",");
         body.push_str(&format!(
-            r#"{{"id":{},"name":"{}","user":"{}","text":"{}","created_at_ms":{},"expires_at_ms":{},"mentions":[{}]}}"#,
+            r#"{{"id":{},"name":"{}","user":"{}","text":"{}","created_at_ms":{},"expires_at_ms":{},"mentions":[{}],"display_name_color":{},"message_color":{},"css_class":{}}}"#,
             entry.id,
             json_escape(&entry.display_name),
             json_escape(&entry.user),
@@ -302,7 +305,10 @@ fn serve_local_chat_feed(
             expires_at_ms
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "null".to_owned()),
-            mentions
+            mentions,
+            json_optional_string(entry.display_name_color.as_deref()),
+            json_optional_string(entry.message_color.as_deref()),
+            json_optional_string(entry.css_class.as_deref())
         ));
     }
     body.push_str("]}");
@@ -321,14 +327,18 @@ fn serve_custom_panels(mut stream: TcpStream, panels: CustomHostPanelHub) {
         if index > 0 {
             body.push(',');
         }
+        let anchor = panel.anchor.as_json_str();
         body.push_str(&format!(
-            r#"{{"id":"{}","title":"{}","body":"{}","revision":{},"region":"{}","order":{}}}"#,
+            r#"{{"id":"{}","title":"{}","body":"{}","revision":{},"anchor":"{}","region":"{}","order":{},"size_hint":{},"style_hint":{}}}"#,
             json_escape(&panel.id),
             json_escape(&panel.title),
             json_escape(&panel.body),
             panel.revision,
-            panel.region.as_json_str(),
-            panel.order
+            json_escape(&anchor),
+            json_escape(&anchor),
+            panel.order,
+            panel_size_hint_json(panel.size_hint.as_ref()),
+            panel_style_hint_json(panel.style_hint.as_ref())
         ));
     }
     body.push_str("]}");
@@ -448,6 +458,41 @@ fn json_escape(value: &str) -> String {
         .replace('"', "\\\"")
         .replace('\n', "\\n")
         .replace('\r', "\\r")
+}
+
+fn json_optional_string(value: Option<&str>) -> String {
+    value
+        .map(|value| format!(r#""{}""#, json_escape(value)))
+        .unwrap_or_else(|| "null".to_owned())
+}
+
+fn panel_size_hint_json(size: Option<&CustomHostPanelSize>) -> String {
+    let Some(size) = size else {
+        return "null".to_owned();
+    };
+    format!(
+        r#"{{"min_width_px":{},"max_width_px":{},"min_height_px":{},"max_height_px":{}}}"#,
+        json_optional_u32(size.min_width_px),
+        json_optional_u32(size.max_width_px),
+        json_optional_u32(size.min_height_px),
+        json_optional_u32(size.max_height_px)
+    )
+}
+
+fn panel_style_hint_json(style: Option<&CustomHostPanelStyle>) -> String {
+    let Some(style) = style else {
+        return "null".to_owned();
+    };
+    format!(
+        r#"{{"css_class":{}}}"#,
+        json_optional_string(style.css_class.as_deref())
+    )
+}
+
+fn json_optional_u32(value: Option<u32>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_owned())
 }
 
 fn serve_bad_request(mut stream: TcpStream) {
@@ -740,6 +785,17 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     .panel {{ border: 1px solid #303847; background: #0b0d12; }}
     .panel h2 {{ margin: 0; padding: 9px 12px; border-bottom: 1px solid #303847; font-size: 14px; }}
     .panel pre {{ margin: 0; padding: 10px 12px; white-space: pre-wrap; color: #dbe4ef; font: 13px Consolas, monospace; }}
+    .overlay-panels {{ position: absolute; z-index: 4; display: grid; gap: 6px; max-width: min(44%, 280px); pointer-events: none; }}
+    .overlay-panels:empty {{ display: none; }}
+    .overlay-panels .panel {{ pointer-events: auto; background: rgba(11, 13, 18, 0.84); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28); }}
+    .overlay-panels .panel h2 {{ padding: 6px 8px; font-size: 12px; }}
+    .overlay-panels .panel pre {{ padding: 6px 8px; font-size: 12px; }}
+    .overlay-top-left {{ top: 10px; left: 10px; }}
+    .overlay-top-right {{ top: 10px; right: 10px; }}
+    .overlay-bottom-left {{ bottom: 54px; left: 10px; }}
+    .overlay-bottom-right {{ bottom: 54px; right: 10px; }}
+    .named-panel-region {{ border-top: 1px solid #303847; padding-top: 8px; }}
+    .named-panel-region h2 {{ margin: 0 0 8px; color: #b9c7d7; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }}
     @media (max-width: 900px) {{ .stage, .stage.has-left {{ grid-template-columns: 1fr; grid-template-areas: "above" "player" "left" "right" "below"; }} .player, .stage.has-left .player {{ width: min(calc(100vw - 32px), calc(100vh - 360px), 960px); margin-inline: auto; }} .right-region {{ min-height: 300px; }} .chat {{ min-height: 220px; max-height: 420px; }} }}
   </style>
 </head>
@@ -751,6 +807,10 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
       <section class="panel-region left-region" id="leftPanels"></section>
       <div class="player">
         <canvas id="screen" width="{STREAM_WIDTH}" height="{STREAM_HEIGHT}"></canvas>
+        <section class="overlay-panels overlay-top-left" id="overlayTopLeftPanels"></section>
+        <section class="overlay-panels overlay-top-right" id="overlayTopRightPanels"></section>
+        <section class="overlay-panels overlay-bottom-left" id="overlayBottomLeftPanels"></section>
+        <section class="overlay-panels overlay-bottom-right" id="overlayBottomRightPanels"></section>
         <button class="unmute" id="unmuteButton" type="button">Click to unmute</button>
         <div class="player-controls" id="playerControls" hidden>
           <button id="muteButton" type="button">Mute</button>
@@ -789,6 +849,11 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     const rightPanels = document.getElementById("rightPanels");
     const abovePanels = document.getElementById("abovePanels");
     const belowPanels = document.getElementById("belowPanels");
+    const overlayTopLeftPanels = document.getElementById("overlayTopLeftPanels");
+    const overlayTopRightPanels = document.getElementById("overlayTopRightPanels");
+    const overlayBottomLeftPanels = document.getElementById("overlayBottomLeftPanels");
+    const overlayBottomRightPanels = document.getElementById("overlayBottomRightPanels");
+    const namedPanelContainers = new Map();
     ctx.imageSmoothingEnabled = false;
 
     let width = 0;
@@ -1597,10 +1662,23 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
       const stickToBottom = chatIsNearBottom();
       const row = document.createElement("p");
       row.dataset.chatId = String(message.id || "");
+      for (const className of safeCssClasses(message.css_class)) {{
+        row.classList.add(className);
+      }}
       const name = document.createElement("strong");
       name.textContent = message.name || "unknown";
+      const nameColor = safeCssColor(message.display_name_color);
+      if (nameColor) {{
+        name.style.color = nameColor;
+      }}
+      const text = document.createElement("span");
+      text.textContent = " " + (message.text || "");
+      const messageColor = safeCssColor(message.message_color);
+      if (messageColor) {{
+        text.style.color = messageColor;
+      }}
       row.appendChild(name);
-      row.append(" " + (message.text || ""));
+      row.appendChild(text);
       if (isMentionedMe(message)) {{
         row.classList.add("mentioned-me");
       }}
@@ -1634,28 +1712,137 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
       rightPanels.textContent = "";
       abovePanels.textContent = "";
       belowPanels.textContent = "";
+      overlayTopLeftPanels.textContent = "";
+      overlayTopRightPanels.textContent = "";
+      overlayBottomLeftPanels.textContent = "";
+      overlayBottomRightPanels.textContent = "";
+      namedPanelContainers.clear();
       panels
         .slice()
-        .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0) || String(a.id || "").localeCompare(String(b.id || "")))
+        .sort((a, b) => {{
+          const anchorCompare = panelAnchorSortKey(a).localeCompare(panelAnchorSortKey(b));
+          return anchorCompare || (Number(a.order) || 0) - (Number(b.order) || 0) || String(a.id || "").localeCompare(String(b.id || ""));
+        }})
         .forEach(panel => {{
         const section = document.createElement("article");
         section.className = "panel";
+        for (const className of safeCssClasses(panel.style_hint && panel.style_hint.css_class)) {{
+          section.classList.add(className);
+        }}
+        applyPanelSizeHint(section, panel.size_hint);
         const title = document.createElement("h2");
         title.textContent = panel.title || panel.id || "Panel";
         const body = document.createElement("pre");
         body.textContent = panel.body || "";
         section.appendChild(title);
         section.appendChild(body);
-        panelContainer(panel.region).appendChild(section);
+        panelContainer(panel.anchor || panel.region).appendChild(section);
       }});
       stage.classList.toggle("has-left", leftPanels.childElementCount > 0);
     }}
 
-    function panelContainer(region) {{
-      if (region === "LeftOfStream") return leftPanels;
-      if (region === "AboveStream") return abovePanels;
-      if (region === "BelowStream") return belowPanels;
+    function panelAnchorSortKey(panel) {{
+      const anchor = String(panel.anchor || panel.region || "RightOfStream");
+      const order = {{
+        LeftOfStream: "0",
+        RightOfStream: "1",
+        SidePanelDefault: "1",
+        AboveStream: "2",
+        BelowStream: "3",
+        OverlayTopLeft: "4",
+        OverlayTopRight: "5",
+        OverlayBottomLeft: "6",
+        OverlayBottomRight: "7",
+      }}[anchor];
+      return order || `8:${{anchor}}`;
+    }}
+
+    function panelContainer(anchor) {{
+      if (anchor === "LeftOfStream") return leftPanels;
+      if (anchor === "AboveStream") return abovePanels;
+      if (anchor === "BelowStream") return belowPanels;
+      if (anchor === "OverlayTopLeft") return overlayTopLeftPanels;
+      if (anchor === "OverlayTopRight") return overlayTopRightPanels;
+      if (anchor === "OverlayBottomLeft") return overlayBottomLeftPanels;
+      if (anchor === "OverlayBottomRight") return overlayBottomRightPanels;
+      if (String(anchor || "").startsWith("NamedRegion:")) {{
+        return namedPanelContainer(String(anchor).slice("NamedRegion:".length));
+      }}
       return rightPanels;
+    }}
+
+    function namedPanelContainer(name) {{
+      const key = name || "default";
+      if (namedPanelContainers.has(key)) {{
+        return namedPanelContainers.get(key);
+      }}
+      const section = document.createElement("section");
+      section.className = "panel-region named-panel-region";
+      const title = document.createElement("h2");
+      title.textContent = key;
+      const panels = document.createElement("div");
+      panels.className = "panel-region";
+      section.appendChild(title);
+      section.appendChild(panels);
+      belowPanels.appendChild(section);
+      namedPanelContainers.set(key, panels);
+      return panels;
+    }}
+
+    function applyPanelSizeHint(element, hint) {{
+      if (!hint || typeof hint !== "object") return;
+      const pairs = [
+        ["min_width_px", "minWidth"],
+        ["max_width_px", "maxWidth"],
+        ["min_height_px", "minHeight"],
+        ["max_height_px", "maxHeight"],
+      ];
+      for (const [key, styleName] of pairs) {{
+        const value = Number(hint[key]);
+        if (Number.isFinite(value) && value >= 0 && value <= 2000) {{
+          element.style[styleName] = `${{value}}px`;
+        }}
+      }}
+    }}
+
+    function safeCssColor(value) {{
+      if (typeof value !== "string") return null;
+      const color = value.trim();
+      if (color.length > 64) return null;
+      if (/^#(?:[0-9a-fA-F]{{3}}|[0-9a-fA-F]{{4}}|[0-9a-fA-F]{{6}}|[0-9a-fA-F]{{8}})$/.test(color)) {{
+        return color;
+      }}
+      if (isSafeRgbColor(color)) {{
+        return color;
+      }}
+      if (isSafeHslColor(color)) {{
+        return color;
+      }}
+      if (/^(?:white|black|red|green|blue|yellow|cyan|magenta|orange|purple|pink|lime|teal|gold|silver|gray|grey)$/.test(color)) {{
+        return color;
+      }}
+      return null;
+    }}
+
+    function isSafeRgbColor(color) {{
+      const match = color.match(/^rgb\(\s*(\d{{1,3}})\s*,\s*(\d{{1,3}})\s*,\s*(\d{{1,3}})\s*\)$/);
+      return !!match && match.slice(1).every(part => Number(part) >= 0 && Number(part) <= 255);
+    }}
+
+    function isSafeHslColor(color) {{
+      const match = color.match(/^hsl\(\s*(\d{{1,3}})\s+(\d{{1,3}})%\s+(\d{{1,3}})%\s*\)$/);
+      return !!match
+        && Number(match[1]) <= 360
+        && Number(match[2]) <= 100
+        && Number(match[3]) <= 100;
+    }}
+
+    function safeCssClasses(value) {{
+      if (typeof value !== "string") return [];
+      return value
+        .split(/\s+/)
+        .filter(token => /^[A-Za-z0-9_-]{{1,48}}$/.test(token))
+        .slice(0, 4);
     }}
 
     connect();

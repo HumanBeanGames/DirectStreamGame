@@ -31,7 +31,8 @@ pub use constants::{
     DIRECT_STREAM_HEIGHT, DIRECT_STREAM_WIDTH,
 };
 pub use custom_host::{
-    CustomHostPanel, CustomHostPanelHub, CustomHostPanelRegion, StreamPointerClick,
+    CustomHostPanel, CustomHostPanelAnchor, CustomHostPanelHub, CustomHostPanelRegion,
+    CustomHostPanelSize, CustomHostPanelStyle, StreamPointerClick,
 };
 pub use demo::{
     DemoMusicClip, DemoMusicStarted, DemoSfxClip, HelloWorldText, handle_demo_boing_command,

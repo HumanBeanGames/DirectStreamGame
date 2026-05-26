@@ -280,7 +280,29 @@ clears the current local chat feed.
 
 Bot/system replies can be sent through `StreamChatSender::send`. Custom local
 entries can be created with `StreamChatSender::send_local` and
-`LocalChatEntryOptions`, including optional TTLs and mention metadata.
+`LocalChatEntryOptions`, including optional TTLs, mention metadata, and safe
+per-message styling. Viewer-authored custom-host messages automatically get a
+stable display-name color derived from their identity hash.
+
+```rust
+use std::time::Duration;
+use bevy::prelude::*;
+use direct_stream_game::{LocalChatEntryOptions, StreamChatSender};
+
+fn reply(chat: Res<StreamChatSender>) {
+    chat.send_local(
+        LocalChatEntryOptions::named("Market", "Salt is cheap today.")
+            .with_display_name_color("#f7c548")
+            .with_message_color("white")
+            .with_css_class("market-reply")
+            .with_ttl(Duration::from_secs(10)),
+    );
+}
+```
+
+Chat colors accept safe `#RGB`, `#RRGGBB`, `rgb(r,g,b)`, `hsl(h s% l%)`, or a
+small named-color set. CSS classes are sanitized to short alphanumeric,
+underscore, or hyphen tokens before they reach the browser.
 
 ## Panels And Clicks
 
@@ -288,23 +310,26 @@ Downstream games can publish arbitrary side-panel text:
 
 ```rust
 use bevy::prelude::*;
-use direct_stream_game::{CustomHostPanelHub, CustomHostPanelRegion};
+use direct_stream_game::{CustomHostPanelAnchor, CustomHostPanelHub};
 
 fn update_panel(panels: Res<CustomHostPanelHub>) {
-    panels.publish_text_in_region(
+    panels.publish_text_at(
         "town-prices",
         "Northpass Prices",
         "wool 4g\nsalt 5g",
-        CustomHostPanelRegion::LeftOfStream,
+        CustomHostPanelAnchor::LeftOfStream,
+        0,
     );
 }
 ```
 
-Panel regions are `LeftOfStream`, `RightOfStream`, `AboveStream`,
-`BelowStream`, and `SidePanelDefault`. `publish_text` still uses
-`SidePanelDefault`, which preserves the original right-side panel stack below
-chat. For finer ordering, publish a full `CustomHostPanel` with `region` and
-`order`.
+Panel anchors are `LeftOfStream`, `RightOfStream`, `AboveStream`,
+`BelowStream`, `OverlayTopLeft`, `OverlayTopRight`, `OverlayBottomLeft`,
+`OverlayBottomRight`, and `NamedRegion(String)`. Panels in each anchor are
+ordered by `order`, then `id`. `publish_text` still uses the right-side default
+stack below chat, and the older `CustomHostPanelRegion` helpers remain
+available for compatibility. For full control, publish a `CustomHostPanel`
+with `anchor`, `order`, optional `size_hint`, and optional `style_hint`.
 
 Browser clicks on the stream canvas are emitted as `StreamPointerClick` messages
 with viewer identity, display name, pixel coordinates, and normalized

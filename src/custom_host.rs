@@ -10,6 +10,30 @@ pub struct CustomHostPanel {
     pub title: String,
     pub body: String,
     pub revision: u64,
+    pub region: CustomHostPanelRegion,
+    pub order: i32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CustomHostPanelRegion {
+    LeftOfStream,
+    RightOfStream,
+    BelowStream,
+    AboveStream,
+    #[default]
+    SidePanelDefault,
+}
+
+impl CustomHostPanelRegion {
+    pub(crate) fn as_json_str(self) -> &'static str {
+        match self {
+            CustomHostPanelRegion::LeftOfStream => "LeftOfStream",
+            CustomHostPanelRegion::RightOfStream => "RightOfStream",
+            CustomHostPanelRegion::BelowStream => "BelowStream",
+            CustomHostPanelRegion::AboveStream => "AboveStream",
+            CustomHostPanelRegion::SidePanelDefault => "SidePanelDefault",
+        }
+    }
 }
 
 #[derive(Clone, Resource, Default)]
@@ -47,6 +71,25 @@ impl CustomHostPanelHub {
             title: title.into(),
             body: body.into(),
             revision: 0,
+            region: CustomHostPanelRegion::SidePanelDefault,
+            order: 0,
+        });
+    }
+
+    pub fn publish_text_in_region(
+        &self,
+        id: impl Into<String>,
+        title: impl Into<String>,
+        body: impl Into<String>,
+        region: CustomHostPanelRegion,
+    ) {
+        self.publish(CustomHostPanel {
+            id: id.into(),
+            title: title.into(),
+            body: body.into(),
+            revision: 0,
+            region,
+            order: 0,
         });
     }
 
@@ -58,10 +101,13 @@ impl CustomHostPanelHub {
     }
 
     pub fn snapshot(&self) -> Vec<CustomHostPanel> {
-        self.state
+        let mut panels: Vec<CustomHostPanel> = self
+            .state
             .lock()
             .map(|state| state.panels.values().cloned().collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        panels.sort_by_key(|panel| (panel.region, panel.order, panel.id.clone()));
+        panels
     }
 }
 

@@ -30,7 +30,9 @@ pub use constants::{
     DIRECT_STREAM_AUDIO_CHANNELS, DIRECT_STREAM_AUDIO_SAMPLE_RATE, DIRECT_STREAM_FPS,
     DIRECT_STREAM_HEIGHT, DIRECT_STREAM_WIDTH,
 };
-pub use custom_host::{CustomHostPanel, CustomHostPanelHub, StreamPointerClick};
+pub use custom_host::{
+    CustomHostPanel, CustomHostPanelHub, CustomHostPanelRegion, StreamPointerClick,
+};
 pub use demo::{
     DemoMusicClip, DemoMusicStarted, DemoSfxClip, HelloWorldText, handle_demo_boing_command,
     pulse_hello_world_text, run_demo, setup_demo_scene, start_demo_music,

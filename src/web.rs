@@ -322,11 +322,13 @@ fn serve_custom_panels(mut stream: TcpStream, panels: CustomHostPanelHub) {
             body.push(',');
         }
         body.push_str(&format!(
-            r#"{{"id":"{}","title":"{}","body":"{}","revision":{}}}"#,
+            r#"{{"id":"{}","title":"{}","body":"{}","revision":{},"region":"{}","order":{}}}"#,
             json_escape(&panel.id),
             json_escape(&panel.title),
             json_escape(&panel.body),
-            panel.revision
+            panel.revision,
+            panel.region.as_json_str(),
+            panel.order
         ));
     }
     body.push_str("]}");
@@ -706,9 +708,11 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     :root {{ color-scheme: dark; font-family: Arial, sans-serif; background: #111318; color: #eef3f8; }}
     body {{ margin: 0; min-height: 100vh; display: grid; grid-template-rows: auto 1fr; }}
     header {{ padding: 12px 16px; background: #1b2029; border-bottom: 1px solid #303847; }}
-    main {{ display: grid; place-items: center; padding: 16px; }}
-    .stage {{ width: min(100%, 1240px); display: grid; grid-template-columns: auto minmax(220px, 320px); gap: 8px; align-items: stretch; justify-content: center; }}
-    .player {{ position: relative; width: min(calc(100vw - 384px), calc(100vh - 84px), 960px); aspect-ratio: 1 / 1; }}
+    main {{ display: grid; place-items: center; padding: 16px; min-height: 0; }}
+    .stage {{ width: min(100%, 1480px); display: grid; grid-template-columns: 0 auto minmax(220px, 320px); grid-template-areas: "above above above" "left player right" "below below below"; gap: 8px; align-items: stretch; justify-content: center; min-height: 0; }}
+    .stage.has-left {{ grid-template-columns: minmax(180px, 280px) auto minmax(220px, 320px); }}
+    .player {{ grid-area: player; position: relative; width: min(calc(100vw - 384px), calc(100vh - 84px), 960px); aspect-ratio: 1 / 1; min-width: 240px; }}
+    .stage.has-left .player {{ width: min(max(240px, calc(100vw - 680px)), calc(100vh - 84px), 960px); }}
     canvas {{ display: block; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; image-rendering: crisp-edges; background: #050608; border: 1px solid #303847; }}
     .unmute {{ position: absolute; inset: 1px; display: grid; place-items: center; border: 0; background: rgba(5, 6, 8, 0.54); color: #f8fafc; font: 700 clamp(18px, 4vw, 34px) Arial, sans-serif; cursor: pointer; text-shadow: 0 2px 8px #000; }}
     .unmute[hidden] {{ display: none; }}
@@ -717,26 +721,34 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     .player-controls[hidden] {{ display: none; }}
     .player-controls button {{ appearance: none; border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 4px 8px; font: inherit; cursor: pointer; }}
     .player-controls input {{ flex: 1; min-width: 0; }}
-    .chat {{ min-height: 0; display: grid; grid-template-rows: auto 1fr auto; border: 1px solid #303847; background: #0b0d12; }}
+    .chat {{ min-height: 0; max-height: 100%; display: flex; flex-direction: column; border: 1px solid #303847; background: #0b0d12; }}
     .chat h2 {{ margin: 0; padding: 10px 12px; border-bottom: 1px solid #303847; font-size: 14px; }}
-    .chat-log {{ padding: 10px 12px; overflow: auto; color: #cbd5e1; font: 13px Consolas, monospace; }}
+    .chat-log {{ flex: 1 1 auto; min-height: 0; padding: 10px 12px; overflow-y: auto; color: #cbd5e1; font: 13px Consolas, monospace; }}
     .chat-log p {{ margin: 0 0 8px; }}
-    .chat-input {{ display: flex; gap: 6px; padding: 10px; border-top: 1px solid #303847; }}
+    .chat-input {{ flex: none; display: flex; gap: 6px; padding: 10px; border-top: 1px solid #303847; }}
     .chat-input input {{ flex: 1; min-width: 0; background: #111722; color: #eef3f8; border: 1px solid #3a4353; border-radius: 4px; padding: 7px 8px; }}
     .chat-input button {{ border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 7px 10px; }}
     .chat-log p.mentioned-me {{ color: #fff7d6; background: rgba(247, 197, 72, 0.18); margin-inline: -4px; padding: 2px 4px; border-left: 2px solid #f7c548; }}
-    .side {{ min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; }}
-    .panels {{ display: grid; gap: 8px; }}
+    .left-region {{ grid-area: left; min-height: 0; overflow-y: auto; }}
+    .right-region {{ grid-area: right; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; }}
+    .above-region {{ grid-area: above; }}
+    .below-region {{ grid-area: below; }}
+    .panel-region {{ display: grid; gap: 8px; align-content: start; }}
+    .panel-region:empty {{ display: none; }}
+    .right-panels {{ display: grid; gap: 8px; align-content: start; }}
+    .right-panels:empty {{ display: none; }}
     .panel {{ border: 1px solid #303847; background: #0b0d12; }}
     .panel h2 {{ margin: 0; padding: 9px 12px; border-bottom: 1px solid #303847; font-size: 14px; }}
     .panel pre {{ margin: 0; padding: 10px 12px; white-space: pre-wrap; color: #dbe4ef; font: 13px Consolas, monospace; }}
-    @media (max-width: 900px) {{ .stage {{ grid-template-columns: 1fr; }} .player {{ width: min(calc(100vw - 32px), calc(100vh - 360px), 960px); margin-inline: auto; }} .side {{ min-height: 300px; }} .chat {{ min-height: 220px; }} }}
+    @media (max-width: 900px) {{ .stage, .stage.has-left {{ grid-template-columns: 1fr; grid-template-areas: "above" "player" "left" "right" "below"; }} .player, .stage.has-left .player {{ width: min(calc(100vw - 32px), calc(100vh - 360px), 960px); margin-inline: auto; }} .right-region {{ min-height: 300px; }} .chat {{ min-height: 220px; max-height: 420px; }} }}
   </style>
 </head>
 <body>
   <header>Direct Stream Game custom palette stream</header>
   <main>
-    <div class="stage">
+    <div class="stage" id="stage">
+      <section class="panel-region above-region" id="abovePanels"></section>
+      <section class="panel-region left-region" id="leftPanels"></section>
       <div class="player">
         <canvas id="screen" width="{STREAM_WIDTH}" height="{STREAM_HEIGHT}"></canvas>
         <button class="unmute" id="unmuteButton" type="button">Click to unmute</button>
@@ -745,7 +757,7 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
           <input id="volumeSlider" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="Volume">
         </div>
       </div>
-      <div class="side">
+      <div class="right-region">
         <aside class="chat">
           <h2>Chat</h2>
           <div class="chat-log" id="chatLog">
@@ -756,11 +768,13 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
             <button type="submit">Send</button>
           </form>
         </aside>
-        <section class="panels" id="customPanels"></section>
+        <section class="right-panels" id="rightPanels"></section>
       </div>
+      <section class="panel-region below-region" id="belowPanels"></section>
     </div>
   </main>
   <script>
+    const stage = document.getElementById("stage");
     const canvas = document.getElementById("screen");
     const player = document.querySelector(".player");
     const ctx = canvas.getContext("2d");
@@ -771,7 +785,10 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     const chatForm = document.getElementById("chatForm");
     const chatInput = document.getElementById("chatInput");
     const chatLog = document.getElementById("chatLog");
-    const customPanels = document.getElementById("customPanels");
+    const leftPanels = document.getElementById("leftPanels");
+    const rightPanels = document.getElementById("rightPanels");
+    const abovePanels = document.getElementById("abovePanels");
+    const belowPanels = document.getElementById("belowPanels");
     ctx.imageSmoothingEnabled = false;
 
     let width = 0;
@@ -1560,6 +1577,7 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     function appendSystemLine(message) {{
       const last = chatLog.lastElementChild;
       if (last && last.dataset.system === message) return;
+      const stickToBottom = chatIsNearBottom();
       const row = document.createElement("p");
       row.dataset.system = message;
       const name = document.createElement("strong");
@@ -1567,7 +1585,7 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
       row.appendChild(name);
       row.append(" " + message);
       chatLog.appendChild(row);
-      chatLog.scrollTop = chatLog.scrollHeight;
+      if (stickToBottom) scrollChatToBottom();
     }}
 
     function clearChatLog() {{
@@ -1576,6 +1594,7 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     }}
 
     function appendChatLine(message) {{
+      const stickToBottom = chatIsNearBottom();
       const row = document.createElement("p");
       row.dataset.chatId = String(message.id || "");
       const name = document.createElement("strong");
@@ -1586,11 +1605,19 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
         row.classList.add("mentioned-me");
       }}
       chatLog.appendChild(row);
-      chatLog.scrollTop = chatLog.scrollHeight;
+      if (stickToBottom) scrollChatToBottom();
       if (Number.isFinite(message.expires_at_ms)) {{
         const delay = Math.max(0, message.expires_at_ms - Date.now());
         setTimeout(() => row.remove(), delay);
       }}
+    }}
+
+    function chatIsNearBottom() {{
+      return chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 32;
+    }}
+
+    function scrollChatToBottom() {{
+      chatLog.scrollTop = chatLog.scrollHeight;
     }}
 
     function isMentionedMe(message) {{
@@ -1603,8 +1630,14 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     }}
 
     function renderPanels(panels) {{
-      customPanels.textContent = "";
-      for (const panel of panels) {{
+      leftPanels.textContent = "";
+      rightPanels.textContent = "";
+      abovePanels.textContent = "";
+      belowPanels.textContent = "";
+      panels
+        .slice()
+        .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0) || String(a.id || "").localeCompare(String(b.id || "")))
+        .forEach(panel => {{
         const section = document.createElement("article");
         section.className = "panel";
         const title = document.createElement("h2");
@@ -1613,8 +1646,16 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
         body.textContent = panel.body || "";
         section.appendChild(title);
         section.appendChild(body);
-        customPanels.appendChild(section);
-      }}
+        panelContainer(panel.region).appendChild(section);
+      }});
+      stage.classList.toggle("has-left", leftPanels.childElementCount > 0);
+    }}
+
+    function panelContainer(region) {{
+      if (region === "LeftOfStream") return leftPanels;
+      if (region === "AboveStream") return abovePanels;
+      if (region === "BelowStream") return belowPanels;
+      return rightPanels;
     }}
 
     connect();

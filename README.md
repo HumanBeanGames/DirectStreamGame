@@ -288,16 +288,23 @@ Downstream games can publish arbitrary side-panel text:
 
 ```rust
 use bevy::prelude::*;
-use direct_stream_game::{CustomHostPanel, CustomHostPanelHub};
+use direct_stream_game::{CustomHostPanelHub, CustomHostPanelRegion};
 
 fn update_panel(panels: Res<CustomHostPanelHub>) {
-    panels.publish(CustomHostPanel {
-        id: "town-prices".to_owned(),
-        title: "Northpass Prices".to_owned(),
-        body: "wool 4g\nsalt 5g".to_owned(),
-    });
+    panels.publish_text_in_region(
+        "town-prices",
+        "Northpass Prices",
+        "wool 4g\nsalt 5g",
+        CustomHostPanelRegion::LeftOfStream,
+    );
 }
 ```
+
+Panel regions are `LeftOfStream`, `RightOfStream`, `AboveStream`,
+`BelowStream`, and `SidePanelDefault`. `publish_text` still uses
+`SidePanelDefault`, which preserves the original right-side panel stack below
+chat. For finer ordering, publish a full `CustomHostPanel` with `region` and
+`order`.
 
 Browser clicks on the stream canvas are emitted as `StreamPointerClick` messages
 with viewer identity, display name, pixel coordinates, and normalized

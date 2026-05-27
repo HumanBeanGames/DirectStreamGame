@@ -14,6 +14,27 @@ pub struct CustomHostPanel {
     pub order: i32,
     pub size_hint: Option<CustomHostPanelSize>,
     pub style_hint: Option<CustomHostPanelStyle>,
+    pub audience: CustomHostPanelAudience,
+}
+
+impl CustomHostPanel {
+    pub fn for_viewer_identity(mut self, identity: impl Into<String>) -> Self {
+        self.audience = CustomHostPanelAudience::ViewerIdentity(identity.into());
+        self
+    }
+
+    pub fn for_viewer_name(mut self, name: impl Into<String>) -> Self {
+        self.audience = CustomHostPanelAudience::ViewerName(name.into());
+        self
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum CustomHostPanelAudience {
+    #[default]
+    All,
+    ViewerIdentity(String),
+    ViewerName(String),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -102,8 +123,21 @@ pub struct CustomHostPanelHub {
 
 #[derive(Default)]
 struct CustomHostPanelState {
-    panels: BTreeMap<String, CustomHostPanel>,
+    panels: BTreeMap<CustomHostPanelKey, CustomHostPanel>,
     next_revision: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct CustomHostPanelKey {
+    audience: CustomHostPanelKeyAudience,
+    id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum CustomHostPanelKeyAudience {
+    All,
+    ViewerIdentity(String),
+    ViewerName(String),
 }
 
 impl CustomHostPanelHub {
@@ -115,8 +149,18 @@ impl CustomHostPanelHub {
         if let Ok(mut state) = self.state.lock() {
             state.next_revision = state.next_revision.wrapping_add(1);
             panel.revision = state.next_revision;
-            state.panels.insert(panel.id.clone(), panel);
+            state
+                .panels
+                .insert(CustomHostPanelKey::for_panel(&panel), panel);
         }
+    }
+
+    pub fn publish_for_viewer_identity(&self, panel: CustomHostPanel, identity: impl Into<String>) {
+        self.publish(panel.for_viewer_identity(identity));
+    }
+
+    pub fn publish_for_viewer_name(&self, panel: CustomHostPanel, name: impl Into<String>) {
+        self.publish(panel.for_viewer_name(name));
     }
 
     pub fn publish_text(
@@ -134,6 +178,7 @@ impl CustomHostPanelHub {
             order: 0,
             size_hint: None,
             style_hint: None,
+            audience: CustomHostPanelAudience::All,
         });
     }
 
@@ -153,6 +198,7 @@ impl CustomHostPanelHub {
             order: 0,
             size_hint: None,
             style_hint: None,
+            audience: CustomHostPanelAudience::All,
         });
     }
 
@@ -173,12 +219,13 @@ impl CustomHostPanelHub {
             order,
             size_hint: None,
             style_hint: None,
+            audience: CustomHostPanelAudience::All,
         });
     }
 
     pub fn clear(&self, id: &str) {
         if let Ok(mut state) = self.state.lock() {
-            state.panels.remove(id);
+            state.panels.retain(|key, _| key.id != id);
             state.next_revision = state.next_revision.wrapping_add(1);
         }
     }
@@ -198,6 +245,66 @@ impl CustomHostPanelHub {
             .unwrap_or_default();
         panels.sort_by_key(|panel| (panel.anchor.sort_key(), panel.order, panel.id.clone()));
         panels
+    }
+
+    pub fn snapshot_for_viewer(
+        &self,
+        viewer_identity: Option<&str>,
+        viewer_name: Option<&str>,
+    ) -> Vec<CustomHostPanel> {
+        let mut panels: Vec<CustomHostPanel> = self
+            .state
+            .lock()
+            .map(|state| {
+                state
+                    .panels
+                    .values()
+                    .filter(|panel| panel_matches_audience(panel, viewer_identity, viewer_name))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        panels.sort_by_key(|panel| (panel.anchor.sort_key(), panel.order, panel.id.clone()));
+        panels
+    }
+}
+
+impl CustomHostPanelKey {
+    fn for_panel(panel: &CustomHostPanel) -> Self {
+        Self {
+            audience: CustomHostPanelKeyAudience::from_audience(&panel.audience),
+            id: panel.id.clone(),
+        }
+    }
+}
+
+impl CustomHostPanelKeyAudience {
+    fn from_audience(audience: &CustomHostPanelAudience) -> Self {
+        match audience {
+            CustomHostPanelAudience::All => Self::All,
+            CustomHostPanelAudience::ViewerIdentity(identity) => {
+                Self::ViewerIdentity(identity.clone())
+            }
+            CustomHostPanelAudience::ViewerName(name) => {
+                Self::ViewerName(name.to_ascii_lowercase())
+            }
+        }
+    }
+}
+
+fn panel_matches_audience(
+    panel: &CustomHostPanel,
+    viewer_identity: Option<&str>,
+    viewer_name: Option<&str>,
+) -> bool {
+    match &panel.audience {
+        CustomHostPanelAudience::All => true,
+        CustomHostPanelAudience::ViewerIdentity(identity) => {
+            viewer_identity == Some(identity.as_str())
+        }
+        CustomHostPanelAudience::ViewerName(name) => viewer_name
+            .map(|viewer_name| viewer_name.eq_ignore_ascii_case(name))
+            .unwrap_or(false),
     }
 }
 
@@ -241,5 +348,42 @@ pub(crate) fn poll_stream_pointer_clicks(
 
     for click in hub.drain() {
         writer.write(click);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_panel(id: &str, body: &str) -> CustomHostPanel {
+        CustomHostPanel {
+            id: id.to_owned(),
+            title: id.to_owned(),
+            body: body.to_owned(),
+            revision: 0,
+            anchor: CustomHostPanelAnchor::LeftOfStream,
+            order: 0,
+            size_hint: None,
+            style_hint: None,
+            audience: CustomHostPanelAudience::All,
+        }
+    }
+
+    #[test]
+    fn viewer_panels_with_same_id_do_not_collide() {
+        let hub = CustomHostPanelHub::default();
+        hub.publish_for_viewer_identity(test_panel("selected-town", "viewer-a"), "viewer-a");
+        hub.publish_for_viewer_identity(test_panel("selected-town", "viewer-b"), "viewer-b");
+        hub.publish(test_panel("shared", "global"));
+
+        let viewer_a = hub.snapshot_for_viewer(Some("viewer-a"), Some("A"));
+        let viewer_b = hub.snapshot_for_viewer(Some("viewer-b"), Some("B"));
+
+        assert!(viewer_a.iter().any(|panel| panel.body == "viewer-a"));
+        assert!(!viewer_a.iter().any(|panel| panel.body == "viewer-b"));
+        assert!(viewer_b.iter().any(|panel| panel.body == "viewer-b"));
+        assert!(!viewer_b.iter().any(|panel| panel.body == "viewer-a"));
+        assert!(viewer_a.iter().any(|panel| panel.body == "global"));
+        assert!(viewer_b.iter().any(|panel| panel.body == "global"));
     }
 }

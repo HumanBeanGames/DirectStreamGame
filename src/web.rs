@@ -115,8 +115,8 @@ fn handle_web_request(mut stream: TcpStream, source: LocalStreamSource, stats: S
             serve_not_found(stream);
         }
     } else if path.starts_with(CUSTOM_PANELS_PATH) {
-        if let LocalStreamSource::Palette { panels, .. } = source {
-            serve_custom_panels(stream, panels);
+        if let LocalStreamSource::Palette { panels, chat, .. } = source {
+            serve_custom_panels(stream, &request, peer_addr, panels, chat);
         } else {
             serve_not_found(stream);
         }
@@ -320,9 +320,21 @@ fn serve_local_chat_feed(
     let _ = stream.write_all(response.as_bytes());
 }
 
-fn serve_custom_panels(mut stream: TcpStream, panels: CustomHostPanelHub) {
-    let panels = panels.snapshot();
-    let mut body = r#"{"panels":["#.to_owned();
+fn serve_custom_panels(
+    mut stream: TcpStream,
+    request: &str,
+    peer_addr: Option<SocketAddr>,
+    panels: CustomHostPanelHub,
+    chat: LocalChatHub,
+) {
+    let identity_source = local_chat_identity(request, peer_addr);
+    let (viewer_identity, viewer_name) = chat.viewer_for_identity(&identity_source);
+    let panels = panels.snapshot_for_viewer(Some(&viewer_identity), Some(&viewer_name));
+    let mut body = format!(
+        r#"{{"viewer":{{"identity":"{}","name":"{}"}},"panels":["#,
+        json_escape(&viewer_identity),
+        json_escape(&viewer_name)
+    );
     for (index, panel) in panels.iter().enumerate() {
         if index > 0 {
             body.push(',');

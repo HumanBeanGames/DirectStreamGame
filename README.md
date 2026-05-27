@@ -331,6 +331,32 @@ stack below chat, and the older `CustomHostPanelRegion` helpers remain
 available for compatibility. For full control, publish a `CustomHostPanel`
 with `anchor`, `order`, optional `size_hint`, and optional `style_hint`.
 
+Panels can be shared globally or filtered to one viewer. This mirrors local chat
+audiences: `All`, `ViewerIdentity(String)`, or `ViewerName(String)`. The custom
+host filters `/custom-panels` per request, so every viewer can safely have a
+panel with the same app-level id.
+
+```rust
+use bevy::prelude::*;
+use direct_stream_game::{
+    CustomHostPanel, CustomHostPanelAnchor, CustomHostPanelAudience, CustomHostPanelHub,
+};
+
+fn publish_viewer_panel(panels: Res<CustomHostPanelHub>, viewer_identity: String) {
+    panels.publish(CustomHostPanel {
+        id: "selected-town-prices".to_owned(),
+        title: "Selected Town".to_owned(),
+        body: "wool 4g\nsalt 5g".to_owned(),
+        revision: 0,
+        anchor: CustomHostPanelAnchor::LeftOfStream,
+        order: 10,
+        size_hint: None,
+        style_hint: None,
+        audience: CustomHostPanelAudience::ViewerIdentity(viewer_identity),
+    });
+}
+```
+
 Browser clicks on the stream canvas are emitted as `StreamPointerClick` messages
 with viewer identity, display name, pixel coordinates, and normalized
 coordinates. Your game owns hit-testing and game-specific behavior.

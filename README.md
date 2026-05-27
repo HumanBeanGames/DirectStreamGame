@@ -376,8 +376,11 @@ fn publish_viewer_panel(panels: Res<CustomHostPanelHub>, viewer_identity: String
 ```
 
 Browser clicks on the stream canvas are emitted as `StreamPointerClick` messages
-with viewer identity, display name, pixel coordinates, and normalized
-coordinates. Your game owns hit-testing and game-specific behavior.
+with viewer identity, display name, raw browser client coordinates, corrected
+stream pixel coordinates, and normalized stream coordinates. The browser maps
+clicks against the actual rendered stream image rectangle, accounting for CSS
+borders, aspect-ratio containment, and letterboxing. Clicks outside the rendered
+image are ignored. Your game owns hit-testing and game-specific behavior.
 
 Viewer-scoped browser overlays can draw local-only highlights above the stream
 canvas without modifying the shared stream pixels:

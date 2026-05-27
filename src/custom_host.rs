@@ -545,6 +545,8 @@ fn current_time_millis() -> u64 {
 pub struct StreamPointerClick {
     pub identity: String,
     pub display_name: String,
+    pub client_x: f32,
+    pub client_y: f32,
     pub x: u32,
     pub y: u32,
     pub normalized_x: f32,

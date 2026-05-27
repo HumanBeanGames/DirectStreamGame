@@ -152,6 +152,59 @@
     const audioTransportSampleRate = 8000;
     const audioPlaybackSampleRate = 48000;
     const audioUpsampleFactor = audioPlaybackSampleRate / audioTransportSampleRate;
+    const deviceIdHeaderName = "X-DirectStream-Device-Id";
+    const deviceIdStorageKey = "directstream_device_id";
+    let volatileDeviceId = null;
+
+    function getDeviceId() {
+      try {
+        let id = localStorage.getItem(deviceIdStorageKey);
+        if (!isValidDeviceId(id)) {
+          id = makeDeviceId();
+          localStorage.setItem(deviceIdStorageKey, id);
+        }
+        return id;
+      } catch (error) {
+        console.error(error);
+        if (!isValidDeviceId(volatileDeviceId)) {
+          volatileDeviceId = makeDeviceId();
+        }
+        return volatileDeviceId;
+      }
+    }
+
+    function makeDeviceId() {
+      if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+        return crypto.randomUUID();
+      }
+      const bytes = new Uint8Array(16);
+      if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+        crypto.getRandomValues(bytes);
+      } else {
+        for (let i = 0; i < bytes.length; i++) {
+          bytes[i] = Math.floor(Math.random() * 256);
+        }
+      }
+      bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      const hex = [...bytes].map(value => value.toString(16).padStart(2, "0"));
+      return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
+    }
+
+    function isValidDeviceId(id) {
+      return typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id);
+    }
+
+    function identityFetchOptions(options = {}) {
+      const headers = new Headers(options.headers || {});
+      headers.set(deviceIdHeaderName, getDeviceId());
+      return { ...options, headers };
+    }
+
+    window.DirectStreamResetLocalIdentity = () => {
+      localStorage.removeItem(deviceIdStorageKey);
+      console.info("Direct Stream local identity reset. Reload the page to use a new identity.");
+    };
 
     function resetStreamState() {
       width = 0;
@@ -804,7 +857,10 @@
       const y = Math.min(height - 1, Math.max(0, Math.floor(normalizedY * height)));
       fetch("https://game.humanbeangames.com/stream-click", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          [deviceIdHeaderName]: getDeviceId(),
+        },
         body: JSON.stringify({ x, y, normalized_x: normalizedX, normalized_y: normalizedY }),
         cache: "no-store",
       }).catch(error => console.error(error));
@@ -817,7 +873,10 @@
       chatInput.value = "";
       fetch("https://game.humanbeangames.com/local-chat", {
         method: "POST",
-        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        headers: {
+          "Content-Type": "text/plain;charset=utf-8",
+          [deviceIdHeaderName]: getDeviceId(),
+        },
         body: message,
         cache: "no-store",
       })
@@ -830,7 +889,7 @@
     });
 
     async function fetchChatFeed() {
-      const response = await fetch("https://game.humanbeangames.com/local-chat-feed?after=" + lastChatId + "&t=" + Date.now(), { cache: "no-store" });
+      const response = await fetch("https://game.humanbeangames.com/local-chat-feed?after=" + lastChatId + "&t=" + Date.now(), identityFetchOptions({ cache: "no-store" }));
       if (!response.ok) {
         throw new Error(`chat feed failed: ${response.status}`);
       }
@@ -875,7 +934,7 @@
     }
 
     async function fetchCustomPanels() {
-      const response = await fetch("https://game.humanbeangames.com/custom-panels?t=" + Date.now(), { cache: "no-store" });
+      const response = await fetch("https://game.humanbeangames.com/custom-panels?t=" + Date.now(), identityFetchOptions({ cache: "no-store" }));
       if (!response.ok) {
         throw new Error(`panel fetch failed: ${response.status}`);
       }

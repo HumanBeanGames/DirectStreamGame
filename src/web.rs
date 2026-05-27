@@ -408,10 +408,28 @@ fn query_param(path: &str, name: &str) -> Option<String> {
 }
 
 fn local_chat_identity(request: &str, peer_addr: Option<SocketAddr>) -> String {
-    header_value(request, "cf-connecting-ip")
-        .or_else(|| header_value(request, "x-forwarded-for").and_then(first_forwarded_ip))
-        .or_else(|| peer_addr.map(|addr| addr.ip().to_string()))
+    header_value(request, "x-directstream-device-id")
+        .and_then(validate_device_id)
+        .map(|id| format!("device:{id}"))
+        .or_else(|| header_value(request, "cf-connecting-ip").map(|ip| format!("ip:{ip}")))
+        .or_else(|| {
+            header_value(request, "x-forwarded-for")
+                .and_then(first_forwarded_ip)
+                .map(|ip| format!("ip:{ip}"))
+        })
+        .or_else(|| peer_addr.map(|addr| format!("ip:{}", addr.ip())))
         .unwrap_or_else(|| "unknown".to_owned())
+}
+
+fn validate_device_id(id: String) -> Option<String> {
+    let id = id.trim();
+    if id.is_empty() || id.len() > 128 {
+        return None;
+    }
+
+    id.bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        .then(|| id.to_owned())
 }
 
 fn header_value(request: &str, name: &str) -> Option<String> {
@@ -528,7 +546,7 @@ fn serve_forbidden(mut stream: TcpStream) {
 }
 
 fn serve_options(mut stream: TcpStream) {
-    let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nAccess-Control-Max-Age: 86400\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, X-DirectStream-Device-Id\r\nAccess-Control-Max-Age: 86400\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
     let _ = stream.write_all(response.as_bytes());
 }
 
@@ -909,6 +927,59 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     const audioTransportSampleRate = 8000;
     const audioPlaybackSampleRate = 48000;
     const audioUpsampleFactor = audioPlaybackSampleRate / audioTransportSampleRate;
+    const deviceIdHeaderName = "X-DirectStream-Device-Id";
+    const deviceIdStorageKey = "directstream_device_id";
+    let volatileDeviceId = null;
+
+    function getDeviceId() {{
+      try {{
+        let id = localStorage.getItem(deviceIdStorageKey);
+        if (!isValidDeviceId(id)) {{
+          id = makeDeviceId();
+          localStorage.setItem(deviceIdStorageKey, id);
+        }}
+        return id;
+      }} catch (error) {{
+        console.error(error);
+        if (!isValidDeviceId(volatileDeviceId)) {{
+          volatileDeviceId = makeDeviceId();
+        }}
+        return volatileDeviceId;
+      }}
+    }}
+
+    function makeDeviceId() {{
+      if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {{
+        return crypto.randomUUID();
+      }}
+      const bytes = new Uint8Array(16);
+      if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {{
+        crypto.getRandomValues(bytes);
+      }} else {{
+        for (let i = 0; i < bytes.length; i++) {{
+          bytes[i] = Math.floor(Math.random() * 256);
+        }}
+      }}
+      bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      const hex = [...bytes].map(value => value.toString(16).padStart(2, "0"));
+      return `${{hex.slice(0, 4).join("")}}-${{hex.slice(4, 6).join("")}}-${{hex.slice(6, 8).join("")}}-${{hex.slice(8, 10).join("")}}-${{hex.slice(10).join("")}}`;
+    }}
+
+    function isValidDeviceId(id) {{
+      return typeof id === "string" && /^[A-Za-z0-9_-]{{1,128}}$/.test(id);
+    }}
+
+    function identityFetchOptions(options = {{}}) {{
+      const headers = new Headers(options.headers || {{}});
+      headers.set(deviceIdHeaderName, getDeviceId());
+      return {{ ...options, headers }};
+    }}
+
+    window.DirectStreamResetLocalIdentity = () => {{
+      localStorage.removeItem(deviceIdStorageKey);
+      console.info("Direct Stream local identity reset. Reload the page to use a new identity.");
+    }};
 
     function resetStreamState() {{
       width = 0;
@@ -1561,7 +1632,10 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
       const y = Math.min(height - 1, Math.max(0, Math.floor(normalizedY * height)));
       fetch("{stream_click_url}", {{
         method: "POST",
-        headers: {{ "Content-Type": "application/json" }},
+        headers: {{
+          "Content-Type": "application/json",
+          [deviceIdHeaderName]: getDeviceId(),
+        }},
         body: JSON.stringify({{ x, y, normalized_x: normalizedX, normalized_y: normalizedY }}),
         cache: "no-store",
       }}).catch(error => console.error(error));
@@ -1574,7 +1648,10 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
       chatInput.value = "";
       fetch("{local_chat_url}", {{
         method: "POST",
-        headers: {{ "Content-Type": "text/plain;charset=utf-8" }},
+        headers: {{
+          "Content-Type": "text/plain;charset=utf-8",
+          [deviceIdHeaderName]: getDeviceId(),
+        }},
         body: message,
         cache: "no-store",
       }})
@@ -1587,7 +1664,7 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     }});
 
     async function fetchChatFeed() {{
-      const response = await fetch("{local_chat_feed_url}?after=" + lastChatId + "&t=" + Date.now(), {{ cache: "no-store" }});
+      const response = await fetch("{local_chat_feed_url}?after=" + lastChatId + "&t=" + Date.now(), identityFetchOptions({{ cache: "no-store" }}));
       if (!response.ok) {{
         throw new Error(`chat feed failed: ${{response.status}}`);
       }}
@@ -1632,7 +1709,7 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     }}
 
     async function fetchCustomPanels() {{
-      const response = await fetch("{custom_panels_url}?t=" + Date.now(), {{ cache: "no-store" }});
+      const response = await fetch("{custom_panels_url}?t=" + Date.now(), identityFetchOptions({{ cache: "no-store" }}));
       if (!response.ok) {{
         throw new Error(`panel fetch failed: ${{response.status}}`);
       }}
@@ -1865,4 +1942,38 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
 </body>
 </html>"#
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_identity_prefers_valid_device_id() {
+        let request = "GET /custom-panels HTTP/1.1\r\n\
+            X-DirectStream-Device-Id: 550e8400-e29b-41d4-a716-446655440000\r\n\
+            CF-Connecting-IP: 203.0.113.10\r\n\r\n";
+
+        assert_eq!(
+            local_chat_identity(request, None),
+            "device:550e8400-e29b-41d4-a716-446655440000"
+        );
+    }
+
+    #[test]
+    fn local_identity_rejects_unsafe_device_id_and_falls_back_to_ip() {
+        let request = "GET /custom-panels HTTP/1.1\r\n\
+            X-DirectStream-Device-Id: ../../nope\r\n\
+            X-Forwarded-For: 198.51.100.8, 198.51.100.9\r\n\r\n";
+
+        assert_eq!(local_chat_identity(request, None), "ip:198.51.100.8");
+    }
+
+    #[test]
+    fn local_identity_uses_peer_ip_without_headers() {
+        let request = "GET /custom-panels HTTP/1.1\r\n\r\n";
+        let peer = "192.0.2.44:8080".parse().ok();
+
+        assert_eq!(local_chat_identity(request, peer), "ip:192.0.2.44");
+    }
 }

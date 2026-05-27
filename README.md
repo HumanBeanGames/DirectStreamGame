@@ -274,9 +274,25 @@ fn handle_boing(In(command): In<StreamChatCommand>, chat: Option<Res<StreamChatS
 - `message_id`
 
 Local custom-host users receive generated names such as `BrightDragon-A1` based
-on a hash of the viewer identity. The active app session keeps a recent chat
-history and a generated-name cache. The stats window **Purge Chat** button
-clears the current local chat feed.
+on a hash of the viewer identity. Browser clients generate a stable
+`directstream_device_id` in `localStorage` and send it with local chat, chat
+feed, custom panel, and stream-click requests. That makes identity scoped to a
+browser profile/device instead of collapsing everyone behind the same network
+IP into one viewer. If the browser does not send a device id, the server falls
+back to the old IP/proxy-header behavior.
+
+This is a pseudonymous browser-profile id, not authentication or hardware
+fingerprinting. It persists across reloads and normal browser restarts, but
+changes if the viewer clears site data, uses another browser/profile, or opens
+an incognito session. For dev/debug resets, run this in the browser console and
+reload:
+
+```js
+localStorage.removeItem("directstream_device_id")
+```
+
+The active app session keeps a recent chat history and a generated-name cache.
+The stats window **Purge Chat** button clears the current local chat feed.
 
 Bot/system replies can be sent through `StreamChatSender::send`. Custom local
 entries can be created with `StreamChatSender::send_local` and

@@ -346,6 +346,8 @@ ordered by `order`, then `id`. `publish_text` still uses the right-side default
 stack below chat, and the older `CustomHostPanelRegion` helpers remain
 available for compatibility. For full control, publish a `CustomHostPanel`
 with `anchor`, `order`, optional `size_hint`, and optional `style_hint`.
+Set `CustomHostPanelStyle { hide_header: true, ..default() }` to render a panel
+body without title/header chrome.
 
 Panels can be shared globally or filtered to one viewer. This mirrors local chat
 audiences: `All`, `ViewerIdentity(String)`, or `ViewerName(String)`. The custom
@@ -376,6 +378,36 @@ fn publish_viewer_panel(panels: Res<CustomHostPanelHub>, viewer_identity: String
 Browser clicks on the stream canvas are emitted as `StreamPointerClick` messages
 with viewer identity, display name, pixel coordinates, and normalized
 coordinates. Your game owns hit-testing and game-specific behavior.
+
+Viewer-scoped browser overlays can draw local-only highlights above the stream
+canvas without modifying the shared stream pixels:
+
+```rust
+use bevy::prelude::*;
+use direct_stream_game::{
+    CustomHostOverlayElement, CustomHostOverlayHub, CustomHostPanelAudience,
+    OverlayCoordinateSpace, OverlayElementKind, OverlayElementStyle,
+};
+
+fn highlight_town(overlays: Res<CustomHostOverlayHub>, viewer_identity: String) {
+    overlays.publish(CustomHostOverlayElement {
+        id: "selected-town".to_owned(),
+        audience: CustomHostPanelAudience::ViewerIdentity(viewer_identity),
+        x: 0.42,
+        y: 0.61,
+        coordinate_space: OverlayCoordinateSpace::NormalizedStream,
+        kind: OverlayElementKind::Circle { radius: 8.0 },
+        order: 0,
+        style: OverlayElementStyle::default(),
+        ttl_ms: None,
+    });
+}
+```
+
+Overlay coordinates can be stream pixels or normalized stream coordinates.
+Supported overlay kinds are circles, flags, text, and simple sprite/image
+references. Like panels, overlays are keyed internally by audience and id, so
+two viewers can both have `selected-town` without colliding or leaking state.
 
 ## Direct Frame Processing
 

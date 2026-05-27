@@ -6,7 +6,7 @@ use crate::{
     constants::{
         STATS_WINDOW_HEIGHT, STATS_WINDOW_WIDTH, STREAM_HEIGHT, STREAM_WIDTH, WINDOW_TITLE,
     },
-    custom_host::{CustomHostPanelHub, StreamPointerClickHub},
+    custom_host::{CustomHostOverlayHub, CustomHostPanelHub, StreamPointerClickHub},
     frames::{DirectStreamFrameProcessors, EncodedFrameHub, IndexedFrame, RawFrameSenders},
     palette::{
         PaletteFrameHub, SharedPaletteBias, load_palette_runtime, start_palette_preview_encoder,
@@ -26,6 +26,7 @@ pub fn direct_stream_app() -> App {
     let custom_audio_hub = CustomAudioPacketHub::new();
     let local_chat = LocalChatHub::default();
     let custom_panels = CustomHostPanelHub::default();
+    let custom_overlays = CustomHostOverlayHub::default();
     let stream_clicks = StreamPointerClickHub::default();
     let custom_stream_state = CustomStreamState::new();
     let stats = SharedStats::new();
@@ -59,6 +60,7 @@ pub fn direct_stream_app() -> App {
             audio: custom_audio_hub.clone(),
             chat: local_chat.clone(),
             panels: custom_panels.clone(),
+            overlays: custom_overlays.clone(),
             clicks: stream_clicks.clone(),
             active: custom_stream_state.clone(),
         }
@@ -93,6 +95,7 @@ pub fn direct_stream_app() -> App {
         .insert_resource(audio_target)
         .insert_resource(local_chat)
         .insert_resource(custom_panels)
+        .insert_resource(custom_overlays)
         .insert_resource(stream_clicks)
         .insert_resource(custom_stream_state)
         .insert_resource(palette_bias)

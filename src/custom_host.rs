@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Clone)]
@@ -114,6 +115,90 @@ pub struct CustomHostPanelSize {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CustomHostPanelStyle {
     pub css_class: Option<String>,
+    pub hide_header: bool,
+}
+
+#[derive(Clone)]
+pub struct CustomHostOverlayElement {
+    pub id: String,
+    pub audience: CustomHostPanelAudience,
+    pub x: f32,
+    pub y: f32,
+    pub coordinate_space: OverlayCoordinateSpace,
+    pub kind: OverlayElementKind,
+    pub order: i32,
+    pub style: OverlayElementStyle,
+    pub ttl_ms: Option<u64>,
+}
+
+impl CustomHostOverlayElement {
+    pub fn for_viewer_identity(mut self, identity: impl Into<String>) -> Self {
+        self.audience = CustomHostPanelAudience::ViewerIdentity(identity.into());
+        self
+    }
+
+    pub fn for_viewer_name(mut self, name: impl Into<String>) -> Self {
+        self.audience = CustomHostPanelAudience::ViewerName(name.into());
+        self
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OverlayCoordinateSpace {
+    StreamPixels,
+    #[default]
+    NormalizedStream,
+}
+
+impl OverlayCoordinateSpace {
+    pub(crate) fn as_json_str(self) -> &'static str {
+        match self {
+            OverlayCoordinateSpace::StreamPixels => "StreamPixels",
+            OverlayCoordinateSpace::NormalizedStream => "NormalizedStream",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum OverlayElementKind {
+    Circle {
+        radius: f32,
+    },
+    Flag {
+        width: f32,
+        height: f32,
+    },
+    Text {
+        text: String,
+    },
+    Sprite {
+        image_id: String,
+        width: f32,
+        height: f32,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverlayElementStyle {
+    pub stroke_color: Option<String>,
+    pub fill_color: Option<String>,
+    pub text_color: Option<String>,
+    pub line_width: f32,
+    pub font_px: f32,
+    pub css_class: Option<String>,
+}
+
+impl Default for OverlayElementStyle {
+    fn default() -> Self {
+        Self {
+            stroke_color: Some("#ff3b30".to_owned()),
+            fill_color: None,
+            text_color: Some("#ffffff".to_owned()),
+            line_width: 2.0,
+            font_px: 12.0,
+            css_class: None,
+        }
+    }
 }
 
 #[derive(Clone, Resource, Default)]
@@ -121,10 +206,26 @@ pub struct CustomHostPanelHub {
     state: Arc<Mutex<CustomHostPanelState>>,
 }
 
+#[derive(Clone, Resource, Default)]
+pub struct CustomHostOverlayHub {
+    state: Arc<Mutex<CustomHostOverlayState>>,
+}
+
 #[derive(Default)]
 struct CustomHostPanelState {
     panels: BTreeMap<CustomHostPanelKey, CustomHostPanel>,
     next_revision: u64,
+}
+
+#[derive(Default)]
+struct CustomHostOverlayState {
+    overlays: BTreeMap<CustomHostPanelKey, CustomHostOverlayEntry>,
+}
+
+#[derive(Clone)]
+struct CustomHostOverlayEntry {
+    element: CustomHostOverlayElement,
+    created_at_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -269,11 +370,103 @@ impl CustomHostPanelHub {
     }
 }
 
+impl CustomHostOverlayHub {
+    pub fn publish(&self, element: CustomHostOverlayElement) {
+        if element.id.trim().is_empty() {
+            return;
+        }
+
+        if let Ok(mut state) = self.state.lock() {
+            purge_expired_overlays_locked(&mut state, current_time_millis());
+            state.overlays.insert(
+                CustomHostPanelKey::for_overlay(&element),
+                CustomHostOverlayEntry {
+                    element,
+                    created_at_ms: current_time_millis(),
+                },
+            );
+        }
+    }
+
+    pub fn publish_overlay_for_viewer_identity(
+        &self,
+        element: CustomHostOverlayElement,
+        identity: impl Into<String>,
+    ) {
+        self.publish(element.for_viewer_identity(identity));
+    }
+
+    pub fn publish_overlay_for_viewer_name(
+        &self,
+        element: CustomHostOverlayElement,
+        name: impl Into<String>,
+    ) {
+        self.publish(element.for_viewer_name(name));
+    }
+
+    pub fn clear_overlay(&self, id: &str) {
+        if let Ok(mut state) = self.state.lock() {
+            state.overlays.retain(|key, _| key.id != id);
+        }
+    }
+
+    pub fn clear_overlay_for_viewer_identity(&self, id: &str, identity: impl Into<String>) {
+        self.clear_overlay_for_audience(
+            id,
+            CustomHostPanelAudience::ViewerIdentity(identity.into()),
+        );
+    }
+
+    pub fn clear_overlay_for_viewer_name(&self, id: &str, name: impl Into<String>) {
+        self.clear_overlay_for_audience(id, CustomHostPanelAudience::ViewerName(name.into()));
+    }
+
+    fn clear_overlay_for_audience(&self, id: &str, audience: CustomHostPanelAudience) {
+        let key = CustomHostPanelKey {
+            audience: CustomHostPanelKeyAudience::from_audience(&audience),
+            id: id.to_owned(),
+        };
+        if let Ok(mut state) = self.state.lock() {
+            state.overlays.remove(&key);
+        }
+    }
+
+    pub fn snapshot_for_viewer(
+        &self,
+        viewer_identity: Option<&str>,
+        viewer_name: Option<&str>,
+    ) -> Vec<CustomHostOverlayElement> {
+        let now_ms = current_time_millis();
+        let mut overlays: Vec<CustomHostOverlayElement> = if let Ok(mut state) = self.state.lock() {
+            purge_expired_overlays_locked(&mut state, now_ms);
+            state
+                .overlays
+                .values()
+                .filter(|entry| {
+                    overlay_matches_audience(&entry.element, viewer_identity, viewer_name)
+                })
+                .map(|entry| entry.element.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        overlays.sort_by_key(|element| (element.order, element.id.clone()));
+        overlays
+    }
+}
+
 impl CustomHostPanelKey {
     fn for_panel(panel: &CustomHostPanel) -> Self {
         Self {
             audience: CustomHostPanelKeyAudience::from_audience(&panel.audience),
             id: panel.id.clone(),
+        }
+    }
+
+    fn for_overlay(element: &CustomHostOverlayElement) -> Self {
+        Self {
+            audience: CustomHostPanelKeyAudience::from_audience(&element.audience),
+            id: element.id.clone(),
         }
     }
 }
@@ -306,6 +499,46 @@ fn panel_matches_audience(
             .map(|viewer_name| viewer_name.eq_ignore_ascii_case(name))
             .unwrap_or(false),
     }
+}
+
+fn overlay_matches_audience(
+    element: &CustomHostOverlayElement,
+    viewer_identity: Option<&str>,
+    viewer_name: Option<&str>,
+) -> bool {
+    audience_matches(&element.audience, viewer_identity, viewer_name)
+}
+
+fn audience_matches(
+    audience: &CustomHostPanelAudience,
+    viewer_identity: Option<&str>,
+    viewer_name: Option<&str>,
+) -> bool {
+    match audience {
+        CustomHostPanelAudience::All => true,
+        CustomHostPanelAudience::ViewerIdentity(identity) => {
+            viewer_identity == Some(identity.as_str())
+        }
+        CustomHostPanelAudience::ViewerName(name) => viewer_name
+            .map(|viewer_name| viewer_name.eq_ignore_ascii_case(name))
+            .unwrap_or(false),
+    }
+}
+
+fn purge_expired_overlays_locked(state: &mut CustomHostOverlayState, now_ms: u64) {
+    state.overlays.retain(|_, entry| {
+        entry
+            .element
+            .ttl_ms
+            .is_none_or(|ttl| now_ms < entry.created_at_ms.saturating_add(ttl))
+    });
+}
+
+fn current_time_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
 }
 
 #[derive(Message, Clone)]
@@ -385,5 +618,34 @@ mod tests {
         assert!(!viewer_b.iter().any(|panel| panel.body == "viewer-a"));
         assert!(viewer_a.iter().any(|panel| panel.body == "global"));
         assert!(viewer_b.iter().any(|panel| panel.body == "global"));
+    }
+
+    fn test_overlay(id: &str, x: f32) -> CustomHostOverlayElement {
+        CustomHostOverlayElement {
+            id: id.to_owned(),
+            audience: CustomHostPanelAudience::All,
+            x,
+            y: 0.5,
+            coordinate_space: OverlayCoordinateSpace::NormalizedStream,
+            kind: OverlayElementKind::Circle { radius: 4.0 },
+            order: 0,
+            style: OverlayElementStyle::default(),
+            ttl_ms: None,
+        }
+    }
+
+    #[test]
+    fn viewer_overlays_with_same_id_do_not_collide() {
+        let hub = CustomHostOverlayHub::default();
+        hub.publish_overlay_for_viewer_identity(test_overlay("selected-town", 0.25), "viewer-a");
+        hub.publish_overlay_for_viewer_identity(test_overlay("selected-town", 0.75), "viewer-b");
+
+        let viewer_a = hub.snapshot_for_viewer(Some("viewer-a"), Some("A"));
+        let viewer_b = hub.snapshot_for_viewer(Some("viewer-b"), Some("B"));
+
+        assert_eq!(viewer_a.len(), 1);
+        assert_eq!(viewer_b.len(), 1);
+        assert_eq!(viewer_a[0].x, 0.25);
+        assert_eq!(viewer_b[0].x, 0.75);
     }
 }

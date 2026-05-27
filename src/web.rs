@@ -2,13 +2,13 @@ use crate::{
     audio::CustomAudioPacketHub,
     chat::LocalChatHub,
     constants::{
-        AUDIO_STREAM_PATH, CUSTOM_AUDIO_CHANNELS, CUSTOM_AUDIO_SAMPLE_RATE, CUSTOM_PANELS_PATH,
-        LOCAL_CHAT_FEED_PATH, LOCAL_CHAT_PATH, PALETTE_STREAM_PATH, STREAM_CLICK_PATH,
-        STREAM_HEIGHT, STREAM_PATH, STREAM_STATUS_PATH, STREAM_WIDTH, WEB_ADDR,
+        AUDIO_STREAM_PATH, CUSTOM_AUDIO_CHANNELS, CUSTOM_AUDIO_SAMPLE_RATE, CUSTOM_OVERLAYS_PATH,
+        CUSTOM_PANELS_PATH, LOCAL_CHAT_FEED_PATH, LOCAL_CHAT_PATH, PALETTE_STREAM_PATH,
+        STREAM_CLICK_PATH, STREAM_HEIGHT, STREAM_PATH, STREAM_STATUS_PATH, STREAM_WIDTH, WEB_ADDR,
     },
     custom_host::{
-        CustomHostPanelHub, CustomHostPanelSize, CustomHostPanelStyle, StreamPointerClick,
-        StreamPointerClickHub,
+        CustomHostOverlayHub, CustomHostPanelHub, CustomHostPanelSize, CustomHostPanelStyle,
+        OverlayElementKind, OverlayElementStyle, StreamPointerClick, StreamPointerClickHub,
     },
     frames::EncodedFrameHub,
     palette::PaletteFrameHub,
@@ -33,6 +33,7 @@ pub(crate) enum LocalStreamSource {
         audio: CustomAudioPacketHub,
         chat: LocalChatHub,
         panels: CustomHostPanelHub,
+        overlays: CustomHostOverlayHub,
         clicks: StreamPointerClickHub,
         active: CustomStreamState,
     },
@@ -117,6 +118,12 @@ fn handle_web_request(mut stream: TcpStream, source: LocalStreamSource, stats: S
     } else if path.starts_with(CUSTOM_PANELS_PATH) {
         if let LocalStreamSource::Palette { panels, chat, .. } = source {
             serve_custom_panels(stream, &request, peer_addr, panels, chat);
+        } else {
+            serve_not_found(stream);
+        }
+    } else if path.starts_with(CUSTOM_OVERLAYS_PATH) {
+        if let LocalStreamSource::Palette { overlays, chat, .. } = source {
+            serve_custom_overlays(stream, &request, peer_addr, overlays, chat);
         } else {
             serve_not_found(stream);
         }
@@ -362,6 +369,45 @@ fn serve_custom_panels(
     let _ = stream.write_all(response.as_bytes());
 }
 
+fn serve_custom_overlays(
+    mut stream: TcpStream,
+    request: &str,
+    peer_addr: Option<SocketAddr>,
+    overlays: CustomHostOverlayHub,
+    chat: LocalChatHub,
+) {
+    let identity_source = local_chat_identity(request, peer_addr);
+    let (viewer_identity, viewer_name) = chat.viewer_for_identity(&identity_source);
+    let overlays = overlays.snapshot_for_viewer(Some(&viewer_identity), Some(&viewer_name));
+    let mut body = format!(
+        r#"{{"viewer":{{"identity":"{}","name":"{}"}},"overlays":["#,
+        json_escape(&viewer_identity),
+        json_escape(&viewer_name)
+    );
+    for (index, overlay) in overlays.iter().enumerate() {
+        if index > 0 {
+            body.push(',');
+        }
+        body.push_str(&format!(
+            r#"{{"id":"{}","x":{},"y":{},"coordinate_space":"{}","kind":{},"order":{},"style":{}}}"#,
+            json_escape(&overlay.id),
+            json_f32(overlay.x),
+            json_f32(overlay.y),
+            overlay.coordinate_space.as_json_str(),
+            overlay_kind_json(&overlay.kind),
+            overlay.order,
+            overlay_style_json(&overlay.style)
+        ));
+    }
+    body.push_str("]}");
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = stream.write_all(response.as_bytes());
+}
+
 fn submit_stream_click(
     mut stream: TcpStream,
     request: &str,
@@ -514,8 +560,9 @@ fn panel_style_hint_json(style: Option<&CustomHostPanelStyle>) -> String {
         return "null".to_owned();
     };
     format!(
-        r#"{{"css_class":{}}}"#,
-        json_optional_string(style.css_class.as_deref())
+        r#"{{"css_class":{},"hide_header":{}}}"#,
+        json_optional_string(style.css_class.as_deref()),
+        style.hide_header
     )
 }
 
@@ -523,6 +570,52 @@ fn json_optional_u32(value: Option<u32>) -> String {
     value
         .map(|value| value.to_string())
         .unwrap_or_else(|| "null".to_owned())
+}
+
+fn overlay_kind_json(kind: &OverlayElementKind) -> String {
+    match kind {
+        OverlayElementKind::Circle { radius } => {
+            format!(r#"{{"type":"Circle","radius":{}}}"#, json_f32(*radius))
+        }
+        OverlayElementKind::Flag { width, height } => format!(
+            r#"{{"type":"Flag","width":{},"height":{}}}"#,
+            json_f32(*width),
+            json_f32(*height)
+        ),
+        OverlayElementKind::Text { text } => {
+            format!(r#"{{"type":"Text","text":"{}"}}"#, json_escape(text))
+        }
+        OverlayElementKind::Sprite {
+            image_id,
+            width,
+            height,
+        } => format!(
+            r#"{{"type":"Sprite","image_id":"{}","width":{},"height":{}}}"#,
+            json_escape(image_id),
+            json_f32(*width),
+            json_f32(*height)
+        ),
+    }
+}
+
+fn overlay_style_json(style: &OverlayElementStyle) -> String {
+    format!(
+        r#"{{"stroke_color":{},"fill_color":{},"text_color":{},"line_width":{},"font_px":{},"css_class":{}}}"#,
+        json_optional_string(style.stroke_color.as_deref()),
+        json_optional_string(style.fill_color.as_deref()),
+        json_optional_string(style.text_color.as_deref()),
+        json_f32(style.line_width),
+        json_f32(style.font_px),
+        json_optional_string(style.css_class.as_deref())
+    )
+}
+
+fn json_f32(value: f32) -> String {
+    if value.is_finite() {
+        value.to_string()
+    } else {
+        "0".to_owned()
+    }
 }
 
 fn serve_bad_request(mut stream: TcpStream) {
@@ -770,6 +863,7 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     let stream_status_url = format!("{backend}{STREAM_STATUS_PATH}");
     let local_chat_feed_url = format!("{backend}{LOCAL_CHAT_FEED_PATH}");
     let custom_panels_url = format!("{backend}{CUSTOM_PANELS_PATH}");
+    let custom_overlays_url = format!("{backend}{CUSTOM_OVERLAYS_PATH}");
     let stream_click_url = format!("{backend}{STREAM_CLICK_PATH}");
 
     format!(
@@ -789,9 +883,10 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     .player {{ grid-area: player; position: relative; width: min(calc(100vw - 384px), calc(100vh - 84px), 960px); aspect-ratio: 1 / 1; min-width: 240px; }}
     .stage.has-left .player {{ width: min(max(240px, calc(100vw - 680px)), calc(100vh - 84px), 960px); }}
     canvas {{ display: block; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; image-rendering: crisp-edges; background: #050608; border: 1px solid #303847; }}
-    .unmute {{ position: absolute; inset: 1px; display: grid; place-items: center; border: 0; background: rgba(5, 6, 8, 0.54); color: #f8fafc; font: 700 clamp(18px, 4vw, 34px) Arial, sans-serif; cursor: pointer; text-shadow: 0 2px 8px #000; }}
+    .stream-overlay {{ position: absolute; inset: 1px; width: calc(100% - 2px); height: calc(100% - 2px); border: 0; pointer-events: none; z-index: 3; background: transparent; }}
+    .unmute {{ position: absolute; inset: 1px; z-index: 5; display: grid; place-items: center; border: 0; background: rgba(5, 6, 8, 0.54); color: #f8fafc; font: 700 clamp(18px, 4vw, 34px) Arial, sans-serif; cursor: pointer; text-shadow: 0 2px 8px #000; }}
     .unmute[hidden] {{ display: none; }}
-    .player-controls {{ position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 5px; background: rgba(5, 6, 8, 0.62); opacity: 0; pointer-events: none; transition: opacity 120ms ease; }}
+    .player-controls {{ position: absolute; z-index: 5; left: 10px; right: 10px; bottom: 10px; display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 5px; background: rgba(5, 6, 8, 0.62); opacity: 0; pointer-events: none; transition: opacity 120ms ease; }}
     .player:hover .player-controls, .player-controls:focus-within {{ opacity: 1; pointer-events: auto; }}
     .player-controls[hidden] {{ display: none; }}
     .player-controls button {{ appearance: none; border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 4px 8px; font: inherit; cursor: pointer; }}
@@ -837,6 +932,7 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
       <section class="panel-region left-region" id="leftPanels"></section>
       <div class="player">
         <canvas id="screen" width="{STREAM_WIDTH}" height="{STREAM_HEIGHT}"></canvas>
+        <canvas class="stream-overlay" id="streamOverlay" width="{STREAM_WIDTH}" height="{STREAM_HEIGHT}"></canvas>
         <section class="overlay-panels overlay-top-left" id="overlayTopLeftPanels"></section>
         <section class="overlay-panels overlay-top-right" id="overlayTopRightPanels"></section>
         <section class="overlay-panels overlay-bottom-left" id="overlayBottomLeftPanels"></section>
@@ -866,8 +962,10 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
   <script>
     const stage = document.getElementById("stage");
     const canvas = document.getElementById("screen");
+    const overlayCanvas = document.getElementById("streamOverlay");
     const player = document.querySelector(".player");
     const ctx = canvas.getContext("2d");
+    const overlayCtx = overlayCanvas.getContext("2d");
     const unmuteButton = document.getElementById("unmuteButton");
     const playerControls = document.getElementById("playerControls");
     const muteButton = document.getElementById("muteButton");
@@ -921,6 +1019,8 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     let chatGeneration = null;
     let shownChatIds = new Set();
     let currentViewer = null;
+    let currentOverlays = [];
+    const overlayImageCache = new Map();
     let lastAudioLeft = 0;
     let lastAudioRight = 0;
     let lastTransportSample = null;
@@ -1046,13 +1146,17 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
 
       canvas.width = width;
       canvas.height = height;
+      overlayCanvas.width = width;
+      overlayCanvas.height = height;
       canvas.style.aspectRatio = `${{width}} / ${{height}}`;
+      overlayCanvas.style.aspectRatio = `${{width}} / ${{height}}`;
       player.style.aspectRatio = `${{width}} / ${{height}}`;
       framebuffer = new Uint8Array(width * height);
       image = ctx.createImageData(width, height);
       tileCache.length = 0;
       streamReady = true;
       pending = pending.slice(headerLength);
+      drawCustomOverlays();
       return true;
     }}
 
@@ -1717,6 +1821,16 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
       renderPanels(Array.isArray(data.panels) ? data.panels : []);
     }}
 
+    async function fetchCustomOverlays() {{
+      const response = await fetch("{custom_overlays_url}?t=" + Date.now(), identityFetchOptions({{ cache: "no-store" }}));
+      if (!response.ok) {{
+        throw new Error(`overlay fetch failed: ${{response.status}}`);
+      }}
+      const data = await response.json();
+      currentOverlays = Array.isArray(data.overlays) ? data.overlays : [];
+      drawCustomOverlays();
+    }}
+
     async function pollCustomPanels() {{
       while (true) {{
         try {{
@@ -1725,6 +1839,17 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
           console.error(error);
         }}
         await new Promise(resolve => setTimeout(resolve, 1000));
+      }}
+    }}
+
+    async function pollCustomOverlays() {{
+      while (true) {{
+        try {{
+          await fetchCustomOverlays();
+        }} catch (error) {{
+          console.error(error);
+        }}
+        await new Promise(resolve => setTimeout(resolve, 250));
       }}
     }}
 
@@ -1823,11 +1948,116 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
         title.textContent = panel.title || panel.id || "Panel";
         const body = document.createElement("pre");
         body.textContent = panel.body || "";
-        section.appendChild(title);
+        if (!(panel.style_hint && panel.style_hint.hide_header)) {{
+          section.appendChild(title);
+        }}
         section.appendChild(body);
         panelContainer(panel.anchor || panel.region).appendChild(section);
       }});
       stage.classList.toggle("has-left", leftPanels.childElementCount > 0);
+    }}
+
+    function drawCustomOverlays() {{
+      overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+      if (!overlayCanvas.width || !overlayCanvas.height) return;
+      const overlays = currentOverlays
+        .slice()
+        .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0) || String(a.id || "").localeCompare(String(b.id || "")));
+      for (const overlay of overlays) {{
+        drawCustomOverlay(overlay);
+      }}
+    }}
+
+    function drawCustomOverlay(overlay) {{
+      const point = overlayPoint(overlay);
+      const kind = overlay.kind || {{}};
+      const style = overlay.style || {{}};
+      const stroke = safeCssColor(style.stroke_color) || '#ff3b30';
+      const fill = safeCssColor(style.fill_color);
+      const textColor = safeCssColor(style.text_color) || '#ffffff';
+      const lineWidth = clampNumber(style.line_width, 1, 32, 2);
+      overlayCtx.save();
+      overlayCtx.lineWidth = lineWidth;
+      overlayCtx.strokeStyle = stroke;
+      overlayCtx.fillStyle = fill || stroke;
+      overlayCtx.font = `${{clampNumber(style.font_px, 6, 96, 12)}}px Consolas, monospace`;
+      overlayCtx.textBaseline = "middle";
+      overlayCtx.textAlign = "center";
+
+      if (kind.type === "Circle") {{
+        overlayCtx.beginPath();
+        overlayCtx.arc(point.x, point.y, clampNumber(kind.radius, 1, 4096, 8), 0, Math.PI * 2);
+        if (fill) overlayCtx.fill();
+        overlayCtx.stroke();
+      }} else if (kind.type === "Flag") {{
+        drawFlag(point.x, point.y, clampNumber(kind.width, 1, 4096, 10), clampNumber(kind.height, 1, 4096, 14), fill);
+      }} else if (kind.type === "Text") {{
+        overlayCtx.fillStyle = textColor;
+        overlayCtx.strokeStyle = stroke;
+        overlayCtx.lineWidth = Math.max(1, lineWidth);
+        const text = String(kind.text || "");
+        overlayCtx.strokeText(text, point.x, point.y);
+        overlayCtx.fillText(text, point.x, point.y);
+      }} else if (kind.type === "Sprite") {{
+        drawOverlaySprite(kind, point.x, point.y);
+      }}
+      overlayCtx.restore();
+    }}
+
+    function overlayPoint(overlay) {{
+      const x = Number(overlay.x) || 0;
+      const y = Number(overlay.y) || 0;
+      if (overlay.coordinate_space === "StreamPixels") {{
+        return {{ x, y }};
+      }}
+      return {{
+        x: x * overlayCanvas.width,
+        y: y * overlayCanvas.height,
+      }};
+    }}
+
+    function drawFlag(x, y, flagWidth, flagHeight, fill) {{
+      const poleHeight = flagHeight;
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(x, y);
+      overlayCtx.lineTo(x, y - poleHeight);
+      overlayCtx.stroke();
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(x, y - poleHeight);
+      overlayCtx.lineTo(x + flagWidth, y - poleHeight + flagHeight * 0.25);
+      overlayCtx.lineTo(x, y - poleHeight + flagHeight * 0.5);
+      overlayCtx.closePath();
+      if (fill) overlayCtx.fill();
+      overlayCtx.stroke();
+    }}
+
+    function drawOverlaySprite(kind, x, y) {{
+      const imageId = String(kind.image_id || "");
+      const spriteWidth = clampNumber(kind.width, 1, 4096, 16);
+      const spriteHeight = clampNumber(kind.height, 1, 4096, 16);
+      const image = overlayImage(imageId);
+      if (image && image.complete && image.naturalWidth > 0) {{
+        overlayCtx.drawImage(image, x - spriteWidth * 0.5, y - spriteHeight * 0.5, spriteWidth, spriteHeight);
+      }} else {{
+        overlayCtx.strokeRect(x - spriteWidth * 0.5, y - spriteHeight * 0.5, spriteWidth, spriteHeight);
+      }}
+    }}
+
+    function overlayImage(imageId) {{
+      if (!imageId) return null;
+      if (overlayImageCache.has(imageId)) return overlayImageCache.get(imageId);
+      const image = new Image();
+      image.crossOrigin = "anonymous";
+      image.onload = () => drawCustomOverlays();
+      image.src = imageId;
+      overlayImageCache.set(imageId, image);
+      return image;
+    }}
+
+    function clampNumber(value, min, max, fallback) {{
+      const number = Number(value);
+      if (!Number.isFinite(number)) return fallback;
+      return Math.min(max, Math.max(min, number));
     }}
 
     function panelAnchorSortKey(panel) {{
@@ -1938,6 +2168,7 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     pollStreamStatus();
     pollChatFeed();
     pollCustomPanels();
+    pollCustomOverlays();
   </script>
 </body>
 </html>"#

@@ -18,6 +18,72 @@ pub struct CustomHostPanel {
     pub audience: CustomHostPanelAudience,
 }
 
+#[derive(Clone, Resource)]
+pub struct CustomHostBranding {
+    pub page_title: String,
+    pub header_title: String,
+}
+
+impl Default for CustomHostBranding {
+    fn default() -> Self {
+        Self {
+            page_title: "Direct Stream Game".to_owned(),
+            header_title: "Direct Stream Game custom palette stream".to_owned(),
+        }
+    }
+}
+
+impl CustomHostBranding {
+    pub fn new(page_title: impl Into<String>, header_title: impl Into<String>) -> Self {
+        Self {
+            page_title: page_title.into(),
+            header_title: header_title.into(),
+        }
+    }
+}
+
+#[derive(Clone, Resource)]
+pub struct CustomHostLayout {
+    pub max_player_width_px: Option<u32>,
+    pub prefer_larger_player: bool,
+    pub minimizable_player: bool,
+    pub start_player_minimized: bool,
+}
+
+impl Default for CustomHostLayout {
+    fn default() -> Self {
+        Self {
+            max_player_width_px: None,
+            prefer_larger_player: false,
+            minimizable_player: false,
+            start_player_minimized: false,
+        }
+    }
+}
+
+impl CustomHostLayout {
+    pub fn with_max_player_width(mut self, width_px: u32) -> Self {
+        self.max_player_width_px = Some(width_px);
+        self
+    }
+
+    pub fn prefer_larger_player(mut self) -> Self {
+        self.prefer_larger_player = true;
+        self
+    }
+
+    pub fn minimizable_player(mut self) -> Self {
+        self.minimizable_player = true;
+        self
+    }
+
+    pub fn start_player_minimized(mut self) -> Self {
+        self.minimizable_player = true;
+        self.start_player_minimized = true;
+        self
+    }
+}
+
 impl CustomHostPanel {
     pub fn for_viewer_identity(mut self, identity: impl Into<String>) -> Self {
         self.audience = CustomHostPanelAudience::ViewerIdentity(identity.into());
@@ -116,6 +182,51 @@ pub struct CustomHostPanelSize {
 pub struct CustomHostPanelStyle {
     pub css_class: Option<String>,
     pub hide_header: bool,
+    pub body_white_space: Option<PanelWhiteSpace>,
+}
+
+impl CustomHostPanelStyle {
+    pub fn headerless() -> Self {
+        Self {
+            hide_header: true,
+            ..Default::default()
+        }
+    }
+
+    pub fn with_css_class(mut self, css_class: impl Into<String>) -> Self {
+        self.css_class = Some(css_class.into());
+        self
+    }
+
+    pub fn with_body_white_space(mut self, body_white_space: PanelWhiteSpace) -> Self {
+        self.body_white_space = Some(body_white_space);
+        self
+    }
+
+    pub fn no_wrap(mut self) -> Self {
+        self.body_white_space = Some(PanelWhiteSpace::NoWrap);
+        self
+    }
+
+    pub fn pre_wrap(mut self) -> Self {
+        self.body_white_space = Some(PanelWhiteSpace::PreWrap);
+        self
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelWhiteSpace {
+    PreWrap,
+    NoWrap,
+}
+
+impl PanelWhiteSpace {
+    pub(crate) fn as_json_str(self) -> &'static str {
+        match self {
+            PanelWhiteSpace::PreWrap => "PreWrap",
+            PanelWhiteSpace::NoWrap => "NoWrap",
+        }
+    }
 }
 
 #[derive(Clone)]

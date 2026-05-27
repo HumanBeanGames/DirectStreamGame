@@ -564,7 +564,7 @@ impl Default for DirectStreamAudioTarget {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Resource)]
 pub(crate) struct CustomAudioPacketHub {
     inner: Arc<(Mutex<LatestAudioPacket>, Condvar)>,
 }

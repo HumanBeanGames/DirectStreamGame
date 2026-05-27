@@ -1,20 +1,23 @@
 use crate::{
     audio::CustomAudioPacketHub,
     chat::LocalChatHub,
+    config::AppConfig,
     constants::{
         AUDIO_STREAM_PATH, CUSTOM_AUDIO_CHANNELS, CUSTOM_AUDIO_SAMPLE_RATE, CUSTOM_OVERLAYS_PATH,
         CUSTOM_PANELS_PATH, LOCAL_CHAT_FEED_PATH, LOCAL_CHAT_PATH, PALETTE_STREAM_PATH,
         STREAM_CLICK_PATH, STREAM_HEIGHT, STREAM_PATH, STREAM_STATUS_PATH, STREAM_WIDTH, WEB_ADDR,
     },
     custom_host::{
-        CustomHostOverlayHub, CustomHostPanelHub, CustomHostPanelSize, CustomHostPanelStyle,
-        OverlayElementKind, OverlayElementStyle, StreamPointerClick, StreamPointerClickHub,
+        CustomHostBranding, CustomHostLayout, CustomHostOverlayHub, CustomHostPanelHub,
+        CustomHostPanelSize, CustomHostPanelStyle, OverlayElementKind, OverlayElementStyle,
+        PanelWhiteSpace, StreamPointerClick, StreamPointerClickHub,
     },
     frames::EncodedFrameHub,
     palette::PaletteFrameHub,
     stats::SharedStats,
     stream_control::CustomStreamState,
 };
+use bevy::prelude::*;
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
@@ -39,7 +42,48 @@ pub(crate) enum LocalStreamSource {
     },
 }
 
-pub(crate) fn start_local_web_server(source: LocalStreamSource, stats: SharedStats) {
+pub(crate) fn start_local_web_server_from_resources(
+    mut started: Local<bool>,
+    config: Res<AppConfig>,
+    frame_hub: Res<EncodedFrameHub>,
+    palette_frame_hub: Res<PaletteFrameHub>,
+    audio: Res<CustomAudioPacketHub>,
+    chat: Res<LocalChatHub>,
+    panels: Res<CustomHostPanelHub>,
+    overlays: Res<CustomHostOverlayHub>,
+    clicks: Res<StreamPointerClickHub>,
+    active: Res<CustomStreamState>,
+    stats: Res<SharedStats>,
+    branding: Res<CustomHostBranding>,
+    layout: Res<CustomHostLayout>,
+) {
+    if *started {
+        return;
+    }
+    *started = true;
+
+    let source = if config.custom_host {
+        LocalStreamSource::Palette {
+            frames: palette_frame_hub.clone(),
+            audio: audio.clone(),
+            chat: chat.clone(),
+            panels: panels.clone(),
+            overlays: overlays.clone(),
+            clicks: clicks.clone(),
+            active: active.clone(),
+        }
+    } else {
+        LocalStreamSource::Mjpeg(frame_hub.clone())
+    };
+    start_local_web_server(source, stats.clone(), branding.clone(), layout.clone());
+}
+
+pub(crate) fn start_local_web_server(
+    source: LocalStreamSource,
+    stats: SharedStats,
+    branding: CustomHostBranding,
+    layout: CustomHostLayout,
+) {
     thread::spawn(move || {
         let listener = match TcpListener::bind(WEB_ADDR) {
             Ok(listener) => listener,
@@ -56,7 +100,11 @@ pub(crate) fn start_local_web_server(source: LocalStreamSource, stats: SharedSta
                 Ok(stream) => {
                     let source = source.clone();
                     let stats = stats.clone();
-                    thread::spawn(move || handle_web_request(stream, source, stats));
+                    let branding = branding.clone();
+                    let layout = layout.clone();
+                    thread::spawn(move || {
+                        handle_web_request(stream, source, stats, branding, layout)
+                    });
                 }
                 Err(err) => eprintln!("Local web server connection failed: {err}"),
             }
@@ -64,7 +112,13 @@ pub(crate) fn start_local_web_server(source: LocalStreamSource, stats: SharedSta
     });
 }
 
-fn handle_web_request(mut stream: TcpStream, source: LocalStreamSource, stats: SharedStats) {
+fn handle_web_request(
+    mut stream: TcpStream,
+    source: LocalStreamSource,
+    stats: SharedStats,
+    branding: CustomHostBranding,
+    layout: CustomHostLayout,
+) {
     let peer_addr = stream.peer_addr().ok();
     let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
     let request = read_http_request(&mut stream);
@@ -141,7 +195,7 @@ fn handle_web_request(mut stream: TcpStream, source: LocalStreamSource, stats: S
         }
     } else {
         stats.with_mut(|stats| stats.preview_requests += 1);
-        serve_preview_page(stream, &source);
+        serve_preview_page(stream, &source, &branding, &layout);
     }
 }
 
@@ -201,10 +255,15 @@ fn parse_content_length(headers: &[u8]) -> usize {
         .unwrap_or(0)
 }
 
-fn serve_preview_page(mut stream: TcpStream, source: &LocalStreamSource) {
+fn serve_preview_page(
+    mut stream: TcpStream,
+    source: &LocalStreamSource,
+    branding: &CustomHostBranding,
+    layout: &CustomHostLayout,
+) {
     let body = match source {
         LocalStreamSource::Mjpeg(_) => mjpeg_stream_page_html(),
-        LocalStreamSource::Palette { .. } => palette_stream_page_html(),
+        LocalStreamSource::Palette { .. } => palette_stream_page_html(branding, layout),
     };
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
@@ -540,6 +599,15 @@ fn json_escape(value: &str) -> String {
         .replace('\r', "\\r")
 }
 
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
 fn json_optional_string(value: Option<&str>) -> String {
     value
         .map(|value| format!(r#""{}""#, json_escape(value)))
@@ -564,9 +632,10 @@ fn panel_style_hint_json(style: Option<&CustomHostPanelStyle>) -> String {
         return "null".to_owned();
     };
     format!(
-        r#"{{"css_class":{},"hide_header":{}}}"#,
+        r#"{{"css_class":{},"hide_header":{},"body_white_space":{}}}"#,
         json_optional_string(style.css_class.as_deref()),
-        style.hide_header
+        style.hide_header,
+        json_optional_string(style.body_white_space.map(PanelWhiteSpace::as_json_str))
     )
 }
 
@@ -851,15 +920,31 @@ fn mjpeg_stream_page_html() -> String {
     )
 }
 
-fn palette_stream_page_html() -> String {
-    palette_stream_page_html_with_backend("")
+fn palette_stream_page_html(branding: &CustomHostBranding, layout: &CustomHostLayout) -> String {
+    palette_stream_page_html_with_options("", branding, layout)
 }
 
 pub fn static_palette_stream_page_html(backend_origin: &str) -> String {
-    palette_stream_page_html_with_backend(backend_origin)
+    static_palette_stream_page_html_with_options(
+        backend_origin,
+        &CustomHostBranding::default(),
+        &CustomHostLayout::default(),
+    )
 }
 
-fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
+pub fn static_palette_stream_page_html_with_options(
+    backend_origin: &str,
+    branding: &CustomHostBranding,
+    layout: &CustomHostLayout,
+) -> String {
+    palette_stream_page_html_with_options(backend_origin, branding, layout)
+}
+
+fn palette_stream_page_html_with_options(
+    backend_origin: &str,
+    branding: &CustomHostBranding,
+    layout: &CustomHostLayout,
+) -> String {
     let backend = backend_origin.trim_end_matches('/');
     let palette_stream_url = format!("{backend}{PALETTE_STREAM_PATH}");
     let audio_stream_url = format!("{backend}{AUDIO_STREAM_PATH}");
@@ -869,6 +954,18 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     let custom_panels_url = format!("{backend}{CUSTOM_PANELS_PATH}");
     let custom_overlays_url = format!("{backend}{CUSTOM_OVERLAYS_PATH}");
     let stream_click_url = format!("{backend}{STREAM_CLICK_PATH}");
+    let page_title = html_escape(&branding.page_title);
+    let header_title = html_escape(&branding.header_title);
+    let max_player_width = layout
+        .max_player_width_px
+        .unwrap_or(if layout.prefer_larger_player {
+            1280
+        } else {
+            960
+        })
+        .clamp(240, 4096);
+    let minimizable_player = layout.minimizable_player;
+    let start_player_minimized = layout.start_player_minimized;
 
     format!(
         r#"<!doctype html>
@@ -876,16 +973,21 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Direct Stream Game</title>
+  <title>{page_title}</title>
   <style>
-    :root {{ color-scheme: dark; font-family: Arial, sans-serif; background: #111318; color: #eef3f8; }}
+    :root {{ color-scheme: dark; font-family: Arial, sans-serif; background: #111318; color: #eef3f8; --direct-stream-max-player-width: {max_player_width}px; }}
     body {{ margin: 0; min-height: 100vh; display: grid; grid-template-rows: auto 1fr; }}
-    header {{ padding: 12px 16px; background: #1b2029; border-bottom: 1px solid #303847; }}
+    header {{ display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 16px; background: #1b2029; border-bottom: 1px solid #303847; }}
+    header button {{ appearance: none; border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 6px 10px; font: inherit; cursor: pointer; }}
+    header button[hidden] {{ display: none; }}
     main {{ display: grid; place-items: center; padding: 16px; min-height: 0; }}
-    .stage {{ width: min(100%, 1480px); display: grid; grid-template-columns: 0 auto minmax(220px, 320px); grid-template-areas: "above above above" "left player right" "below below below"; gap: 8px; align-items: stretch; justify-content: center; min-height: 0; }}
+    .stage {{ width: min(100%, calc(var(--direct-stream-max-player-width) + 520px)); display: grid; grid-template-columns: 0 auto minmax(220px, 320px); grid-template-areas: "above above above" "left player right" "below below below"; gap: 8px; align-items: stretch; justify-content: center; min-height: 0; }}
     .stage.has-left {{ grid-template-columns: minmax(180px, 280px) auto minmax(220px, 320px); }}
-    .player {{ grid-area: player; position: relative; width: min(calc(100vw - 384px), calc(100vh - 84px), 960px); aspect-ratio: 1 / 1; min-width: 240px; }}
-    .stage.has-left .player {{ width: min(max(240px, calc(100vw - 680px)), calc(100vh - 84px), 960px); }}
+    .stage.player-minimized {{ grid-template-columns: minmax(180px, 280px) minmax(220px, 320px); grid-template-areas: "above above" "left right" "below below"; }}
+    .stage.player-minimized .player {{ display: none; }}
+    .stage.player-minimized:not(.has-left) {{ grid-template-columns: minmax(220px, 320px); grid-template-areas: "above" "right" "below"; }}
+    .player {{ grid-area: player; position: relative; width: min(calc(100vw - 384px), calc(100vh - 84px), var(--direct-stream-max-player-width)); aspect-ratio: 1 / 1; min-width: 240px; }}
+    .stage.has-left .player {{ width: min(max(240px, calc(100vw - 680px)), calc(100vh - 84px), var(--direct-stream-max-player-width)); }}
     canvas {{ display: block; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; image-rendering: crisp-edges; background: #050608; border: 1px solid #303847; }}
     .stream-overlay {{ position: absolute; inset: 1px; width: calc(100% - 2px); height: calc(100% - 2px); border: 0; pointer-events: none; z-index: 3; background: transparent; }}
     .unmute {{ position: absolute; inset: 1px; z-index: 5; display: grid; place-items: center; border: 0; background: rgba(5, 6, 8, 0.54); color: #f8fafc; font: 700 clamp(18px, 4vw, 34px) Arial, sans-serif; cursor: pointer; text-shadow: 0 2px 8px #000; }}
@@ -911,9 +1013,13 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     .panel-region:empty {{ display: none; }}
     .right-panels {{ display: grid; gap: 8px; align-content: start; }}
     .right-panels:empty {{ display: none; }}
-    .panel {{ border: 1px solid #303847; background: #0b0d12; }}
+    .panel {{ border: 1px solid #303847; background: #0b0d12; max-width: 100%; }}
+    .panel.panel-headerless {{ width: max-content; max-width: min(100%, 720px); }}
     .panel h2 {{ margin: 0; padding: 9px 12px; border-bottom: 1px solid #303847; font-size: 14px; }}
-    .panel pre {{ margin: 0; padding: 10px 12px; white-space: pre-wrap; color: #dbe4ef; font: 13px Consolas, monospace; }}
+    .panel pre {{ margin: 0; padding: 10px 12px; min-width: min-content; overflow-x: auto; color: #dbe4ef; font: 13px Consolas, monospace; }}
+    .panel.panel-headerless pre {{ min-width: max-content; max-width: 100%; }}
+    .panel.panel-pre-wrap pre {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
+    .panel.panel-nowrap pre {{ white-space: pre; overflow-wrap: normal; }}
     .overlay-panels {{ position: absolute; z-index: 4; display: grid; gap: 6px; max-width: min(44%, 280px); pointer-events: none; }}
     .overlay-panels:empty {{ display: none; }}
     .overlay-panels .panel {{ pointer-events: auto; background: rgba(11, 13, 18, 0.84); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28); }}
@@ -929,7 +1035,7 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
   </style>
 </head>
 <body>
-  <header>Direct Stream Game custom palette stream</header>
+  <header><span>{header_title}</span><button id="togglePlayerButton" type="button" hidden>Minimize stream</button></header>
   <main>
     <div class="stage" id="stage">
       <section class="panel-region above-region" id="abovePanels"></section>
@@ -968,6 +1074,7 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     const canvas = document.getElementById("screen");
     const overlayCanvas = document.getElementById("streamOverlay");
     const player = document.querySelector(".player");
+    const togglePlayerButton = document.getElementById("togglePlayerButton");
     const ctx = canvas.getContext("2d");
     const overlayCtx = overlayCanvas.getContext("2d");
     const unmuteButton = document.getElementById("unmuteButton");
@@ -1033,7 +1140,41 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
     const audioUpsampleFactor = audioPlaybackSampleRate / audioTransportSampleRate;
     const deviceIdHeaderName = "X-DirectStream-Device-Id";
     const deviceIdStorageKey = "directstream_device_id";
+    const playerMinimizable = {minimizable_player};
+    const startPlayerMinimized = {start_player_minimized};
+    const playerMinimizedStorageKey = "directstream_player_minimized";
     let volatileDeviceId = null;
+
+    function loadPlayerMinimized() {{
+      if (!playerMinimizable) return false;
+      try {{
+        const stored = localStorage.getItem(playerMinimizedStorageKey);
+        if (stored === "true") return true;
+        if (stored === "false") return false;
+      }} catch (error) {{
+        console.error(error);
+      }}
+      return startPlayerMinimized;
+    }}
+
+    function setPlayerMinimized(minimized) {{
+      if (!playerMinimizable) return;
+      stage.classList.toggle("player-minimized", minimized);
+      togglePlayerButton.textContent = minimized ? "Restore stream" : "Minimize stream";
+      try {{
+        localStorage.setItem(playerMinimizedStorageKey, minimized ? "true" : "false");
+      }} catch (error) {{
+        console.error(error);
+      }}
+    }}
+
+    if (playerMinimizable) {{
+      togglePlayerButton.hidden = false;
+      setPlayerMinimized(loadPlayerMinimized());
+      togglePlayerButton.addEventListener("click", () => {{
+        setPlayerMinimized(!stage.classList.contains("player-minimized"));
+      }});
+    }}
 
     function getDeviceId() {{
       try {{
@@ -2019,12 +2160,21 @@ fn palette_stream_page_html_with_backend(backend_origin: &str) -> String {
         for (const className of safeCssClasses(panel.style_hint && panel.style_hint.css_class)) {{
           section.classList.add(className);
         }}
+        const styleHint = panel.style_hint || {{}};
+        if (styleHint.hide_header) {{
+          section.classList.add("panel-headerless");
+        }}
+        if (styleHint.body_white_space === "NoWrap") {{
+          section.classList.add("panel-nowrap");
+        }} else {{
+          section.classList.add("panel-pre-wrap");
+        }}
         applyPanelSizeHint(section, panel.size_hint);
         const title = document.createElement("h2");
         title.textContent = panel.title || panel.id || "Panel";
         const body = document.createElement("pre");
         body.textContent = panel.body || "";
-        if (!(panel.style_hint && panel.style_hint.hide_header)) {{
+        if (!styleHint.hide_header) {{
           section.appendChild(title);
         }}
         section.appendChild(body);

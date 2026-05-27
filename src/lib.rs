@@ -23,18 +23,19 @@ mod web;
 pub use app::{direct_stream_app, run_with_game};
 pub use audio::{DirectStreamAudioTarget, PlayStreamSound, StreamAudioClip};
 pub use chat::{
-    ChatAudience, LocalChatEntryOptions, StreamChatCommand, StreamChatMessage, StreamChatRoles,
-    StreamChatSender, StreamCommandAppExt, StreamCommandRouter,
+    ChatAudience, CustomHostViewerNameRefresh, CustomHostViewerNameResolver, LocalChatEntryOptions,
+    LocalViewerProfile, StreamChatCommand, StreamChatMessage, StreamChatRoles, StreamChatSender,
+    StreamCommandAppExt, StreamCommandRouter,
 };
 pub use constants::{
     DIRECT_STREAM_AUDIO_CHANNELS, DIRECT_STREAM_AUDIO_SAMPLE_RATE, DIRECT_STREAM_FPS,
     DIRECT_STREAM_HEIGHT, DIRECT_STREAM_WIDTH,
 };
 pub use custom_host::{
-    CustomHostOverlayElement, CustomHostOverlayHub, CustomHostPanel, CustomHostPanelAnchor,
-    CustomHostPanelAudience, CustomHostPanelHub, CustomHostPanelRegion, CustomHostPanelSize,
-    CustomHostPanelStyle, OverlayCoordinateSpace, OverlayElementKind, OverlayElementStyle,
-    StreamPointerClick,
+    CustomHostBranding, CustomHostLayout, CustomHostOverlayElement, CustomHostOverlayHub,
+    CustomHostPanel, CustomHostPanelAnchor, CustomHostPanelAudience, CustomHostPanelHub,
+    CustomHostPanelRegion, CustomHostPanelSize, CustomHostPanelStyle, OverlayCoordinateSpace,
+    OverlayElementKind, OverlayElementStyle, PanelWhiteSpace, StreamPointerClick,
 };
 pub use demo::{
     DemoMusicClip, DemoMusicStarted, DemoSfxClip, HelloWorldText, handle_demo_boing_command,
@@ -49,4 +50,4 @@ pub use frames::{DirectStreamFrame, DirectStreamFrameAppExt};
 pub use palette_lut::{DEFAULT_PALETTE_IPSMAP, DEFAULT_PALETTE_TOML};
 pub use plugin::DirectStreamPlugin;
 pub use public_types::{DirectStreamSet, DirectStreamTarget};
-pub use web::static_palette_stream_page_html;
+pub use web::{static_palette_stream_page_html, static_palette_stream_page_html_with_options};

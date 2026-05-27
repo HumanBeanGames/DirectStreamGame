@@ -1,12 +1,15 @@
 use crate::{
     DirectStreamPlugin,
     audio::{CustomAudioPacketHub, DirectStreamAudioTarget, start_custom_audio_packet_pump},
-    chat::LocalChatHub,
+    chat::{CustomHostViewerNameRefresh, LocalChatHub},
     config::{AppConfig, WindowMode, effective_custom_batch_size},
     constants::{
         STATS_WINDOW_HEIGHT, STATS_WINDOW_WIDTH, STREAM_HEIGHT, STREAM_WIDTH, WINDOW_TITLE,
     },
-    custom_host::{CustomHostOverlayHub, CustomHostPanelHub, StreamPointerClickHub},
+    custom_host::{
+        CustomHostBranding, CustomHostLayout, CustomHostOverlayHub, CustomHostPanelHub,
+        StreamPointerClickHub,
+    },
     frames::{DirectStreamFrameProcessors, EncodedFrameHub, IndexedFrame, RawFrameSenders},
     palette::{
         PaletteFrameHub, SharedPaletteBias, load_palette_runtime, start_palette_preview_encoder,
@@ -14,7 +17,6 @@ use crate::{
     preview::start_preview_encoder,
     stats::SharedStats,
     stream_control::{CustomStreamState, StreamControl},
-    web::{LocalStreamSource, start_local_web_server},
 };
 use bevy::{audio::AudioPlugin, prelude::*};
 
@@ -54,24 +56,10 @@ pub fn direct_stream_app() -> App {
         WindowMode::Stats => (STATS_WINDOW_WIDTH, STATS_WINDOW_HEIGHT),
     };
 
-    let web_source = if custom_host {
-        LocalStreamSource::Palette {
-            frames: palette_frame_hub.clone(),
-            audio: custom_audio_hub.clone(),
-            chat: local_chat.clone(),
-            panels: custom_panels.clone(),
-            overlays: custom_overlays.clone(),
-            clicks: stream_clicks.clone(),
-            active: custom_stream_state.clone(),
-        }
-    } else {
-        LocalStreamSource::Mjpeg(frame_hub.clone())
-    };
-    start_local_web_server(web_source, stats.clone());
     if custom_host {
         start_custom_audio_packet_pump(
             audio_target.clone(),
-            custom_audio_hub,
+            custom_audio_hub.clone(),
             stats.clone(),
             custom_stream_state.clone(),
         );
@@ -92,11 +80,16 @@ pub fn direct_stream_app() -> App {
     let mut app = App::new();
     app.insert_resource(ClearColor(Color::srgb(0.04, 0.05, 0.07)))
         .insert_resource(frame_hub)
+        .insert_resource(palette_frame_hub)
         .insert_resource(audio_target)
+        .insert_resource(custom_audio_hub)
         .insert_resource(local_chat)
         .insert_resource(custom_panels)
         .insert_resource(custom_overlays)
         .insert_resource(stream_clicks)
+        .insert_resource(CustomHostBranding::default())
+        .insert_resource(CustomHostLayout::default())
+        .insert_resource(CustomHostViewerNameRefresh::default())
         .insert_resource(custom_stream_state)
         .insert_resource(palette_bias)
         .insert_resource(DirectStreamFrameProcessors::default())

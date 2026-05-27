@@ -28,6 +28,36 @@ pub struct StreamChatCommand {
     pub message_id: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalViewerProfile {
+    pub identity: String,
+    pub display_name: String,
+}
+
+#[derive(Clone, Resource)]
+pub struct CustomHostViewerNameResolver(pub Arc<dyn Fn(&str) -> String + Send + Sync>);
+
+impl CustomHostViewerNameResolver {
+    pub fn display_name_for_identity(&self, identity: &str) -> String {
+        (self.0)(identity)
+    }
+}
+
+#[derive(Resource, Default)]
+pub struct CustomHostViewerNameRefresh {
+    generation: u64,
+}
+
+impl CustomHostViewerNameRefresh {
+    pub fn request_refresh(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct StreamChatRoles {
     pub broadcaster: bool,
@@ -128,6 +158,7 @@ struct LocalChatState {
     generation: u64,
     names_by_identity: HashMap<String, String>,
     blocked_identities: HashMap<String, String>,
+    name_resolver: Option<Arc<dyn Fn(&str) -> String + Send + Sync>>,
 }
 
 impl Default for LocalChatState {
@@ -139,6 +170,7 @@ impl Default for LocalChatState {
             generation: 0,
             names_by_identity: HashMap::new(),
             blocked_identities: HashMap::new(),
+            name_resolver: None,
         }
     }
 }
@@ -249,6 +281,21 @@ impl LocalChatHub {
             .lock()
             .map(|state| state.generation)
             .unwrap_or_default()
+    }
+
+    pub(crate) fn set_name_resolver(&self, resolver: Option<CustomHostViewerNameResolver>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.name_resolver = resolver.map(|resolver| resolver.0);
+            state.names_by_identity.clear();
+            state.generation = state.generation.wrapping_add(1);
+        }
+    }
+
+    pub(crate) fn refresh_names(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.names_by_identity.clear();
+            state.generation = state.generation.wrapping_add(1);
+        }
     }
 
     pub(crate) fn purge(&self) {
@@ -393,6 +440,36 @@ pub(crate) fn init_stream_chat_sender(
     });
 }
 
+pub(crate) fn sync_custom_host_viewer_name_resolver(
+    hub: Option<Res<LocalChatHub>>,
+    resolver: Option<Res<CustomHostViewerNameResolver>>,
+    refresh: Option<Res<CustomHostViewerNameRefresh>>,
+    mut resolver_was_applied: Local<bool>,
+    mut last_refresh_generation: Local<u64>,
+) {
+    let Some(hub) = hub else {
+        return;
+    };
+
+    if let Some(resolver) = resolver {
+        if resolver.is_changed() || !*resolver_was_applied {
+            hub.set_name_resolver(Some(resolver.clone()));
+            *resolver_was_applied = true;
+        }
+    } else if *resolver_was_applied {
+        hub.set_name_resolver(None);
+        *resolver_was_applied = false;
+    }
+
+    if let Some(refresh) = refresh {
+        let generation = refresh.generation();
+        if generation != *last_refresh_generation {
+            hub.refresh_names();
+            *last_refresh_generation = generation;
+        }
+    }
+}
+
 pub(crate) fn poll_local_chat(
     hub: Option<Res<LocalChatHub>>,
     mut messages: MessageWriter<StreamChatMessage>,
@@ -449,11 +526,29 @@ fn current_time_millis() -> u64 {
 }
 
 fn display_name_for_identity_hash(state: &mut LocalChatState, identity_hash: &str) -> String {
+    let resolver = state.name_resolver.clone();
     state
         .names_by_identity
         .entry(identity_hash.to_owned())
-        .or_insert_with(|| local_chat_name_from_hash(identity_hash))
+        .or_insert_with(|| {
+            resolver
+                .as_ref()
+                .and_then(|resolver| clean_display_name(resolver(identity_hash)))
+                .unwrap_or_else(|| local_chat_name_from_hash(identity_hash))
+        })
         .clone()
+}
+
+fn clean_display_name(display_name: String) -> Option<String> {
+    let cleaned = display_name
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .collect::<String>();
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+    Some(cleaned.chars().take(64).collect())
 }
 
 fn trim_history(state: &mut LocalChatState) {
@@ -657,4 +752,59 @@ fn display_name_color_from_hash(hash: &str) -> String {
     let value = u64::from_str_radix(hash, 16).unwrap_or(0);
     let hue = value % 360;
     format!("hsl({hue} 78% 68%)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn viewer_name_resolver_overrides_default_name_and_caches() {
+        let hub = LocalChatHub::default();
+        hub.set_name_resolver(Some(CustomHostViewerNameResolver(Arc::new(|identity| {
+            format!("Mercantile-{identity}")
+        }))));
+
+        let (identity, name) = hub.viewer_for_identity("device:test-device");
+
+        assert!(name.starts_with("Mercantile-"));
+        assert!(name.ends_with(&identity));
+        assert_eq!(hub.viewer_for_identity("device:test-device").1, name);
+    }
+
+    #[test]
+    fn empty_resolved_viewer_name_falls_back_to_default() {
+        let hub = LocalChatHub::default();
+        hub.set_name_resolver(Some(CustomHostViewerNameResolver(Arc::new(|_| {
+            " \n ".to_owned()
+        }))));
+
+        let (identity, name) = hub.viewer_for_identity("device:test-device");
+
+        assert_eq!(name, local_chat_name_from_hash(&identity));
+    }
+
+    #[test]
+    fn refreshing_viewer_names_recomputes_cached_names() {
+        let hub = LocalChatHub::default();
+        let prefix = Arc::new(Mutex::new("One".to_owned()));
+        let resolver_prefix = prefix.clone();
+        hub.set_name_resolver(Some(CustomHostViewerNameResolver(Arc::new(
+            move |identity| {
+                format!(
+                    "{}-{identity}",
+                    resolver_prefix.lock().expect("prefix lock poisoned")
+                )
+            },
+        ))));
+
+        let (_, first) = hub.viewer_for_identity("device:test-device");
+        *prefix.lock().expect("prefix lock poisoned") = "Two".to_owned();
+        assert_eq!(hub.viewer_for_identity("device:test-device").1, first);
+
+        hub.refresh_names();
+        let (_, second) = hub.viewer_for_identity("device:test-device");
+        assert_ne!(first, second);
+        assert!(second.starts_with("Two-"));
+    }
 }

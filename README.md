@@ -320,6 +320,32 @@ Chat colors accept safe `#RGB`, `#RRGGBB`, `rgb(r,g,b)`, `hsl(h s% l%)`, or a
 small named-color set. CSS classes are sanitized to short alphanumeric,
 underscore, or hyphen tokens before they reach the browser.
 
+## Custom Host Page
+
+The browser page can be branded and sized by replacing the default resources
+before the app starts:
+
+```rust
+use direct_stream_game::{CustomHostBranding, CustomHostLayout, direct_stream_app};
+
+fn main() {
+    direct_stream_app()
+        .insert_resource(CustomHostBranding::new("MERCANTILE", "MERCANTILE"))
+        .insert_resource(
+            CustomHostLayout::default()
+                .prefer_larger_player()
+                .with_max_player_width(1280)
+                .minimizable_player(),
+        )
+        .run();
+}
+```
+
+`CustomHostLayout` controls the maximum player width, whether the page uses the
+larger default player cap, and whether the browser shows a persistent
+minimize/restore stream button. The minimized state is stored in browser
+`localStorage`.
+
 ## Panels And Clicks
 
 Downstream games can publish arbitrary side-panel text:
@@ -348,6 +374,15 @@ available for compatibility. For full control, publish a `CustomHostPanel`
 with `anchor`, `order`, optional `size_hint`, and optional `style_hint`.
 Set `CustomHostPanelStyle { hide_header: true, ..default() }` to render a panel
 body without title/header chrome.
+
+For one-line route/status panels, use the helper style:
+
+```rust
+use direct_stream_game::{CustomHostPanelStyle, PanelWhiteSpace};
+
+let style = CustomHostPanelStyle::headerless()
+    .with_body_white_space(PanelWhiteSpace::NoWrap);
+```
 
 Panels can be shared globally or filtered to one viewer. This mirrors local chat
 audiences: `All`, `ViewerIdentity(String)`, or `ViewerName(String)`. The custom
@@ -513,6 +548,12 @@ Export the static stream player:
 
 ```powershell
 cargo run --bin ipsc_export_static_stream
+```
+
+The exporter accepts the same browser options for static hosting:
+
+```powershell
+cargo run --bin ipsc_export_static_stream -- https://game.humanbeangames.com --page-title MERCANTILE --header-title MERCANTILE --prefer-larger-player --max-player-width 1280 --minimizable-player
 ```
 
 Upload the contents of:

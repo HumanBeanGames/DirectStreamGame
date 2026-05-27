@@ -4,7 +4,7 @@ use crate::{
     capture::request_stream_readback,
     chat::{
         StreamChatCommand, StreamChatMessage, dispatch_stream_chat_commands,
-        init_stream_chat_sender, poll_local_chat,
+        init_stream_chat_sender, poll_local_chat, sync_custom_host_viewer_name_resolver,
     },
     custom_host::{StreamPointerClick, poll_stream_pointer_clicks},
     direct_text::DirectTextPlugin,
@@ -17,6 +17,7 @@ use crate::{
         handle_stream_start_interactions, handle_stream_stop_interactions,
         update_stream_control_ui,
     },
+    web::start_local_web_server_from_resources,
 };
 use bevy::prelude::*;
 
@@ -35,13 +36,17 @@ impl Plugin for DirectStreamPlugin {
                 Startup,
                 (
                     setup_direct_stream_scene.in_set(DirectStreamSet::Setup),
+                    sync_custom_host_viewer_name_resolver,
+                    start_local_web_server_from_resources,
                     init_stream_chat_sender,
-                ),
+                )
+                    .chain(),
             )
             .add_systems(
                 Update,
                 (
                     collect_stream_audio_events,
+                    sync_custom_host_viewer_name_resolver,
                     (poll_local_chat, dispatch_stream_chat_commands).chain(),
                     mix_stream_audio,
                     poll_stream_pointer_clicks,

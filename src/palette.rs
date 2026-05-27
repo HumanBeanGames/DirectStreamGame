@@ -9,6 +9,7 @@ use crate::{
     stats::SharedStats,
     stream_control::CustomStreamState,
 };
+use bevy::prelude::Resource;
 use crossbeam_channel::Receiver;
 use std::{
     collections::{HashMap, VecDeque},
@@ -137,7 +138,7 @@ impl SharedPaletteBias {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Resource)]
 pub(crate) struct PaletteFrameHub {
     inner: Arc<(Mutex<LatestPaletteFrame>, Condvar)>,
 }

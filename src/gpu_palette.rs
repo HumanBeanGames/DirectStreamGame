@@ -307,12 +307,16 @@ fn sync_palette_material_bias(
 pub(crate) fn cycle_camera_render_targets(
     time: Res<Time>,
     stream_control: Res<StreamControl>,
-    mut pipeline: ResMut<GpuPalettePipeline>,
+    pipeline: Option<ResMut<GpuPalettePipeline>>,
     mut camera_targets: Query<&mut RenderTarget>,
-    mut readback: ResMut<StreamReadback>,
+    readback: Option<ResMut<StreamReadback>>,
     stats: Res<crate::stats::SharedStats>,
     mut commands: Commands,
 ) {
+    let (Some(mut pipeline), Some(mut readback)) = (pipeline, readback) else {
+        return;
+    };
+
     if pipeline.output_images.is_empty() || !stream_control.is_streaming() {
         return;
     }

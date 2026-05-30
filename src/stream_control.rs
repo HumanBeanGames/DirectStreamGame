@@ -422,7 +422,7 @@ pub(crate) fn handle_stream_start_interactions(
     mut control: ResMut<StreamControl>,
     mut senders: ResMut<RawFrameSenders>,
     stats: Res<SharedStats>,
-    mut readback: ResMut<StreamReadback>,
+    mut readback: Option<ResMut<StreamReadback>>,
     mut images: ResMut<Assets<Image>>,
     mut palette_materials: ResMut<Assets<PaletteMaterial>>,
     mut target: ResMut<DirectStreamTarget>,
@@ -437,19 +437,21 @@ pub(crate) fn handle_stream_start_interactions(
 ) {
     for (interaction, mut color) in &mut start_buttons {
         if *interaction == Interaction::Pressed {
-            let gpu_palette = gpu_palette.as_deref_mut();
-            control.start(
-                &mut senders,
-                &stats,
-                &mut images,
-                &mut palette_materials,
-                &mut target,
-                &mut readback,
-                gpu_palette,
-                &mut camera_targets,
-                &mut quad_transforms,
-                &config,
-            );
+            if let Some(readback) = readback.as_deref_mut() {
+                let gpu_palette = gpu_palette.as_deref_mut();
+                control.start(
+                    &mut senders,
+                    &stats,
+                    &mut images,
+                    &mut palette_materials,
+                    &mut target,
+                    readback,
+                    gpu_palette,
+                    &mut camera_targets,
+                    &mut quad_transforms,
+                    &config,
+                );
+            }
         }
         *color = button_color(*interaction, Color::srgb(0.05, 0.20, 0.13));
     }
@@ -460,7 +462,7 @@ pub(crate) fn handle_stream_stop_interactions(
     mut senders: ResMut<RawFrameSenders>,
     stats: Res<SharedStats>,
     audio_target: Res<DirectStreamAudioTarget>,
-    mut readback: ResMut<StreamReadback>,
+    mut readback: Option<ResMut<StreamReadback>>,
     mut stop_buttons: Query<
         (&Interaction, &mut BackgroundColor),
         (Changed<Interaction>, With<StopStreamButton>),
@@ -468,7 +470,9 @@ pub(crate) fn handle_stream_stop_interactions(
 ) {
     for (interaction, mut color) in &mut stop_buttons {
         if *interaction == Interaction::Pressed {
-            control.stop(&mut senders, &stats, &audio_target, &mut readback);
+            if let Some(readback) = readback.as_deref_mut() {
+                control.stop(&mut senders, &stats, &audio_target, readback);
+            }
         }
         *color = button_color(*interaction, Color::srgb(0.21, 0.06, 0.07));
     }

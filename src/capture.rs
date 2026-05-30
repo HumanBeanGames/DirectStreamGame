@@ -17,7 +17,7 @@ pub(crate) fn request_stream_readback(
     _time: Res<Time>,
     _senders: Res<RawFrameSenders>,
     _stream_control: Res<StreamControl>,
-    _readback: ResMut<StreamReadback>,
+    _readback: Option<ResMut<StreamReadback>>,
 ) {
     // Readback requests are now issued by cycle_camera_render_targets
     // when all textures in the batch have been rendered to

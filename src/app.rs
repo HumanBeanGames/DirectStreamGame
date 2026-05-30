@@ -15,6 +15,7 @@ use crate::{
         PaletteFrameHub, SharedPaletteBias, load_palette_runtime, start_palette_preview_encoder,
     },
     preview::start_preview_encoder,
+    public_types::{DirectStreamMode, DirectStreamState},
     stats::SharedStats,
     stream_control::{CustomStreamState, StreamControl},
 };
@@ -44,6 +45,17 @@ pub fn direct_stream_app() -> App {
         crossbeam_channel::bounded::<IndexedFrame>(custom_frame_capacity);
     let preview_enabled = config.window_mode == WindowMode::Preview;
     let custom_host = config.custom_host;
+    let direct_stream_state = DirectStreamState {
+        mode: if custom_host {
+            DirectStreamMode::CustomHost
+        } else {
+            DirectStreamMode::Preview
+        },
+        active: false,
+        width: config.stream_width,
+        height: config.stream_height,
+        fps: config.stream_fps,
+    };
     let stream_control = StreamControl::new(
         &config,
         preview_enabled.then_some(preview_sender.clone()),
@@ -93,6 +105,7 @@ pub fn direct_stream_app() -> App {
         .insert_resource(custom_stream_state)
         .insert_resource(palette_bias)
         .insert_resource(DirectStreamFrameProcessors::default())
+        .insert_resource(direct_stream_state)
         .insert_resource(stats.clone())
         .insert_resource(stream_control)
         .insert_resource(config)

@@ -13,6 +13,27 @@ pub struct DirectStreamTarget {
     pub fps: u32,
 }
 
+#[derive(Clone, Resource)]
+pub struct DirectStreamState {
+    pub mode: DirectStreamMode,
+    pub active: bool,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+}
+
+impl DirectStreamState {
+    pub fn is_streaming(&self) -> bool {
+        self.active
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectStreamMode {
+    Preview,
+    CustomHost,
+}
+
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DirectStreamSet {
     Setup,

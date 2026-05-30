@@ -170,6 +170,27 @@ Run startup systems after `DirectStreamSet::Setup` when they need
 `DirectStreamTarget` or the stream camera. Systems that do not depend on the
 stream target can be scheduled normally.
 
+Downstream systems can read `DirectStreamState` to pause live-only work while a
+custom-host stream is stopped:
+
+```rust
+use bevy::prelude::*;
+use direct_stream_game::{DirectStreamMode, DirectStreamState};
+
+fn advance_world(time: Res<Time>, stream: Res<DirectStreamState>) {
+    if stream.mode == DirectStreamMode::CustomHost && !stream.active {
+        return;
+    }
+
+    // Tick simulation, AI, music scheduling, etc.
+}
+```
+
+`DirectStreamState` also exposes the current stream `width`, `height`, and
+`fps`. In custom-host mode these update when the stats-window Start button
+retargets the stream; Stop preserves the last dimensions and sets
+`active = false`.
+
 ### Migrating An Existing Bevy Game
 
 Before:

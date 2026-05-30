@@ -10,7 +10,7 @@ use crate::{
     palette::{
         PaletteBias, SharedPaletteBias, load_palette_config_runtime, load_prebaked_lookup_runtime,
     },
-    public_types::DirectStreamTarget,
+    public_types::{DirectStreamState, DirectStreamTarget},
     scene::StreamReadback,
     stats::SharedStats,
 };
@@ -73,6 +73,7 @@ impl StreamControl {
         images: &mut Assets<Image>,
         palette_materials: &mut Assets<PaletteMaterial>,
         target: &mut DirectStreamTarget,
+        direct_stream_state: &mut DirectStreamState,
         readback: &mut StreamReadback,
         gpu_palette: Option<&mut GpuPalettePipeline>,
         camera_targets: &mut Query<&mut RenderTarget>,
@@ -135,6 +136,10 @@ impl StreamControl {
         target.width = width;
         target.height = height;
         target.fps = fps;
+        direct_stream_state.active = true;
+        direct_stream_state.width = width;
+        direct_stream_state.height = height;
+        direct_stream_state.fps = fps;
         readback.images = gpu_palette.output_images.clone();
         readback.batch_size = batch_size;
         readback.next_readback_entity = 0;
@@ -162,6 +167,7 @@ impl StreamControl {
         senders: &mut RawFrameSenders,
         stats: &SharedStats,
         audio_target: &DirectStreamAudioTarget,
+        direct_stream_state: &mut DirectStreamState,
         readback: &mut StreamReadback,
     ) {
         if !self.is_streaming() {
@@ -170,6 +176,7 @@ impl StreamControl {
         }
 
         self.custom_stream_state.set_active(false);
+        direct_stream_state.active = false;
         senders.custom = None;
         if self.preview_sender.is_some() {
             senders.preview = self.preview_sender.clone();
@@ -426,6 +433,7 @@ pub(crate) fn handle_stream_start_interactions(
     mut images: ResMut<Assets<Image>>,
     mut palette_materials: ResMut<Assets<PaletteMaterial>>,
     mut target: ResMut<DirectStreamTarget>,
+    mut direct_stream_state: ResMut<DirectStreamState>,
     mut gpu_palette: Option<ResMut<GpuPalettePipeline>>,
     mut camera_targets: Query<&mut RenderTarget>,
     mut quad_transforms: Query<&mut Transform>,
@@ -445,6 +453,7 @@ pub(crate) fn handle_stream_start_interactions(
                     &mut images,
                     &mut palette_materials,
                     &mut target,
+                    &mut direct_stream_state,
                     readback,
                     gpu_palette,
                     &mut camera_targets,
@@ -462,6 +471,7 @@ pub(crate) fn handle_stream_stop_interactions(
     mut senders: ResMut<RawFrameSenders>,
     stats: Res<SharedStats>,
     audio_target: Res<DirectStreamAudioTarget>,
+    mut direct_stream_state: ResMut<DirectStreamState>,
     mut readback: Option<ResMut<StreamReadback>>,
     mut stop_buttons: Query<
         (&Interaction, &mut BackgroundColor),
@@ -471,7 +481,13 @@ pub(crate) fn handle_stream_stop_interactions(
     for (interaction, mut color) in &mut stop_buttons {
         if *interaction == Interaction::Pressed {
             if let Some(readback) = readback.as_deref_mut() {
-                control.stop(&mut senders, &stats, &audio_target, readback);
+                control.stop(
+                    &mut senders,
+                    &stats,
+                    &audio_target,
+                    &mut direct_stream_state,
+                    readback,
+                );
             }
         }
         *color = button_color(*interaction, Color::srgb(0.21, 0.06, 0.07));

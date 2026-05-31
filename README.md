@@ -413,7 +413,8 @@ panel with the same app-level id.
 ```rust
 use bevy::prelude::*;
 use direct_stream_game::{
-    CustomHostPanel, CustomHostPanelAnchor, CustomHostPanelAudience, CustomHostPanelHub,
+    CustomHostPanel, CustomHostPanelAnchor, CustomHostPanelAudience, CustomHostPanelElement,
+    CustomHostPanelHub,
 };
 
 fn publish_viewer_panel(panels: Res<CustomHostPanelHub>, viewer_identity: String) {
@@ -421,6 +422,14 @@ fn publish_viewer_panel(panels: Res<CustomHostPanelHub>, viewer_identity: String
         id: "selected-town-prices".to_owned(),
         title: "Selected Town".to_owned(),
         body: "wool 4g\nsalt 5g".to_owned(),
+        elements: vec![
+            CustomHostPanelElement::Text("wool 4g\nsalt 5g\n".to_owned()),
+            CustomHostPanelElement::Button {
+                label: "Buy Wool".to_owned(),
+                action_id: "buy-wool".to_owned(),
+                disabled: false,
+            },
+        ],
         revision: 0,
         anchor: CustomHostPanelAnchor::LeftOfStream,
         order: 10,
@@ -428,6 +437,23 @@ fn publish_viewer_panel(panels: Res<CustomHostPanelHub>, viewer_identity: String
         style_hint: None,
         audience: CustomHostPanelAudience::ViewerIdentity(viewer_identity),
     });
+}
+```
+
+Panel button clicks are emitted as `CustomHostPanelAction` messages. The event
+includes `viewer_identity`, `viewer_name`, `panel_id`, and the stable
+`action_id` string from the clicked button.
+
+```rust
+use bevy::prelude::*;
+use direct_stream_game::CustomHostPanelAction;
+
+fn handle_panel_actions(mut actions: MessageReader<CustomHostPanelAction>) {
+    for action in actions.read() {
+        if action.panel_id == "selected-town-prices" && action.action_id == "buy-wool" {
+            // Apply this only to action.viewer_identity.
+        }
+    }
 }
 ```
 

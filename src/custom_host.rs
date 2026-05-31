@@ -10,12 +10,23 @@ pub struct CustomHostPanel {
     pub id: String,
     pub title: String,
     pub body: String,
+    pub elements: Vec<CustomHostPanelElement>,
     pub revision: u64,
     pub anchor: CustomHostPanelAnchor,
     pub order: i32,
     pub size_hint: Option<CustomHostPanelSize>,
     pub style_hint: Option<CustomHostPanelStyle>,
     pub audience: CustomHostPanelAudience,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CustomHostPanelElement {
+    Text(String),
+    Button {
+        label: String,
+        action_id: String,
+        disabled: bool,
+    },
 }
 
 #[derive(Clone, Resource)]
@@ -85,6 +96,13 @@ impl CustomHostLayout {
 }
 
 impl CustomHostPanel {
+    pub fn text_elements(&self) -> Vec<CustomHostPanelElement> {
+        if self.elements.is_empty() && !self.body.is_empty() {
+            return vec![CustomHostPanelElement::Text(self.body.clone())];
+        }
+        self.elements.clone()
+    }
+
     pub fn for_viewer_identity(mut self, identity: impl Into<String>) -> Self {
         self.audience = CustomHostPanelAudience::ViewerIdentity(identity.into());
         self
@@ -357,6 +375,11 @@ impl CustomHostPanelHub {
         if panel.id.trim().is_empty() {
             return;
         }
+        if panel.elements.is_empty() && !panel.body.is_empty() {
+            panel
+                .elements
+                .push(CustomHostPanelElement::Text(panel.body.clone()));
+        }
 
         if let Ok(mut state) = self.state.lock() {
             state.next_revision = state.next_revision.wrapping_add(1);
@@ -381,10 +404,12 @@ impl CustomHostPanelHub {
         title: impl Into<String>,
         body: impl Into<String>,
     ) {
+        let body = body.into();
         self.publish(CustomHostPanel {
             id: id.into(),
             title: title.into(),
-            body: body.into(),
+            elements: vec![CustomHostPanelElement::Text(body.clone())],
+            body,
             revision: 0,
             anchor: CustomHostPanelAnchor::RightOfStream,
             order: 0,
@@ -401,10 +426,12 @@ impl CustomHostPanelHub {
         body: impl Into<String>,
         region: CustomHostPanelRegion,
     ) {
+        let body = body.into();
         self.publish(CustomHostPanel {
             id: id.into(),
             title: title.into(),
-            body: body.into(),
+            elements: vec![CustomHostPanelElement::Text(body.clone())],
+            body,
             revision: 0,
             anchor: region.anchor(),
             order: 0,
@@ -422,10 +449,12 @@ impl CustomHostPanelHub {
         anchor: CustomHostPanelAnchor,
         order: i32,
     ) {
+        let body = body.into();
         self.publish(CustomHostPanel {
             id: id.into(),
             title: title.into(),
-            body: body.into(),
+            elements: vec![CustomHostPanelElement::Text(body.clone())],
+            body,
             revision: 0,
             anchor,
             order,
@@ -664,6 +693,47 @@ pub struct StreamPointerClick {
     pub normalized_y: f32,
 }
 
+#[derive(Message, Clone)]
+pub struct CustomHostPanelAction {
+    pub viewer_identity: String,
+    pub viewer_name: String,
+    pub panel_id: String,
+    pub action_id: String,
+}
+
+#[derive(Clone, Resource, Default)]
+pub(crate) struct CustomHostPanelActionHub {
+    actions: Arc<Mutex<Vec<CustomHostPanelAction>>>,
+}
+
+impl CustomHostPanelActionHub {
+    pub(crate) fn submit(&self, action: CustomHostPanelAction) {
+        if let Ok(mut actions) = self.actions.lock() {
+            actions.push(action);
+        }
+    }
+
+    fn drain(&self) -> Vec<CustomHostPanelAction> {
+        self.actions
+            .lock()
+            .map(|mut actions| actions.drain(..).collect())
+            .unwrap_or_default()
+    }
+}
+
+pub(crate) fn poll_custom_host_panel_actions(
+    hub: Option<Res<CustomHostPanelActionHub>>,
+    mut writer: MessageWriter<CustomHostPanelAction>,
+) {
+    let Some(hub) = hub else {
+        return;
+    };
+
+    for action in hub.drain() {
+        writer.write(action);
+    }
+}
+
 #[derive(Clone, Resource, Default)]
 pub(crate) struct StreamPointerClickHub {
     clicks: Arc<Mutex<Vec<StreamPointerClick>>>,
@@ -706,6 +776,7 @@ mod tests {
             id: id.to_owned(),
             title: id.to_owned(),
             body: body.to_owned(),
+            elements: vec![CustomHostPanelElement::Text(body.to_owned())],
             revision: 0,
             anchor: CustomHostPanelAnchor::LeftOfStream,
             order: 0,

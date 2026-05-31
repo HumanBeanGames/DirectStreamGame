@@ -6,6 +6,7 @@ pub(crate) const AUDIO_STREAM_PATH: &str = "/audio.pcm";
 pub(crate) const LOCAL_CHAT_PATH: &str = "/local-chat";
 pub(crate) const LOCAL_CHAT_FEED_PATH: &str = "/local-chat-feed";
 pub(crate) const CUSTOM_PANELS_PATH: &str = "/custom-panels";
+pub(crate) const CUSTOM_PANEL_ACTION_PATH: &str = "/custom-panel-action";
 pub(crate) const CUSTOM_OVERLAYS_PATH: &str = "/custom-overlays";
 pub(crate) const STREAM_CLICK_PATH: &str = "/stream-click";
 pub(crate) const STREAM_STATUS_PATH: &str = "/status.json";

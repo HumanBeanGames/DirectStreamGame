@@ -4,13 +4,15 @@ use crate::{
     config::AppConfig,
     constants::{
         AUDIO_STREAM_PATH, CUSTOM_AUDIO_CHANNELS, CUSTOM_AUDIO_SAMPLE_RATE, CUSTOM_OVERLAYS_PATH,
-        CUSTOM_PANELS_PATH, LOCAL_CHAT_FEED_PATH, LOCAL_CHAT_PATH, PALETTE_STREAM_PATH,
-        STREAM_CLICK_PATH, STREAM_HEIGHT, STREAM_PATH, STREAM_STATUS_PATH, STREAM_WIDTH, WEB_ADDR,
+        CUSTOM_PANEL_ACTION_PATH, CUSTOM_PANELS_PATH, LOCAL_CHAT_FEED_PATH, LOCAL_CHAT_PATH,
+        PALETTE_STREAM_PATH, STREAM_CLICK_PATH, STREAM_HEIGHT, STREAM_PATH, STREAM_STATUS_PATH,
+        STREAM_WIDTH, WEB_ADDR,
     },
     custom_host::{
-        CustomHostBranding, CustomHostLayout, CustomHostOverlayHub, CustomHostPanelHub,
-        CustomHostPanelSize, CustomHostPanelStyle, OverlayElementKind, OverlayElementStyle,
-        PanelWhiteSpace, StreamPointerClick, StreamPointerClickHub,
+        CustomHostBranding, CustomHostLayout, CustomHostOverlayHub, CustomHostPanelAction,
+        CustomHostPanelActionHub, CustomHostPanelElement, CustomHostPanelHub, CustomHostPanelSize,
+        CustomHostPanelStyle, OverlayElementKind, OverlayElementStyle, PanelWhiteSpace,
+        StreamPointerClick, StreamPointerClickHub,
     },
     frames::EncodedFrameHub,
     palette::PaletteFrameHub,
@@ -36,6 +38,7 @@ pub(crate) enum LocalStreamSource {
         audio: CustomAudioPacketHub,
         chat: LocalChatHub,
         panels: CustomHostPanelHub,
+        panel_actions: CustomHostPanelActionHub,
         overlays: CustomHostOverlayHub,
         clicks: StreamPointerClickHub,
         active: CustomStreamState,
@@ -50,6 +53,7 @@ pub(crate) fn start_local_web_server_from_resources(
     audio: Res<CustomAudioPacketHub>,
     chat: Res<LocalChatHub>,
     panels: Res<CustomHostPanelHub>,
+    panel_actions: Res<CustomHostPanelActionHub>,
     overlays: Res<CustomHostOverlayHub>,
     clicks: Res<StreamPointerClickHub>,
     active: Res<CustomStreamState>,
@@ -68,6 +72,7 @@ pub(crate) fn start_local_web_server_from_resources(
             audio: audio.clone(),
             chat: chat.clone(),
             panels: panels.clone(),
+            panel_actions: panel_actions.clone(),
             overlays: overlays.clone(),
             clicks: clicks.clone(),
             active: active.clone(),
@@ -172,6 +177,17 @@ fn handle_web_request(
     } else if path.starts_with(CUSTOM_PANELS_PATH) {
         if let LocalStreamSource::Palette { panels, chat, .. } = source {
             serve_custom_panels(stream, &request, peer_addr, panels, chat);
+        } else {
+            serve_not_found(stream);
+        }
+    } else if path.starts_with(CUSTOM_PANEL_ACTION_PATH) {
+        if let LocalStreamSource::Palette {
+            chat,
+            panel_actions,
+            ..
+        } = source
+        {
+            submit_custom_panel_action(stream, &request, peer_addr, chat, panel_actions);
         } else {
             serve_not_found(stream);
         }
@@ -407,10 +423,11 @@ fn serve_custom_panels(
         }
         let anchor = panel.anchor.as_json_str();
         body.push_str(&format!(
-            r#"{{"id":"{}","title":"{}","body":"{}","revision":{},"anchor":"{}","region":"{}","order":{},"size_hint":{},"style_hint":{}}}"#,
+            r#"{{"id":"{}","title":"{}","body":"{}","elements":{},"revision":{},"anchor":"{}","region":"{}","order":{},"size_hint":{},"style_hint":{}}}"#,
             json_escape(&panel.id),
             json_escape(&panel.title),
             json_escape(&panel.body),
+            panel_elements_json(&panel.text_elements()),
             panel.revision,
             json_escape(&anchor),
             json_escape(&anchor),
@@ -459,6 +476,48 @@ fn serve_custom_overlays(
         ));
     }
     body.push_str("]}");
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = stream.write_all(response.as_bytes());
+}
+
+fn submit_custom_panel_action(
+    mut stream: TcpStream,
+    request: &str,
+    peer_addr: Option<SocketAddr>,
+    chat: LocalChatHub,
+    panel_actions: CustomHostPanelActionHub,
+) {
+    let body = request_body(request);
+    let Some(panel_id) = json_string_field(body, "panel_id") else {
+        serve_bad_request(stream);
+        return;
+    };
+    let Some(action_id) = json_string_field(body, "action_id") else {
+        serve_bad_request(stream);
+        return;
+    };
+    if panel_id.trim().is_empty()
+        || action_id.trim().is_empty()
+        || panel_id.len() > 256
+        || action_id.len() > 256
+    {
+        serve_bad_request(stream);
+        return;
+    }
+
+    let identity_source = local_chat_identity(request, peer_addr);
+    let (viewer_identity, viewer_name) = chat.viewer_for_identity(&identity_source);
+    panel_actions.submit(CustomHostPanelAction {
+        viewer_identity,
+        viewer_name,
+        panel_id,
+        action_id,
+    });
+    let body = r#"{"ok":true}"#;
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
         body.len(),
@@ -580,6 +639,40 @@ fn json_f32_field(body: &str, name: &str) -> Option<f32> {
     json_number_field(body, name).and_then(|value| value.parse::<f32>().ok())
 }
 
+fn json_string_field(body: &str, name: &str) -> Option<String> {
+    let key = format!(r#""{name}""#);
+    let (_, rest) = body.split_once(&key)?;
+    let (_, rest) = rest.split_once(':')?;
+    let mut chars = rest.trim_start().chars();
+    (chars.next()? == '"').then_some(())?;
+
+    let mut value = String::new();
+    let mut escaped = false;
+    for ch in chars {
+        if escaped {
+            match ch {
+                '"' => value.push('"'),
+                '\\' => value.push('\\'),
+                '/' => value.push('/'),
+                'n' => value.push('\n'),
+                'r' => value.push('\r'),
+                't' => value.push('\t'),
+                'b' => value.push('\u{0008}'),
+                'f' => value.push('\u{000c}'),
+                _ => return None,
+            }
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            return Some(value);
+        } else {
+            value.push(ch);
+        }
+    }
+    None
+}
+
 fn json_number_field<'a>(body: &'a str, name: &str) -> Option<&'a str> {
     let key = format!(r#""{name}""#);
     let (_, rest) = body.split_once(&key)?;
@@ -637,6 +730,37 @@ fn panel_style_hint_json(style: Option<&CustomHostPanelStyle>) -> String {
         style.hide_header,
         json_optional_string(style.body_white_space.map(PanelWhiteSpace::as_json_str))
     )
+}
+
+fn panel_elements_json(elements: &[CustomHostPanelElement]) -> String {
+    let mut json = String::from("[");
+    for (index, element) in elements.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        match element {
+            CustomHostPanelElement::Text(text) => {
+                json.push_str(&format!(
+                    r#"{{"type":"Text","text":"{}"}}"#,
+                    json_escape(text)
+                ));
+            }
+            CustomHostPanelElement::Button {
+                label,
+                action_id,
+                disabled,
+            } => {
+                json.push_str(&format!(
+                    r#"{{"type":"Button","label":"{}","action_id":"{}","disabled":{}}}"#,
+                    json_escape(label),
+                    json_escape(action_id),
+                    disabled
+                ));
+            }
+        }
+    }
+    json.push(']');
+    json
 }
 
 fn json_optional_u32(value: Option<u32>) -> String {
@@ -952,6 +1076,7 @@ fn palette_stream_page_html_with_options(
     let stream_status_url = format!("{backend}{STREAM_STATUS_PATH}");
     let local_chat_feed_url = format!("{backend}{LOCAL_CHAT_FEED_PATH}");
     let custom_panels_url = format!("{backend}{CUSTOM_PANELS_PATH}");
+    let custom_panel_action_url = format!("{backend}{CUSTOM_PANEL_ACTION_PATH}");
     let custom_overlays_url = format!("{backend}{CUSTOM_OVERLAYS_PATH}");
     let stream_click_url = format!("{backend}{STREAM_CLICK_PATH}");
     let page_title = html_escape(&branding.page_title);
@@ -1017,9 +1142,14 @@ fn palette_stream_page_html_with_options(
     .panel.panel-headerless {{ width: max-content; max-width: min(100%, 720px); }}
     .panel h2 {{ margin: 0; padding: 9px 12px; border-bottom: 1px solid #303847; font-size: 14px; }}
     .panel pre {{ margin: 0; padding: 10px 12px; min-width: min-content; overflow-x: auto; color: #dbe4ef; font: 13px Consolas, monospace; }}
+    .panel-content {{ margin: 0; padding: 10px 12px; min-width: min-content; overflow-x: auto; color: #dbe4ef; font: 13px Consolas, monospace; }}
+    .panel-text {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
+    .panel-button {{ margin: 0 6px 6px 0; border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 4px 8px; font: inherit; cursor: pointer; }}
+    .panel-button:disabled {{ opacity: 0.5; cursor: default; }}
     .panel.panel-headerless pre {{ min-width: max-content; max-width: 100%; }}
     .panel.panel-pre-wrap pre {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
     .panel.panel-nowrap pre {{ white-space: pre; overflow-wrap: normal; }}
+    .panel.panel-nowrap .panel-text {{ white-space: pre; overflow-wrap: normal; }}
     .overlay-panels {{ position: absolute; z-index: 4; display: grid; gap: 6px; max-width: min(44%, 280px); pointer-events: none; }}
     .overlay-panels:empty {{ display: none; }}
     .overlay-panels .panel {{ pointer-events: auto; background: rgba(11, 13, 18, 0.84); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28); }}
@@ -2172,15 +2302,61 @@ fn palette_stream_page_html_with_options(
         applyPanelSizeHint(section, panel.size_hint);
         const title = document.createElement("h2");
         title.textContent = panel.title || panel.id || "Panel";
-        const body = document.createElement("pre");
-        body.textContent = panel.body || "";
         if (!styleHint.hide_header) {{
           section.appendChild(title);
         }}
-        section.appendChild(body);
+        section.appendChild(renderPanelBody(panel));
         panelContainer(panel.anchor || panel.region).appendChild(section);
       }});
       stage.classList.toggle("has-left", leftPanels.childElementCount > 0);
+    }}
+
+    function renderPanelBody(panel) {{
+      const elements = Array.isArray(panel.elements) ? panel.elements : [];
+      if (elements.length === 0) {{
+        const body = document.createElement("pre");
+        body.textContent = panel.body || "";
+        return body;
+      }}
+
+      const body = document.createElement("div");
+      body.className = "panel-content";
+      for (const element of elements) {{
+        if (!element || typeof element !== "object") continue;
+        if (element.type === "Button") {{
+          const button = document.createElement("button");
+          button.className = "panel-button";
+          button.type = "button";
+          button.textContent = String(element.label || element.action_id || "Action");
+          button.disabled = Boolean(element.disabled);
+          button.addEventListener("click", () => {{
+            submitPanelAction(panel.id || "", element.action_id || "");
+          }});
+          body.appendChild(button);
+        }} else {{
+          const text = document.createElement("span");
+          text.className = "panel-text";
+          text.textContent = String(element.text || "");
+          body.appendChild(text);
+        }}
+      }}
+      return body;
+    }}
+
+    function submitPanelAction(panelId, actionId) {{
+      if (!panelId || !actionId) return;
+      fetch("{custom_panel_action_url}", {{
+        method: "POST",
+        headers: {{
+          "Content-Type": "application/json",
+          [deviceIdHeaderName]: getDeviceId(),
+        }},
+        body: JSON.stringify({{
+          panel_id: panelId,
+          action_id: actionId,
+        }}),
+        cache: "no-store",
+      }}).catch(error => console.error(error));
     }}
 
     function drawCustomOverlays() {{

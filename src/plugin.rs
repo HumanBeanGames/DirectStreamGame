@@ -6,7 +6,10 @@ use crate::{
         StreamChatCommand, StreamChatMessage, dispatch_stream_chat_commands,
         init_stream_chat_sender, poll_local_chat, sync_custom_host_viewer_name_resolver,
     },
-    custom_host::{StreamPointerClick, poll_stream_pointer_clicks},
+    custom_host::{
+        CustomHostPanelAction, StreamPointerClick, poll_custom_host_panel_actions,
+        poll_stream_pointer_clicks,
+    },
     direct_text::DirectTextPlugin,
     direct_world_sprite::DirectWorldSpritePlugin,
     gpu_palette::GpuPalettePlugin,
@@ -32,6 +35,7 @@ impl Plugin for DirectStreamPlugin {
             .add_message::<StreamChatMessage>()
             .add_message::<StreamChatCommand>()
             .add_message::<StreamPointerClick>()
+            .add_message::<CustomHostPanelAction>()
             .add_systems(
                 Startup,
                 (
@@ -50,6 +54,7 @@ impl Plugin for DirectStreamPlugin {
                     (poll_local_chat, dispatch_stream_chat_commands).chain(),
                     mix_stream_audio,
                     poll_stream_pointer_clicks,
+                    poll_custom_host_panel_actions,
                     request_stream_readback,
                 ),
             )

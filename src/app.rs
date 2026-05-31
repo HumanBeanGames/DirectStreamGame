@@ -7,8 +7,8 @@ use crate::{
         STATS_WINDOW_HEIGHT, STATS_WINDOW_WIDTH, STREAM_HEIGHT, STREAM_WIDTH, WINDOW_TITLE,
     },
     custom_host::{
-        CustomHostBranding, CustomHostLayout, CustomHostOverlayHub, CustomHostPanelHub,
-        StreamPointerClickHub,
+        CustomHostBranding, CustomHostLayout, CustomHostOverlayHub, CustomHostPanelActionHub,
+        CustomHostPanelHub, StreamPointerClickHub,
     },
     frames::{DirectStreamFrameProcessors, EncodedFrameHub, IndexedFrame, RawFrameSenders},
     palette::{
@@ -29,6 +29,7 @@ pub fn direct_stream_app() -> App {
     let custom_audio_hub = CustomAudioPacketHub::new();
     let local_chat = LocalChatHub::default();
     let custom_panels = CustomHostPanelHub::default();
+    let custom_panel_actions = CustomHostPanelActionHub::default();
     let custom_overlays = CustomHostOverlayHub::default();
     let stream_clicks = StreamPointerClickHub::default();
     let custom_stream_state = CustomStreamState::new();
@@ -97,6 +98,7 @@ pub fn direct_stream_app() -> App {
         .insert_resource(custom_audio_hub)
         .insert_resource(local_chat)
         .insert_resource(custom_panels)
+        .insert_resource(custom_panel_actions)
         .insert_resource(custom_overlays)
         .insert_resource(stream_clicks)
         .insert_resource(CustomHostBranding::default())

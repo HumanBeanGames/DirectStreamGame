@@ -47,9 +47,14 @@
     .panel.panel-headerless { width: max-content; max-width: min(100%, 720px); }
     .panel h2 { margin: 0; padding: 9px 12px; border-bottom: 1px solid #303847; font-size: 14px; }
     .panel pre { margin: 0; padding: 10px 12px; min-width: min-content; overflow-x: auto; color: #dbe4ef; font: 13px Consolas, monospace; }
+    .panel-content { margin: 0; padding: 10px 12px; min-width: min-content; overflow-x: auto; color: #dbe4ef; font: 13px Consolas, monospace; }
+    .panel-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .panel-button { margin: 0 6px 6px 0; border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 4px 8px; font: inherit; cursor: pointer; }
+    .panel-button:disabled { opacity: 0.5; cursor: default; }
     .panel.panel-headerless pre { min-width: max-content; max-width: 100%; }
     .panel.panel-pre-wrap pre { white-space: pre-wrap; overflow-wrap: anywhere; }
     .panel.panel-nowrap pre { white-space: pre; overflow-wrap: normal; }
+    .panel.panel-nowrap .panel-text { white-space: pre; overflow-wrap: normal; }
     .overlay-panels { position: absolute; z-index: 4; display: grid; gap: 6px; max-width: min(44%, 280px); pointer-events: none; }
     .overlay-panels:empty { display: none; }
     .overlay-panels .panel { pointer-events: auto; background: rgba(11, 13, 18, 0.84); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28); }
@@ -1202,15 +1207,61 @@
         applyPanelSizeHint(section, panel.size_hint);
         const title = document.createElement("h2");
         title.textContent = panel.title || panel.id || "Panel";
-        const body = document.createElement("pre");
-        body.textContent = panel.body || "";
         if (!styleHint.hide_header) {
           section.appendChild(title);
         }
-        section.appendChild(body);
+        section.appendChild(renderPanelBody(panel));
         panelContainer(panel.anchor || panel.region).appendChild(section);
       });
       stage.classList.toggle("has-left", leftPanels.childElementCount > 0);
+    }
+
+    function renderPanelBody(panel) {
+      const elements = Array.isArray(panel.elements) ? panel.elements : [];
+      if (elements.length === 0) {
+        const body = document.createElement("pre");
+        body.textContent = panel.body || "";
+        return body;
+      }
+
+      const body = document.createElement("div");
+      body.className = "panel-content";
+      for (const element of elements) {
+        if (!element || typeof element !== "object") continue;
+        if (element.type === "Button") {
+          const button = document.createElement("button");
+          button.className = "panel-button";
+          button.type = "button";
+          button.textContent = String(element.label || element.action_id || "Action");
+          button.disabled = Boolean(element.disabled);
+          button.addEventListener("click", () => {
+            submitPanelAction(panel.id || "", element.action_id || "");
+          });
+          body.appendChild(button);
+        } else {
+          const text = document.createElement("span");
+          text.className = "panel-text";
+          text.textContent = String(element.text || "");
+          body.appendChild(text);
+        }
+      }
+      return body;
+    }
+
+    function submitPanelAction(panelId, actionId) {
+      if (!panelId || !actionId) return;
+      fetch("https://game.humanbeangames.com/custom-panel-action", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          [deviceIdHeaderName]: getDeviceId(),
+        },
+        body: JSON.stringify({
+          panel_id: panelId,
+          action_id: actionId,
+        }),
+        cache: "no-store",
+      }).catch(error => console.error(error));
     }
 
     function drawCustomOverlays() {

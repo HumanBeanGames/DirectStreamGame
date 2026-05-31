@@ -757,7 +757,40 @@ fn panel_elements_json(elements: &[CustomHostPanelElement]) -> String {
                     disabled
                 ));
             }
+            CustomHostPanelElement::PagedText {
+                id,
+                pages,
+                initial_page,
+                controls,
+            } => {
+                json.push_str(&format!(
+                    r#"{{"type":"PagedText","id":"{}","initial_page":{},"controls":{{"previous_label":"{}","next_label":"{}","show_page_indicator":{},"wrap":{}}},"pages":{}}}"#,
+                    json_escape(id),
+                    initial_page,
+                    json_escape(&controls.previous_label),
+                    json_escape(&controls.next_label),
+                    controls.show_page_indicator,
+                    controls.wrap,
+                    panel_pages_json(pages)
+                ));
+            }
         }
+    }
+    json.push(']');
+    json
+}
+
+fn panel_pages_json(pages: &[crate::custom_host::CustomHostPanelPage]) -> String {
+    let mut json = String::from("[");
+    for (index, page) in pages.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push_str(&format!(
+            r#"{{"title":{},"body":"{}"}}"#,
+            json_optional_string(page.title.as_deref()),
+            json_escape(&page.body)
+        ));
     }
     json.push(']');
     json
@@ -1146,6 +1179,11 @@ fn palette_stream_page_html_with_options(
     .panel-text {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
     .panel-button {{ margin: 0 6px 6px 0; border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 4px 8px; font: inherit; cursor: pointer; }}
     .panel-button:disabled {{ opacity: 0.5; cursor: default; }}
+    .panel-paged-text {{ display: grid; gap: 6px; margin: 0 0 8px; }}
+    .panel-paged-title {{ color: #f8fafc; font-weight: 700; }}
+    .panel-paged-body {{ display: block; }}
+    .panel-page-controls {{ display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }}
+    .panel-page-indicator {{ color: #9fb0c4; font-size: 12px; }}
     .panel.panel-headerless pre {{ min-width: max-content; max-width: 100%; }}
     .panel.panel-pre-wrap pre {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
     .panel.panel-nowrap pre {{ white-space: pre; overflow-wrap: normal; }}
@@ -1223,6 +1261,7 @@ fn palette_stream_page_html_with_options(
     const overlayBottomLeftPanels = document.getElementById("overlayBottomLeftPanels");
     const overlayBottomRightPanels = document.getElementById("overlayBottomRightPanels");
     const namedPanelContainers = new Map();
+    const panelPageState = new Map();
     ctx.imageSmoothingEnabled = false;
 
     let width = 0;
@@ -2333,6 +2372,8 @@ fn palette_stream_page_html_with_options(
             submitPanelAction(panel.id || "", element.action_id || "");
           }});
           body.appendChild(button);
+        }} else if (element.type === "PagedText") {{
+          body.appendChild(renderPagedText(panel, element));
         }} else {{
           const text = document.createElement("span");
           text.className = "panel-text";
@@ -2341,6 +2382,77 @@ fn palette_stream_page_html_with_options(
         }}
       }}
       return body;
+    }}
+
+    function renderPagedText(panel, element) {{
+      const pages = Array.isArray(element.pages) ? element.pages : [];
+      const wrapper = document.createElement("div");
+      wrapper.className = "panel-paged-text";
+      if (pages.length === 0) return wrapper;
+
+      const key = `${{panel.id || ""}}\u001f${{element.id || ""}}`;
+      const initialPage = clampInteger(element.initial_page, 0, pages.length - 1, 0);
+      const storedPage = panelPageState.has(key) ? panelPageState.get(key) : initialPage;
+      let pageIndex = clampInteger(storedPage, 0, pages.length - 1, initialPage);
+      panelPageState.set(key, pageIndex);
+
+      const title = document.createElement("div");
+      title.className = "panel-paged-title";
+      const body = document.createElement("span");
+      body.className = "panel-text panel-paged-body";
+      const controls = document.createElement("div");
+      controls.className = "panel-page-controls";
+      const previous = document.createElement("button");
+      previous.className = "panel-button panel-page-button";
+      previous.type = "button";
+      previous.textContent = String(element.controls && element.controls.previous_label || "<");
+      const indicator = document.createElement("span");
+      indicator.className = "panel-page-indicator";
+      const next = document.createElement("button");
+      next.className = "panel-button panel-page-button";
+      next.type = "button";
+      next.textContent = String(element.controls && element.controls.next_label || ">");
+      const wrap = Boolean(element.controls && element.controls.wrap);
+      const showIndicator = !element.controls || element.controls.show_page_indicator !== false;
+
+      function setPage(nextIndex) {{
+        if (wrap) {{
+          pageIndex = ((nextIndex % pages.length) + pages.length) % pages.length;
+        }} else {{
+          pageIndex = clampInteger(nextIndex, 0, pages.length - 1, pageIndex);
+        }}
+        panelPageState.set(key, pageIndex);
+        renderPage();
+      }}
+
+      function renderPage() {{
+        const page = pages[pageIndex] || {{}};
+        const pageTitle = String(page.title || "");
+        title.textContent = pageTitle;
+        title.hidden = !pageTitle;
+        body.textContent = String(page.body || "");
+        previous.disabled = !wrap && pageIndex <= 0;
+        next.disabled = !wrap && pageIndex >= pages.length - 1;
+        indicator.textContent = `${{pageIndex + 1}} / ${{pages.length}}`;
+        indicator.hidden = !showIndicator;
+      }}
+
+      previous.addEventListener("click", () => setPage(pageIndex - 1));
+      next.addEventListener("click", () => setPage(pageIndex + 1));
+      controls.appendChild(previous);
+      if (showIndicator) controls.appendChild(indicator);
+      controls.appendChild(next);
+      wrapper.appendChild(title);
+      wrapper.appendChild(body);
+      if (pages.length > 1) wrapper.appendChild(controls);
+      renderPage();
+      return wrapper;
+    }}
+
+    function clampInteger(value, min, max, fallback) {{
+      const number = Number(value);
+      if (!Number.isFinite(number)) return fallback;
+      return Math.min(max, Math.max(min, Math.trunc(number)));
     }}
 
     function submitPanelAction(panelId, actionId) {{

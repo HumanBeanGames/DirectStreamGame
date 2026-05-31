@@ -414,7 +414,7 @@ panel with the same app-level id.
 use bevy::prelude::*;
 use direct_stream_game::{
     CustomHostPanel, CustomHostPanelAnchor, CustomHostPanelAudience, CustomHostPanelElement,
-    CustomHostPanelHub,
+    CustomHostPanelHub, CustomHostPanelPage, PagedTextControls,
 };
 
 fn publish_viewer_panel(panels: Res<CustomHostPanelHub>, viewer_identity: String) {
@@ -428,6 +428,21 @@ fn publish_viewer_panel(panels: Res<CustomHostPanelHub>, viewer_identity: String
                 label: "Buy Wool".to_owned(),
                 action_id: "buy-wool".to_owned(),
                 disabled: false,
+            },
+            CustomHostPanelElement::PagedText {
+                id: "industries".to_owned(),
+                pages: vec![
+                    CustomHostPanelPage {
+                        title: Some("Mill".to_owned()),
+                        body: "grain > flour".to_owned(),
+                    },
+                    CustomHostPanelPage {
+                        title: Some("Weaver".to_owned()),
+                        body: "wool > cloth".to_owned(),
+                    },
+                ],
+                initial_page: 0,
+                controls: PagedTextControls::default(),
             },
         ],
         revision: 0,
@@ -443,6 +458,9 @@ fn publish_viewer_panel(panels: Res<CustomHostPanelHub>, viewer_identity: String
 Panel button clicks are emitted as `CustomHostPanelAction` messages. The event
 includes `viewer_identity`, `viewer_name`, `panel_id`, and the stable
 `action_id` string from the clicked button.
+`CustomHostPanelElement::PagedText` is browser-local: previous/next controls
+switch pages instantly without posting back to Bevy, and the page index is
+preserved across `/custom-panels` refreshes as long as the page still exists.
 
 ```rust
 use bevy::prelude::*;

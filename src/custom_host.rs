@@ -27,6 +27,37 @@ pub enum CustomHostPanelElement {
         action_id: String,
         disabled: bool,
     },
+    PagedText {
+        id: String,
+        pages: Vec<CustomHostPanelPage>,
+        initial_page: usize,
+        controls: PagedTextControls,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CustomHostPanelPage {
+    pub title: Option<String>,
+    pub body: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PagedTextControls {
+    pub previous_label: String,
+    pub next_label: String,
+    pub show_page_indicator: bool,
+    pub wrap: bool,
+}
+
+impl Default for PagedTextControls {
+    fn default() -> Self {
+        Self {
+            previous_label: "<".to_owned(),
+            next_label: ">".to_owned(),
+            show_page_indicator: true,
+            wrap: false,
+        }
+    }
 }
 
 #[derive(Clone, Resource)]

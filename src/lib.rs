@@ -36,7 +36,8 @@ pub use custom_host::{
     CustomHostPanel, CustomHostPanelAction, CustomHostPanelAnchor, CustomHostPanelAudience,
     CustomHostPanelElement, CustomHostPanelHub, CustomHostPanelPage, CustomHostPanelRegion,
     CustomHostPanelSize, CustomHostPanelStyle, OverlayCoordinateSpace, OverlayElementKind,
-    OverlayElementStyle, PagedTextControls, PanelWhiteSpace, StreamPointerClick,
+    OverlayElementStyle, PagedTextControls, PagedTextControlsPosition, PanelWhiteSpace,
+    StreamPointerClick,
 };
 pub use demo::{
     DemoMusicClip, DemoMusicStarted, DemoSfxClip, HelloWorldText, handle_demo_boing_command,

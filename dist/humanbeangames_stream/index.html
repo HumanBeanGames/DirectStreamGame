@@ -1286,6 +1286,7 @@
       next.textContent = String(element.controls && element.controls.next_label || ">");
       const wrap = Boolean(element.controls && element.controls.wrap);
       const showIndicator = !element.controls || element.controls.show_page_indicator !== false;
+      const controlsBeforePage = element.controls && element.controls.position === "BeforePage";
 
       function setPage(nextIndex) {
         if (wrap) {
@@ -1314,9 +1315,10 @@
       controls.appendChild(previous);
       if (showIndicator) controls.appendChild(indicator);
       controls.appendChild(next);
+      if (pages.length > 1 && controlsBeforePage) wrapper.appendChild(controls);
       wrapper.appendChild(title);
       wrapper.appendChild(body);
-      if (pages.length > 1) wrapper.appendChild(controls);
+      if (pages.length > 1 && !controlsBeforePage) wrapper.appendChild(controls);
       renderPage();
       return wrapper;
     }

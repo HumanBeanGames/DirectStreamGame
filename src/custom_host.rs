@@ -47,6 +47,7 @@ pub struct PagedTextControls {
     pub next_label: String,
     pub show_page_indicator: bool,
     pub wrap: bool,
+    pub position: PagedTextControlsPosition,
 }
 
 impl Default for PagedTextControls {
@@ -56,6 +57,23 @@ impl Default for PagedTextControls {
             next_label: ">".to_owned(),
             show_page_indicator: true,
             wrap: false,
+            position: PagedTextControlsPosition::AfterPage,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PagedTextControlsPosition {
+    BeforePage,
+    #[default]
+    AfterPage,
+}
+
+impl PagedTextControlsPosition {
+    pub(crate) fn as_json_str(self) -> &'static str {
+        match self {
+            PagedTextControlsPosition::BeforePage => "BeforePage",
+            PagedTextControlsPosition::AfterPage => "AfterPage",
         }
     }
 }

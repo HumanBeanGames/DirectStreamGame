@@ -414,7 +414,7 @@ panel with the same app-level id.
 use bevy::prelude::*;
 use direct_stream_game::{
     CustomHostPanel, CustomHostPanelAnchor, CustomHostPanelAudience, CustomHostPanelElement,
-    CustomHostPanelHub, CustomHostPanelPage, PagedTextControls,
+    CustomHostPanelHub, CustomHostPanelPage, PagedTextControls, PagedTextControlsPosition,
 };
 
 fn publish_viewer_panel(panels: Res<CustomHostPanelHub>, viewer_identity: String) {
@@ -442,7 +442,10 @@ fn publish_viewer_panel(panels: Res<CustomHostPanelHub>, viewer_identity: String
                     },
                 ],
                 initial_page: 0,
-                controls: PagedTextControls::default(),
+                controls: PagedTextControls {
+                    position: PagedTextControlsPosition::BeforePage,
+                    ..default()
+                },
             },
         ],
         revision: 0,

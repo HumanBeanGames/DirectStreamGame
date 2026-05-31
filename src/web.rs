@@ -764,13 +764,14 @@ fn panel_elements_json(elements: &[CustomHostPanelElement]) -> String {
                 controls,
             } => {
                 json.push_str(&format!(
-                    r#"{{"type":"PagedText","id":"{}","initial_page":{},"controls":{{"previous_label":"{}","next_label":"{}","show_page_indicator":{},"wrap":{}}},"pages":{}}}"#,
+                    r#"{{"type":"PagedText","id":"{}","initial_page":{},"controls":{{"previous_label":"{}","next_label":"{}","show_page_indicator":{},"wrap":{},"position":"{}"}},"pages":{}}}"#,
                     json_escape(id),
                     initial_page,
                     json_escape(&controls.previous_label),
                     json_escape(&controls.next_label),
                     controls.show_page_indicator,
                     controls.wrap,
+                    controls.position.as_json_str(),
                     panel_pages_json(pages)
                 ));
             }
@@ -2414,6 +2415,7 @@ fn palette_stream_page_html_with_options(
       next.textContent = String(element.controls && element.controls.next_label || ">");
       const wrap = Boolean(element.controls && element.controls.wrap);
       const showIndicator = !element.controls || element.controls.show_page_indicator !== false;
+      const controlsBeforePage = element.controls && element.controls.position === "BeforePage";
 
       function setPage(nextIndex) {{
         if (wrap) {{
@@ -2442,9 +2444,10 @@ fn palette_stream_page_html_with_options(
       controls.appendChild(previous);
       if (showIndicator) controls.appendChild(indicator);
       controls.appendChild(next);
+      if (pages.length > 1 && controlsBeforePage) wrapper.appendChild(controls);
       wrapper.appendChild(title);
       wrapper.appendChild(body);
-      if (pages.length > 1) wrapper.appendChild(controls);
+      if (pages.length > 1 && !controlsBeforePage) wrapper.appendChild(controls);
       renderPage();
       return wrapper;
     }}

@@ -10,7 +10,10 @@ use crate::{
     palette::{
         PaletteBias, SharedPaletteBias, load_palette_config_runtime, load_prebaked_lookup_runtime,
     },
-    public_types::{DirectStreamState, DirectStreamTarget},
+    public_types::{
+        DirectStreamControlAction, DirectStreamControlResult, DirectStreamMode,
+        DirectStreamStartRequest, DirectStreamState, DirectStreamStopRequest, DirectStreamTarget,
+    },
     scene::StreamReadback,
     stats::SharedStats,
 };
@@ -66,8 +69,11 @@ impl StreamControl {
         self.custom_stream_state.is_active()
     }
 
-    fn start(
+    fn start_custom_host(
         &mut self,
+        width: u32,
+        height: u32,
+        fps: u32,
         senders: &mut RawFrameSenders,
         stats: &SharedStats,
         images: &mut Assets<Image>,
@@ -79,23 +85,23 @@ impl StreamControl {
         camera_targets: &mut Query<&mut RenderTarget>,
         quad_transforms: &mut Query<&mut Transform>,
         config: &AppConfig,
-    ) {
+    ) -> DirectStreamControlResult {
         if self.is_streaming() {
             self.status = "Already streaming".to_owned();
-            return;
+            return self.control_result(DirectStreamControlAction::Start, false);
         }
 
         let Some(custom_sender) = self.custom_sender.clone() else {
             self.status = "Custom host unavailable".to_owned();
-            return;
+            return self.control_result(DirectStreamControlAction::Start, false);
         };
-        let Ok((width, height, fps)) = self.custom_dimensions() else {
+        if !valid_custom_dimensions(width, height, fps) {
             self.status = "Use an 8-aligned square size 64-256 and fps 1-60".to_owned();
-            return;
+            return self.control_result(DirectStreamControlAction::Start, false);
         };
         let Some(gpu_palette) = gpu_palette else {
             self.status = "GPU palette pipeline unavailable".to_owned();
-            return;
+            return self.control_result(DirectStreamControlAction::Start, false);
         };
 
         let batch_size = effective_custom_batch_size(config.custom_host_batch_size, fps);
@@ -110,7 +116,7 @@ impl StreamControl {
             *camera_target = RenderTarget::Image(image.clone().into());
         } else {
             self.status = "Could not retarget stream camera".to_owned();
-            return;
+            return self.control_result(DirectStreamControlAction::Start, false);
         }
 
         if retarget_custom_host_pipeline(
@@ -129,7 +135,7 @@ impl StreamControl {
         .is_err()
         {
             self.status = "Could not retarget GPU output pipeline".to_owned();
-            return;
+            return self.control_result(DirectStreamControlAction::Start, false);
         }
 
         target.image = image;
@@ -160,19 +166,20 @@ impl StreamControl {
         self.custom_stream_state.set_active(true);
         self.status = "Custom host streaming".to_owned();
         stats.with_mut(|stats| stats.reset_custom_session());
+        self.control_result(DirectStreamControlAction::Start, true)
     }
 
-    fn stop(
+    fn stop_custom_host(
         &mut self,
         senders: &mut RawFrameSenders,
         stats: &SharedStats,
         audio_target: &DirectStreamAudioTarget,
         direct_stream_state: &mut DirectStreamState,
         readback: &mut StreamReadback,
-    ) {
+    ) -> DirectStreamControlResult {
         if !self.is_streaming() {
             self.status = "Not streaming".to_owned();
-            return;
+            return self.control_result(DirectStreamControlAction::Stop, false);
         }
 
         self.custom_stream_state.set_active(false);
@@ -196,6 +203,7 @@ impl StreamControl {
             stats.custom_audio_packets_sent = 0;
             stats.custom_audio_bytes_sent = 0;
         });
+        self.control_result(DirectStreamControlAction::Stop, true)
     }
 
     fn open_custom_host(&mut self) {
@@ -210,16 +218,23 @@ impl StreamControl {
         let height = self.custom_height.trim().parse::<u32>().map_err(|_| ())?;
         let fps = self.custom_fps.trim().parse::<u32>().map_err(|_| ())?;
 
-        if width != height
-            || !(64..=256).contains(&width)
-            || !(64..=256).contains(&height)
-            || width % 8 != 0
-            || !(1..=60).contains(&fps)
-        {
+        if !valid_custom_dimensions(width, height, fps) {
             return Err(());
         }
 
         Ok((width, height, fps))
+    }
+
+    fn control_result(
+        &self,
+        action: DirectStreamControlAction,
+        success: bool,
+    ) -> DirectStreamControlResult {
+        DirectStreamControlResult {
+            action,
+            success,
+            status: self.status.clone(),
+        }
     }
 
     pub(crate) fn set_palette_bias_slider(&mut self, slider: PaletteBiasSlider, value: f32) {
@@ -290,6 +305,14 @@ impl CustomStreamState {
     fn set_fps(&self, fps: u32) {
         self.fps.store(fps.max(1), Ordering::Relaxed);
     }
+}
+
+fn valid_custom_dimensions(width: u32, height: u32, fps: u32) -> bool {
+    width == height
+        && (64..=256).contains(&width)
+        && (64..=256).contains(&height)
+        && width % 8 == 0
+        && (1..=60).contains(&fps)
 }
 
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
@@ -427,6 +450,51 @@ pub(crate) fn handle_stream_input_box_interactions(
 
 pub(crate) fn handle_stream_start_interactions(
     mut control: ResMut<StreamControl>,
+    mut requests: MessageWriter<DirectStreamStartRequest>,
+    mut start_buttons: Query<
+        (&Interaction, &mut BackgroundColor),
+        (Changed<Interaction>, With<StartStreamButton>),
+    >,
+) {
+    for (interaction, mut color) in &mut start_buttons {
+        if *interaction == Interaction::Pressed {
+            match control.custom_dimensions() {
+                Ok((width, height, fps)) => {
+                    requests.write(DirectStreamStartRequest {
+                        mode: DirectStreamMode::CustomHost,
+                        width,
+                        height,
+                        fps,
+                    });
+                }
+                Err(()) => {
+                    control.status = "Use an 8-aligned square size 64-256 and fps 1-60".to_owned();
+                }
+            }
+        }
+        *color = button_color(*interaction, Color::srgb(0.05, 0.20, 0.13));
+    }
+}
+
+pub(crate) fn handle_stream_stop_interactions(
+    mut requests: MessageWriter<DirectStreamStopRequest>,
+    mut stop_buttons: Query<
+        (&Interaction, &mut BackgroundColor),
+        (Changed<Interaction>, With<StopStreamButton>),
+    >,
+) {
+    for (interaction, mut color) in &mut stop_buttons {
+        if *interaction == Interaction::Pressed {
+            requests.write(DirectStreamStopRequest);
+        }
+        *color = button_color(*interaction, Color::srgb(0.21, 0.06, 0.07));
+    }
+}
+
+pub(crate) fn handle_direct_stream_start_requests(
+    mut control: ResMut<StreamControl>,
+    mut requests: MessageReader<DirectStreamStartRequest>,
+    mut results: MessageWriter<DirectStreamControlResult>,
     mut senders: ResMut<RawFrameSenders>,
     stats: Res<SharedStats>,
     mut readback: Option<ResMut<StreamReadback>>,
@@ -438,59 +506,67 @@ pub(crate) fn handle_stream_start_interactions(
     mut camera_targets: Query<&mut RenderTarget>,
     mut quad_transforms: Query<&mut Transform>,
     config: Res<AppConfig>,
-    mut start_buttons: Query<
-        (&Interaction, &mut BackgroundColor),
-        (Changed<Interaction>, With<StartStreamButton>),
-    >,
 ) {
-    for (interaction, mut color) in &mut start_buttons {
-        if *interaction == Interaction::Pressed {
-            if let Some(readback) = readback.as_deref_mut() {
-                let gpu_palette = gpu_palette.as_deref_mut();
-                control.start(
-                    &mut senders,
-                    &stats,
-                    &mut images,
-                    &mut palette_materials,
-                    &mut target,
-                    &mut direct_stream_state,
-                    readback,
-                    gpu_palette,
-                    &mut camera_targets,
-                    &mut quad_transforms,
-                    &config,
-                );
+    for request in requests.read() {
+        let result = match request.mode {
+            DirectStreamMode::CustomHost => {
+                if let Some(readback) = readback.as_deref_mut() {
+                    let gpu_palette = gpu_palette.as_deref_mut();
+                    control.start_custom_host(
+                        request.width,
+                        request.height,
+                        request.fps,
+                        &mut senders,
+                        &stats,
+                        &mut images,
+                        &mut palette_materials,
+                        &mut target,
+                        &mut direct_stream_state,
+                        readback,
+                        gpu_palette,
+                        &mut camera_targets,
+                        &mut quad_transforms,
+                        &config,
+                    )
+                } else {
+                    control.status = "Custom host unavailable".to_owned();
+                    control.control_result(DirectStreamControlAction::Start, false)
+                }
             }
-        }
-        *color = button_color(*interaction, Color::srgb(0.05, 0.20, 0.13));
+            DirectStreamMode::Preview => {
+                control.status =
+                    "Preview mode cannot be started through custom host control".to_owned();
+                control.control_result(DirectStreamControlAction::Start, false)
+            }
+        };
+        results.write(result);
     }
 }
 
-pub(crate) fn handle_stream_stop_interactions(
+pub(crate) fn handle_direct_stream_stop_requests(
     mut control: ResMut<StreamControl>,
+    mut requests: MessageReader<DirectStreamStopRequest>,
+    mut results: MessageWriter<DirectStreamControlResult>,
     mut senders: ResMut<RawFrameSenders>,
     stats: Res<SharedStats>,
     audio_target: Res<DirectStreamAudioTarget>,
     mut direct_stream_state: ResMut<DirectStreamState>,
     mut readback: Option<ResMut<StreamReadback>>,
-    mut stop_buttons: Query<
-        (&Interaction, &mut BackgroundColor),
-        (Changed<Interaction>, With<StopStreamButton>),
-    >,
 ) {
-    for (interaction, mut color) in &mut stop_buttons {
-        if *interaction == Interaction::Pressed {
-            if let Some(readback) = readback.as_deref_mut() {
-                control.stop(
-                    &mut senders,
-                    &stats,
-                    &audio_target,
-                    &mut direct_stream_state,
-                    readback,
-                );
-            }
-        }
-        *color = button_color(*interaction, Color::srgb(0.21, 0.06, 0.07));
+    for _ in requests.read() {
+        let result = if let Some(readback) = readback.as_deref_mut() {
+            control.stop_custom_host(
+                &mut senders,
+                &stats,
+                &audio_target,
+                &mut direct_stream_state,
+                readback,
+            )
+        } else {
+            control.status = "Custom host unavailable".to_owned();
+            control.control_result(DirectStreamControlAction::Stop, false)
+        };
+        results.write(result);
     }
 }
 

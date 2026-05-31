@@ -15,6 +15,7 @@ use crate::{
     gpu_palette::GpuPalettePlugin,
     scene::{setup_direct_stream_scene, update_stats_window},
     stream_control::{
+        handle_direct_stream_start_requests, handle_direct_stream_stop_requests,
         handle_palette_bias_sliders, handle_stream_input_box_interactions,
         handle_stream_key_typing, handle_stream_misc_button_interactions,
         handle_stream_start_interactions, handle_stream_stop_interactions,
@@ -36,6 +37,9 @@ impl Plugin for DirectStreamPlugin {
             .add_message::<StreamChatCommand>()
             .add_message::<StreamPointerClick>()
             .add_message::<CustomHostPanelAction>()
+            .add_message::<crate::DirectStreamStartRequest>()
+            .add_message::<crate::DirectStreamStopRequest>()
+            .add_message::<crate::DirectStreamControlResult>()
             .add_systems(
                 Startup,
                 (
@@ -65,6 +69,8 @@ impl Plugin for DirectStreamPlugin {
                     handle_stream_input_box_interactions,
                     handle_stream_start_interactions,
                     handle_stream_stop_interactions,
+                    handle_direct_stream_start_requests,
+                    handle_direct_stream_stop_requests,
                     handle_stream_misc_button_interactions,
                     handle_palette_bias_sliders,
                 ),

@@ -51,5 +51,8 @@ pub use direct_world_sprite::{
 pub use frames::{DirectStreamFrame, DirectStreamFrameAppExt};
 pub use palette_lut::{DEFAULT_PALETTE_IPSMAP, DEFAULT_PALETTE_TOML};
 pub use plugin::DirectStreamPlugin;
-pub use public_types::{DirectStreamMode, DirectStreamSet, DirectStreamState, DirectStreamTarget};
+pub use public_types::{
+    DirectStreamControlAction, DirectStreamControlResult, DirectStreamMode, DirectStreamSet,
+    DirectStreamStartRequest, DirectStreamState, DirectStreamStopRequest, DirectStreamTarget,
+};
 pub use web::{static_palette_stream_page_html, static_palette_stream_page_html_with_options};

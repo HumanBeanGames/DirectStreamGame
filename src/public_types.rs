@@ -34,6 +34,30 @@ pub enum DirectStreamMode {
     CustomHost,
 }
 
+#[derive(Clone, Copy, Debug, Message)]
+pub struct DirectStreamStartRequest {
+    pub mode: DirectStreamMode,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+}
+
+#[derive(Clone, Copy, Debug, Message)]
+pub struct DirectStreamStopRequest;
+
+#[derive(Clone, Debug, Message)]
+pub struct DirectStreamControlResult {
+    pub action: DirectStreamControlAction,
+    pub success: bool,
+    pub status: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectStreamControlAction {
+    Start,
+    Stop,
+}
+
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DirectStreamSet {
     Setup,

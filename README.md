@@ -191,6 +191,26 @@ fn advance_world(time: Res<Time>, stream: Res<DirectStreamState>) {
 retargets the stream; Stop preserves the last dimensions and sets
 `active = false`.
 
+Custom-host streams can also be started or stopped from game code with messages:
+
+```rust
+use bevy::prelude::*;
+use direct_stream_game::{DirectStreamMode, DirectStreamStartRequest};
+
+fn auto_start(mut requests: MessageWriter<DirectStreamStartRequest>) {
+    requests.write(DirectStreamStartRequest {
+        mode: DirectStreamMode::CustomHost,
+        width: 128,
+        height: 128,
+        fps: 30,
+    });
+}
+```
+
+Read `DirectStreamControlResult` messages if you need to react to success or
+validation failures. The stats-window Start/End buttons use the same message
+path.
+
 ### Migrating An Existing Bevy Game
 
 Before:

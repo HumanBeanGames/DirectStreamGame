@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const DEFAULT_PALETTE_PATH: &str = "src/default_pallette/default_pallette.toml";
+const DEFAULT_PALETTE_PATH: &str = "src/default_palette/default_palette.toml";
 const DEFAULT_DITHER_STRENGTH: f32 = 0.75;
 const SOLVE_2X2_CANDIDATES: usize = 10;
 const DEFAULT_SIZE: OutputSize = OutputSize {

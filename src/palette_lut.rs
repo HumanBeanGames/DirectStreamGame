@@ -5,9 +5,8 @@ use std::{
 };
 
 pub const LUT_ENTRY_COUNT: usize = 256 * 256 * 256;
-pub const DEFAULT_PALETTE_TOML: &str = include_str!("default_pallette/default_pallette.toml");
-pub const DEFAULT_PALETTE_IPSMAP: &[u8] =
-    include_bytes!("default_pallette/default_pallette.ipsmap");
+pub const DEFAULT_PALETTE_TOML: &str = include_str!("default_palette/default_palette.toml");
+pub const DEFAULT_PALETTE_IPSMAP: &[u8] = include_bytes!("default_palette/default_palette.ipsmap");
 const LUT_MAGIC: &[u8; 8] = b"IPSMAP1\0";
 
 #[derive(Clone, Copy, Debug)]

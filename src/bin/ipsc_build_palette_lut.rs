@@ -4,7 +4,7 @@ use direct_stream_game::palette_lut::{
 use std::{env, path::PathBuf, time::Instant};
 
 fn main() {
-    let mut palette_config_path = PathBuf::from("src/default_pallette/default_pallette.toml");
+    let mut palette_config_path = PathBuf::from("src/default_palette/default_palette.toml");
     let mut output_path = None;
 
     for arg in env::args().skip(1) {

@@ -30,7 +30,7 @@ impl AppConfig {
         let mut custom_host_batch_size = 30;
         let mut stream_width_set = false;
         let mut stream_height_set = false;
-        let mut palette_config_path = PathBuf::from("src/default_pallette/default_pallette.toml");
+        let mut palette_config_path = PathBuf::from("src/default_palette/default_palette.toml");
 
         for arg in env::args().skip(1) {
             if arg == "--stats-window" || arg == "--headless-window" {

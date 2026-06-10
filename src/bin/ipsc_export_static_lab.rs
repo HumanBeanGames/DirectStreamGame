@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
 const OUT_DIR: &str = "dist/ipsc_lab";
-const DEFAULT_PALETTE_PATH: &str = "src/default_pallette/default_pallette.toml";
+const DEFAULT_PALETTE_PATH: &str = "src/default_palette/default_palette.toml";
 const OKLCH_MAX_CHROMA: f32 = 0.2576833;
 
 fn main() {

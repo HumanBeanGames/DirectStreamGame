@@ -5,7 +5,7 @@ use std::{
 };
 
 const ADDR: &str = "127.0.0.1:8093";
-const DEFAULT_PALETTE_PATH: &str = "src/default_pallette/default_pallette.toml";
+const DEFAULT_PALETTE_PATH: &str = "src/default_palette/default_palette.toml";
 
 fn main() {
     let default_palette = fs::read_to_string(DEFAULT_PALETTE_PATH).unwrap_or_else(|err| {

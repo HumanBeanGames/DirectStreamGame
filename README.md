@@ -728,7 +728,7 @@ The player serves `http://127.0.0.1:8090`.
 ## Palette And Image Tools
 
 The embedded default palette and lookup map are available to downstream apps,
-so a game does not need to copy `src/default_pallette` into its own assets.
+so a game does not need to copy `src/default_palette` into its own assets.
 
 Custom-host mode uses live OKLab/OKLCH palette matching by default. Pass
 `--prebaked` or `--use_prebaked_lookup` to use a sibling `.ipsmap` direct lookup

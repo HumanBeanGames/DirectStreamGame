@@ -8,6 +8,14 @@ struct LookupParams {
     flags: vec4<f32>,
 };
 
+struct InputOffsetParams {
+    value_chroma: vec4<f32>,
+};
+
+struct InputHueOffsetParams {
+    values: vec4<f32>,
+};
+
 @group(#{MATERIAL_BIND_GROUP}) @binding(0)
 var<uniform> palette_params: PaletteParams;
 
@@ -26,6 +34,12 @@ var<uniform> lookup_params: LookupParams;
 @group(#{MATERIAL_BIND_GROUP}) @binding(5)
 var lookup_texture: texture_2d<f32>;
 
+@group(#{MATERIAL_BIND_GROUP}) @binding(6)
+var<uniform> input_offset_params: InputOffsetParams;
+
+@group(#{MATERIAL_BIND_GROUP}) @binding(7)
+var<uniform> input_hue_offset_params: InputHueOffsetParams;
+
 fn rgb_to_oklab(rgb: vec3<f32>) -> vec3<f32> {
     let l = 0.41222146 * rgb.r + 0.53633255 * rgb.g + 0.051445995 * rgb.b;
     let m = 0.2119035 * rgb.r + 0.6806995 * rgb.g + 0.10739696 * rgb.b;
@@ -42,22 +56,28 @@ fn rgb_to_oklab(rgb: vec3<f32>) -> vec3<f32> {
     );
 }
 
-fn biased_distance_squared(color: vec3<f32>, palette_color: vec3<f32>, bias: vec3<f32>) -> f32 {
-    let color_oklab = rgb_to_oklab(color);
-    let palette_oklab = rgb_to_oklab(palette_color);
+fn oklab_to_oklch(oklab: vec3<f32>) -> vec3<f32> {
+    let chroma = sqrt(oklab.y * oklab.y + oklab.z * oklab.z);
+    let hue = select(0.0, atan2(oklab.z, oklab.y), chroma > 0.000001);
+    return vec3<f32>(oklab.x, chroma, hue);
+}
 
-    let color_l = color_oklab.x;
-    let color_a = color_oklab.y;
-    let color_b = color_oklab.z;
-    let color_c = sqrt(color_a * color_a + color_b * color_b);
-    let color_h = select(0.0, atan2(color_b, color_a), color_c > 0.000001);
+fn apply_input_offset(color: vec3<f32>) -> vec3<f32> {
+    let value_chroma = input_offset_params.value_chroma;
+    return vec3<f32>(
+        clamp(color.x * (1.0 + value_chroma.x) + value_chroma.y, 0.0, 1.0),
+        max(color.y * (1.0 + value_chroma.z) + value_chroma.w, 0.0),
+        color.z + input_hue_offset_params.values.x * 2.0 * 3.14159265,
+    );
+}
 
-    let palette_l = palette_oklab.x;
-    let palette_a = palette_oklab.y;
-    let palette_b = palette_oklab.z;
-    let palette_c = sqrt(palette_a * palette_a + palette_b * palette_b);
-    let palette_h = select(0.0, atan2(palette_b, palette_a), palette_c > 0.000001);
-
+fn biased_distance_squared_oklch(color: vec3<f32>, palette_color: vec3<f32>, bias: vec3<f32>) -> f32 {
+    let color_l = color.x;
+    let color_c = color.y;
+    let color_h = color.z;
+    let palette_l = palette_color.x;
+    let palette_c = palette_color.y;
+    let palette_h = palette_color.z;
     let dl = color_l - palette_l;
     let dc = color_c - palette_c;
     var hue_delta = abs(color_h - palette_h) % (2.0 * 3.14159265);
@@ -104,14 +124,23 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
 
     var best_color = textureLoad(palette_texture, vec2<i32>(0, 0), 0).rgb;
     var best_index: u32 = 0u;
-    var best_distance = biased_distance_squared(source, best_color, bias);
+    let source_oklch = apply_input_offset(oklab_to_oklch(rgb_to_oklab(source)));
+    var best_distance = biased_distance_squared_oklch(
+        source_oklch,
+        oklab_to_oklch(rgb_to_oklab(best_color)),
+        bias
+    );
 
     for (var index: u32 = 1u; index < 256u; index = index + 1u) {
         if index >= palette_count {
             break;
         }
         let candidate = textureLoad(palette_texture, vec2<i32>(i32(index), 0), 0).rgb;
-        let distance = biased_distance_squared(source, candidate, bias);
+        let distance = biased_distance_squared_oklch(
+            source_oklch,
+            oklab_to_oklch(rgb_to_oklab(candidate)),
+            bias
+        );
         if distance < best_distance {
             best_distance = distance;
             best_color = candidate;

@@ -15,6 +15,11 @@ pub struct PaletteMatching {
     pub lightness: f32,
     pub chroma: f32,
     pub hue: f32,
+    pub lightness_multiply: f32,
+    pub lightness_add: f32,
+    pub chroma_multiply: f32,
+    pub chroma_add: f32,
+    pub hue_add: f32,
 }
 
 impl Default for PaletteMatching {
@@ -23,6 +28,11 @@ impl Default for PaletteMatching {
             lightness: 0.333,
             chroma: 0.333,
             hue: 0.334,
+            lightness_multiply: 0.0,
+            lightness_add: 0.0,
+            chroma_multiply: 0.0,
+            chroma_add: 0.0,
+            hue_add: 0.0,
         }
     }
 }
@@ -83,6 +93,15 @@ pub fn parse_palette_config(contents: &str) -> Result<PaletteConfig, String> {
                     }
                     "chroma" | "chroma_weight" => matching.chroma = parse_f32_value(value)?,
                     "hue" | "hue_weight" => matching.hue = parse_f32_value(value)?,
+                    "lightness_multiply" | "value_multiply" => {
+                        matching.lightness_multiply = parse_f32_value(value)?
+                    }
+                    "lightness_add" | "value_add" => {
+                        matching.lightness_add = parse_f32_value(value)?
+                    }
+                    "chroma_multiply" => matching.chroma_multiply = parse_f32_value(value)?,
+                    "chroma_add" => matching.chroma_add = parse_f32_value(value)?,
+                    "hue_add" => matching.hue_add = parse_f32_value(value)?,
                     _ => {}
                 }
             }
@@ -198,7 +217,7 @@ pub fn decode_lookup(bytes: &[u8], config: &PaletteConfig) -> Result<PaletteLook
     let hash = u64::from_le_bytes(header[8..16].try_into().expect("header slice length"));
     let expected_hash = palette_hash(config);
     if hash != expected_hash {
-        return Err("LUT does not match palette colors and matching weights".to_owned());
+        return Err("LUT does not match palette colors and matching settings".to_owned());
     }
 
     let color_count = u16::from_le_bytes(header[16..18].try_into().expect("header slice length"));
@@ -238,7 +257,34 @@ pub fn palette_hash(config: &PaletteConfig) -> u64 {
             feed(&mut hash, byte);
         }
     }
+    if config.matching.has_input_offset() {
+        for value in [
+            config.matching.lightness_multiply,
+            config.matching.lightness_add,
+            config.matching.chroma_multiply,
+            config.matching.chroma_add,
+            config.matching.hue_add,
+        ] {
+            for byte in value.to_le_bytes() {
+                feed(&mut hash, byte);
+            }
+        }
+    }
     hash
+}
+
+impl PaletteMatching {
+    pub fn has_input_offset(&self) -> bool {
+        [
+            self.lightness_multiply,
+            self.lightness_add,
+            self.chroma_multiply,
+            self.chroma_add,
+            self.hue_add,
+        ]
+        .iter()
+        .any(|value| value.abs() > 0.000_001)
+    }
 }
 
 fn parse_hex_color(value: &str) -> Option<Result<[u8; 4], String>> {
@@ -287,6 +333,7 @@ impl From<Oklab> for Oklch {
 }
 
 fn nearest_palette_index(color: Oklch, palette: &[Oklch], matching: PaletteMatching) -> u8 {
+    let color = apply_input_offset(color, matching);
     let mut best_index = 0;
     let mut best_distance = f32::MAX;
 
@@ -299,6 +346,14 @@ fn nearest_palette_index(color: Oklch, palette: &[Oklch], matching: PaletteMatch
     }
 
     best_index
+}
+
+fn apply_input_offset(color: Oklch, matching: PaletteMatching) -> Oklch {
+    Oklch {
+        l: (color.l * (1.0 + matching.lightness_multiply) + matching.lightness_add).clamp(0.0, 1.0),
+        c: (color.c * (1.0 + matching.chroma_multiply) + matching.chroma_add).max(0.0),
+        h: color.h + matching.hue_add * std::f32::consts::TAU,
+    }
 }
 
 fn biased_distance_squared(a: Oklch, b: Oklch, matching: PaletteMatching) -> f32 {
@@ -360,5 +415,48 @@ mod tests {
 
         assert_eq!(lookup.entries().len(), LUT_ENTRY_COUNT);
         assert_eq!(lookup.hash(), palette_hash(&config));
+    }
+
+    #[test]
+    fn input_offsets_affect_lookup_entries_and_hash() {
+        let palette = [
+            Oklch {
+                l: 0.0,
+                c: 0.0,
+                h: 0.0,
+            },
+            Oklch {
+                l: 1.0,
+                c: 0.0,
+                h: 0.0,
+            },
+        ];
+        let source = Oklch {
+            l: 0.4,
+            c: 0.0,
+            h: 0.0,
+        };
+        let plain = PaletteMatching {
+            lightness: 1.0,
+            chroma: 0.0,
+            hue: 0.0,
+            ..Default::default()
+        };
+        let shifted = PaletteMatching {
+            lightness_add: 0.4,
+            ..plain
+        };
+        let plain_config = PaletteConfig {
+            colors: vec![[0, 0, 0, 255], [255, 255, 255, 255]],
+            matching: plain,
+        };
+        let shifted_config = PaletteConfig {
+            matching: shifted,
+            ..plain_config.clone()
+        };
+
+        assert_eq!(nearest_palette_index(source, &palette, plain), 0);
+        assert_eq!(nearest_palette_index(source, &palette, shifted), 1);
+        assert_ne!(palette_hash(&plain_config), palette_hash(&shifted_config));
     }
 }

@@ -737,7 +737,57 @@ used. If a sibling lookup is missing, the embedded default `.ipsmap` is used
 when it matches; otherwise the stream falls back to live matching.
 
 The `.ipsmap` file is a 16 MB direct sRGB-to-palette lookup table. It is only
-accepted when its hash matches the palette colours and matching weights.
+accepted when its hash matches the palette colours and matching settings.
+
+Palette matching has two stages:
+
+1. Convert the input sRGB colour to OKLCH, then apply the optional input
+   offsets from `[matching]`.
+2. Compare the adjusted input colour against the palette colours using the
+   priority weights from `[matching]`.
+
+The priority weights are:
+
+```toml
+[matching]
+lightness = 0.333
+chroma = 0.333
+hue = 0.334
+```
+
+The optional input offsets are:
+
+```toml
+lightness_multiply = 0.0
+lightness_add = 0.0
+chroma_multiply = 0.0
+chroma_add = 0.0
+hue_add = 0.0
+```
+
+`lightness_multiply` and `chroma_multiply` are applied as `1.0 + value`, so
+`0.5` means “treat this channel as 1.5x higher” and `-0.5` means “treat it as
+0.5x”. Additive lightness/chroma offsets are applied after multiplication.
+`hue_add` is measured in turns, so `0.25` is a 90 degree hue rotation.
+
+Old palettes without these offset fields still work; the missing values default
+to zero. If any offset is non-zero, rebake the sibling `.ipsmap`, because the
+lookup payload must contain the nearest palette result for the offset-adjusted
+input colour. Do not reuse an old `.ipsmap` after changing weights, offsets, or
+palette colours.
+
+Migration for existing apps:
+
+1. Update the `DirectStreamGame` dependency to a version that supports input
+   offsets.
+2. Keep existing `palette.toml` files as-is if you want the previous behavior;
+   they are treated as zero-offset palettes.
+3. To use the shifted matching behavior, add the offset fields above or generate
+   a new palette from the Palette Lab.
+4. If the app uses `--prebaked` or `--use_prebaked_lookup`, regenerate and ship
+   the sibling `.ipsmap` next to the updated `palette.toml`.
+5. Redeploy the static lab from `dist/ipsc_lab` if viewers or tools use the
+   browser Palette Lab.
 
 Combined browser lab:
 

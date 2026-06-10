@@ -271,6 +271,7 @@ impl StreamControl {
             lightness: values[0],
             chroma: values[1],
             hue: values[2],
+            ..self.palette_bias
         };
         self.shared_palette_bias.set(self.palette_bias);
     }

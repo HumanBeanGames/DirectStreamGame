@@ -53,6 +53,10 @@ pub(crate) struct PaletteMaterial {
     pub(crate) lookup_params: Vec4,
     #[texture(5)]
     pub(crate) lookup_texture: Handle<Image>,
+    #[uniform(6)]
+    pub(crate) input_offset_a: Vec4,
+    #[uniform(7)]
+    pub(crate) input_offset_b: Vec4,
 }
 
 impl Material2d for PaletteMaterial {
@@ -182,6 +186,8 @@ pub(crate) fn spawn_custom_host_pipeline(
         palette_texture,
         lookup_params: palette_lookup_params(prebaked_lookup.is_some()),
         lookup_texture,
+        input_offset_a: palette_input_offset_a(&palette_bias),
+        input_offset_b: palette_input_offset_b(&palette_bias),
     });
 
     let palette_camera = commands
@@ -300,7 +306,10 @@ fn sync_palette_material_bias(
     };
 
     if let Some(material) = materials.get_mut(&pipeline.material) {
-        material.params = palette_material_params(&palette_bias.get(), pipeline.palette_count);
+        let bias = palette_bias.get();
+        material.params = palette_material_params(&bias, pipeline.palette_count);
+        material.input_offset_a = palette_input_offset_a(&bias);
+        material.input_offset_b = palette_input_offset_b(&bias);
     }
 }
 
@@ -448,4 +457,17 @@ fn palette_lookup_params(prebaked_lookup_active: bool) -> Vec4 {
         0.0,
         0.0,
     )
+}
+
+fn palette_input_offset_a(bias: &crate::palette::PaletteBias) -> Vec4 {
+    Vec4::new(
+        bias.lightness_multiply,
+        bias.lightness_add,
+        bias.chroma_multiply,
+        bias.chroma_add,
+    )
+}
+
+fn palette_input_offset_b(bias: &crate::palette::PaletteBias) -> Vec4 {
+    Vec4::new(bias.hue_add, 0.0, 0.0, 0.0)
 }

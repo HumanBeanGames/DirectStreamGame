@@ -4,6 +4,11 @@
 lightness = 0.333000
 chroma = 0.333000
 hue = 0.334000
+lightness_multiply = 0.000000
+lightness_add = 0.000000
+chroma_multiply = 0.000000
+chroma_add = 0.000000
+hue_add = 0.000000
 
 colors = [
   "#000000",

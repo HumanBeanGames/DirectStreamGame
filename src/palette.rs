@@ -38,6 +38,11 @@ pub(crate) struct PaletteBias {
     pub(crate) lightness: f32,
     pub(crate) chroma: f32,
     pub(crate) hue: f32,
+    pub(crate) lightness_multiply: f32,
+    pub(crate) lightness_add: f32,
+    pub(crate) chroma_multiply: f32,
+    pub(crate) chroma_add: f32,
+    pub(crate) hue_add: f32,
 }
 
 impl Default for PaletteBias {
@@ -46,6 +51,11 @@ impl Default for PaletteBias {
             lightness: 0.333,
             chroma: 0.333,
             hue: 0.334,
+            lightness_multiply: 0.0,
+            lightness_add: 0.0,
+            chroma_multiply: 0.0,
+            chroma_add: 0.0,
+            hue_add: 0.0,
         }
     }
 }
@@ -105,6 +115,11 @@ impl From<PaletteMatching> for PaletteBias {
             lightness: matching.lightness,
             chroma: matching.chroma,
             hue: matching.hue,
+            lightness_multiply: matching.lightness_multiply,
+            lightness_add: matching.lightness_add,
+            chroma_multiply: matching.chroma_multiply,
+            chroma_add: matching.chroma_add,
+            hue_add: matching.hue_add,
         }
     }
 }
@@ -115,6 +130,11 @@ impl From<PaletteBias> for PaletteMatching {
             lightness: bias.lightness,
             chroma: bias.chroma,
             hue: bias.hue,
+            lightness_multiply: bias.lightness_multiply,
+            lightness_add: bias.lightness_add,
+            chroma_multiply: bias.chroma_multiply,
+            chroma_add: bias.chroma_add,
+            hue_add: bias.hue_add,
         }
     }
 }
@@ -752,10 +772,15 @@ impl IndexedPixelEncoder {
             && (bias.lightness - self.lookup_matching.lightness).abs() <= 0.000_5
             && (bias.chroma - self.lookup_matching.chroma).abs() <= 0.000_5
             && (bias.hue - self.lookup_matching.hue).abs() <= 0.000_5
+            && (bias.lightness_multiply - self.lookup_matching.lightness_multiply).abs() <= 0.000_5
+            && (bias.lightness_add - self.lookup_matching.lightness_add).abs() <= 0.000_5
+            && (bias.chroma_multiply - self.lookup_matching.chroma_multiply).abs() <= 0.000_5
+            && (bias.chroma_add - self.lookup_matching.chroma_add).abs() <= 0.000_5
+            && (bias.hue_add - self.lookup_matching.hue_add).abs() <= 0.000_5
     }
 
     fn nearest_palette_index(&self, r: u8, g: u8, b: u8, bias: PaletteBias) -> u8 {
-        let color = Oklch::from(rgb_to_oklab(r, g, b));
+        let color = Oklch::from(rgb_to_oklab(r, g, b)).with_input_offset(bias);
         let mut best_index = 0;
         let mut best_distance = f32::MAX;
 
@@ -925,6 +950,14 @@ impl From<Oklab> for Oklch {
 
 #[cfg(any(test, feature = "cpu-palette-encoder"))]
 impl Oklch {
+    fn with_input_offset(self, bias: PaletteBias) -> Self {
+        Self {
+            l: (self.l * (1.0 + bias.lightness_multiply) + bias.lightness_add).clamp(0.0, 1.0),
+            c: (self.c * (1.0 + bias.chroma_multiply) + bias.chroma_add).max(0.0),
+            h: self.h + bias.hue_add * std::f32::consts::TAU,
+        }
+    }
+
     fn biased_distance_squared(self, other: Self, bias: PaletteBias) -> f32 {
         let dl = self.l - other.l;
         let dc = self.c - other.c;

@@ -184,10 +184,18 @@
         <label>offset <input id="hueOffset" type="number" step="any" value="0"></label>
       </fieldset>
       <fieldset>
-        <legend>Nearest Palette Bias</legend>
+        <legend>Nearest Palette Priorities</legend>
         <label class="bias-label">value <input id="biasLightness" type="range" min="0" max="1" step="0.001" value="0.333"><span id="biasLightnessValue">0.333</span></label>
         <label class="bias-label">chroma <input id="biasChroma" type="range" min="0" max="1" step="0.001" value="0.333"><span id="biasChromaValue">0.333</span></label>
         <label class="bias-label">hue <input id="biasHue" type="range" min="0" max="1" step="0.001" value="0.334"><span id="biasHueValue">0.334</span></label>
+      </fieldset>
+      <fieldset>
+        <legend>Nearest Palette Input Offset</legend>
+        <label class="bias-label">value x <input id="offsetLightnessMultiply" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetLightnessMultiplyValue">0.000</span></label>
+        <label class="bias-label">value + <input id="offsetLightnessAdd" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetLightnessAddValue">0.000</span></label>
+        <label class="bias-label">chroma x <input id="offsetChromaMultiply" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetChromaMultiplyValue">0.000</span></label>
+        <label class="bias-label">chroma + <input id="offsetChromaAdd" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetChromaAddValue">0.000</span></label>
+        <label class="bias-label">hue + turns <input id="offsetHueAdd" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetHueAddValue">0.000</span></label>
       </fieldset>
       <fieldset>
         <legend>Export</legend>
@@ -242,6 +250,13 @@
       document.getElementById("biasChroma"),
       document.getElementById("biasHue"),
     ];
+    const offsetInputs = [
+      document.getElementById("offsetLightnessMultiply"),
+      document.getElementById("offsetLightnessAdd"),
+      document.getElementById("offsetChromaMultiply"),
+      document.getElementById("offsetChromaAdd"),
+      document.getElementById("offsetHueAdd"),
+    ];
     const hueOffsetZeroShift = -11;
     ctx.imageSmoothingEnabled = false;
     srgbCtx.imageSmoothingEnabled = false;
@@ -281,10 +296,28 @@
       };
     }
 
+    function offsetValues() {
+      return {
+        lightnessMultiply: Number(document.getElementById("offsetLightnessMultiply").value),
+        lightnessAdd: Number(document.getElementById("offsetLightnessAdd").value),
+        chromaMultiply: Number(document.getElementById("offsetChromaMultiply").value),
+        chromaAdd: Number(document.getElementById("offsetChromaAdd").value),
+        hueAdd: Number(document.getElementById("offsetHueAdd").value),
+      };
+    }
+
     function updateBiasLabels() {
       document.getElementById("biasLightnessValue").textContent = Number(document.getElementById("biasLightness").value).toFixed(3);
       document.getElementById("biasChromaValue").textContent = Number(document.getElementById("biasChroma").value).toFixed(3);
       document.getElementById("biasHueValue").textContent = Number(document.getElementById("biasHue").value).toFixed(3);
+    }
+
+    function updateOffsetLabels() {
+      document.getElementById("offsetLightnessMultiplyValue").textContent = Number(document.getElementById("offsetLightnessMultiply").value).toFixed(3);
+      document.getElementById("offsetLightnessAddValue").textContent = Number(document.getElementById("offsetLightnessAdd").value).toFixed(3);
+      document.getElementById("offsetChromaMultiplyValue").textContent = Number(document.getElementById("offsetChromaMultiply").value).toFixed(3);
+      document.getElementById("offsetChromaAddValue").textContent = Number(document.getElementById("offsetChromaAdd").value).toFixed(3);
+      document.getElementById("offsetHueAddValue").textContent = Number(document.getElementById("offsetHueAdd").value).toFixed(3);
     }
 
     function normalizeBias(changedInput) {
@@ -393,6 +426,14 @@
       const dc = a.c - b.c;
       const dh = Math.sin(hueDeltaRadians(a.h, b.h) * 0.5) * 2 * Math.max(a.c, b.c);
       return bias.lightness * dl * dl + bias.chroma * dc * dc + bias.hue * dh * dh;
+    }
+
+    function offsetInputOklch(color, offset) {
+      return {
+        l: Math.max(0, Math.min(1, color.l * (1 + offset.lightnessMultiply) + offset.lightnessAdd)),
+        c: Math.max(0, color.c * (1 + offset.chromaMultiply) + offset.chromaAdd),
+        h: color.h + offset.hueAdd * Math.PI * 2,
+      };
     }
 
     function inGamut(rgb) {
@@ -523,6 +564,7 @@
         addBlack,
         addWhite,
         bias: biasValues(),
+        offset: offsetValues(),
       };
     }
 
@@ -654,8 +696,8 @@
       return { width: rendered.width, height: rendered.height, pixelColors: rendered.pixelColors };
     }
 
-    function nearestPaletteColor(color, paletteOklch, paletteColors, bias) {
-      const oklch = oklabToOklch(rgbToOklab(color[0], color[1], color[2]));
+    function nearestPaletteColor(color, paletteOklch, paletteColors, bias, offset) {
+      const oklch = offsetInputOklch(oklabToOklch(rgbToOklab(color[0], color[1], color[2])), offset);
       let bestIndex = 0;
       let bestDistance = Number.POSITIVE_INFINITY;
 
@@ -670,10 +712,10 @@
       return paletteColors[bestIndex] || [0, 0, 0, 255];
     }
 
-    function drawRoundedSrgbComparison(srgbRendered, palette, bias) {
+    function drawRoundedSrgbComparison(srgbRendered, palette, bias, offset) {
       const paletteColors = palette.colors;
       const paletteOklch = paletteColors.map(color => oklabToOklch(rgbToOklab(color[0], color[1], color[2])));
-      const roundedPixels = srgbRendered.pixelColors.map(color => nearestPaletteColor(color, paletteOklch, paletteColors, bias));
+      const roundedPixels = srgbRendered.pixelColors.map(color => nearestPaletteColor(color, paletteOklch, paletteColors, bias, offset));
       drawDirect(roundedSrgbCanvas, roundedSrgbCtx, srgbRendered.width, srgbRendered.height, roundedPixels);
       return { width: srgbRendered.width, height: srgbRendered.height };
     }
@@ -725,6 +767,11 @@
         `lightness = ${settings.bias.lightness.toFixed(6)}`,
         `chroma = ${settings.bias.chroma.toFixed(6)}`,
         `hue = ${settings.bias.hue.toFixed(6)}`,
+        `lightness_multiply = ${settings.offset.lightnessMultiply.toFixed(6)}`,
+        `lightness_add = ${settings.offset.lightnessAdd.toFixed(6)}`,
+        `chroma_multiply = ${settings.offset.chromaMultiply.toFixed(6)}`,
+        `chroma_add = ${settings.offset.chromaAdd.toFixed(6)}`,
+        `hue_add = ${settings.offset.hueAdd.toFixed(6)}`,
         "",
         "colors = [",
         ...palette.map(color => `  "${hex(color)}",`),
@@ -771,12 +818,13 @@
       const entries = new Uint8Array(256 * 256 * 256);
       const paletteOklch = artifact.colors.map(color => oklabToOklch(rgbToOklab(color[0], color[1], color[2])));
       const matching = artifact.settings.bias;
+      const offset = artifact.settings.offset;
       let cursor = 0;
 
       for (let r = 0; r < 256; r++) {
         for (let g = 0; g < 256; g++) {
           for (let b = 0; b < 256; b++) {
-            entries[cursor++] = nearestPaletteIndexForMap(rgbToOklab(r, g, b), paletteOklch, matching);
+            entries[cursor++] = nearestPaletteIndexForMap(rgbToOklab(r, g, b), paletteOklch, matching, offset);
           }
         }
         if (r % 4 === 0) {
@@ -787,7 +835,7 @@
 
       const header = new Uint8Array(30);
       header.set([0x49, 0x50, 0x53, 0x4d, 0x41, 0x50, 0x31, 0x00], 0);
-      writeU64(header, 8, paletteHash(artifact.colors, matching));
+      writeU64(header, 8, paletteHash(artifact.colors, matching, offset));
       writeU16(header, 16, artifact.colors.length);
       writeF32(header, 18, matching.lightness);
       writeF32(header, 22, matching.chroma);
@@ -795,8 +843,8 @@
       return new Blob([header, entries], { type: "application/octet-stream" });
     }
 
-    function nearestPaletteIndexForMap(oklab, paletteOklch, matching) {
-      const color = oklabToOklch(oklab);
+    function nearestPaletteIndexForMap(oklab, paletteOklch, matching, offset) {
+      const color = offsetInputOklch(oklabToOklch(oklab), offset);
       let bestIndex = 0;
       let bestDistance = Number.POSITIVE_INFINITY;
       for (let i = 0; i < Math.min(256, paletteOklch.length); i++) {
@@ -809,7 +857,7 @@
       return bestIndex;
     }
 
-    function paletteHash(colors, matching) {
+    function paletteHash(colors, matching, offset) {
       let hash = 0xcbf29ce484222325n;
       const prime = 0x100000001b3n;
       const feed = byte => {
@@ -823,6 +871,25 @@
       for (const value of [matching.lightness, matching.chroma, matching.hue]) {
         new DataView(bytes.buffer).setFloat32(0, value, true);
         for (const byte of bytes) feed(byte);
+      }
+      const hasOffset = [
+        offset.lightnessMultiply,
+        offset.lightnessAdd,
+        offset.chromaMultiply,
+        offset.chromaAdd,
+        offset.hueAdd,
+      ].some(value => Math.abs(value) > 0.000001);
+      if (hasOffset) {
+        for (const value of [
+          offset.lightnessMultiply,
+          offset.lightnessAdd,
+          offset.chromaMultiply,
+          offset.chromaAdd,
+          offset.hueAdd,
+        ]) {
+          new DataView(bytes.buffer).setFloat32(0, value, true);
+          for (const byte of bytes) feed(byte);
+        }
       }
       return hash;
     }
@@ -860,14 +927,14 @@
       const palette = generatePalette(settings);
       const rendered = draw(settings, palette);
       const srgbRendered = drawSrgbComparison(settings);
-      const roundedSrgbRendered = drawRoundedSrgbComparison(srgbRendered, palette, settings.bias);
+      const roundedSrgbRendered = drawRoundedSrgbComparison(srgbRendered, palette, settings.bias, settings.offset);
       const reserved = 256 - palette.colors.length;
       const tomlText = makeTomlText(settings, palette.colors);
       localStorage.setItem("ipscCurrentPaletteToml", tomlText);
       localStorage.setItem("ipscCurrentPaletteName", `${filenameBase()}.toml`);
       status.className = "status ok";
       const ratio = srgbRequired === 0 ? "n/a" : (palette.colors.length / srgbRequired).toFixed(3);
-      const baseStatus = `fits\nOKLCH colors: ${palette.colors.length}\nreserved: ${reserved}\nsRGB colors: ${srgbRequired}\ncolour space compression ratio: ${ratio}\nimage: ${rendered.width}x${rendered.height}\nsRGB image: ${srgbRendered.width}x${srgbRendered.height}\nrounded sRGB image: ${roundedSrgbRendered.width}x${roundedSrgbRendered.height}\nbias L/C/H: ${settings.bias.lightness.toFixed(3)} / ${settings.bias.chroma.toFixed(3)} / ${settings.bias.hue.toFixed(3)}`;
+      const baseStatus = `fits\nOKLCH colors: ${palette.colors.length}\nreserved: ${reserved}\nsRGB colors: ${srgbRequired}\ncolour space compression ratio: ${ratio}\nimage: ${rendered.width}x${rendered.height}\nsRGB image: ${srgbRendered.width}x${srgbRendered.height}\nrounded sRGB image: ${roundedSrgbRendered.width}x${roundedSrgbRendered.height}\npriority L/C/H: ${settings.bias.lightness.toFixed(3)} / ${settings.bias.chroma.toFixed(3)} / ${settings.bias.hue.toFixed(3)}\noffset Vx/V+/Cx/C+/H+: ${settings.offset.lightnessMultiply.toFixed(3)} / ${settings.offset.lightnessAdd.toFixed(3)} / ${settings.offset.chromaMultiply.toFixed(3)} / ${settings.offset.chromaAdd.toFixed(3)} / ${settings.offset.hueAdd.toFixed(3)}`;
       status.textContent = `${baseStatus}\npreview only; press Generate to build files`;
       return { settings, palette, rendered, baseStatus };
     }
@@ -891,6 +958,15 @@
     for (const input of biasInputs) {
       input.addEventListener("input", () => {
         normalizeBias(input);
+        revokeDownloads();
+        status.className = "status";
+        status.textContent = "settings changed; press Generate";
+      });
+    }
+
+    for (const input of offsetInputs) {
+      input.addEventListener("input", () => {
+        updateOffsetLabels();
         revokeDownloads();
         status.className = "status";
         status.textContent = "settings changed; press Generate";
@@ -939,6 +1015,7 @@
     });
 
     updateBiasLabels();
+    updateOffsetLabels();
     revokeDownloads();
     status.className = "status";
     status.textContent = "ready; press Generate";

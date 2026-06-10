@@ -218,7 +218,7 @@ fn palette_lab_html() -> String {
       font-size: 14px;
     }
     .bias-label {
-      grid-template-columns: 74px 1fr 48px;
+      grid-template-columns: 92px 1fr 48px;
     }
     input {
       width: 100%;
@@ -346,12 +346,12 @@ fn palette_lab_html() -> String {
         <label class="bias-label">hue <input id="biasHue" type="range" min="0" max="1" step="0.001" value="0.334"><span id="biasHueValue">0.334</span></label>
       </fieldset>
       <fieldset>
-        <legend>Nearest Palette Input Offset</legend>
-        <label class="bias-label">value x <input id="offsetLightnessMultiply" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetLightnessMultiplyValue">0.000</span></label>
-        <label class="bias-label">value + <input id="offsetLightnessAdd" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetLightnessAddValue">0.000</span></label>
-        <label class="bias-label">chroma x <input id="offsetChromaMultiply" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetChromaMultiplyValue">0.000</span></label>
-        <label class="bias-label">chroma + <input id="offsetChromaAdd" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetChromaAddValue">0.000</span></label>
-        <label class="bias-label">hue + turns <input id="offsetHueAdd" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetHueAddValue">0.000</span></label>
+        <legend>Input Biases Before Matching</legend>
+        <label class="bias-label">value mult <input id="offsetLightnessMultiply" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetLightnessMultiplyValue">0.000</span></label>
+        <label class="bias-label">value add <input id="offsetLightnessAdd" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetLightnessAddValue">0.000</span></label>
+        <label class="bias-label">chroma mult <input id="offsetChromaMultiply" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetChromaMultiplyValue">0.000</span></label>
+        <label class="bias-label">chroma add <input id="offsetChromaAdd" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetChromaAddValue">0.000</span></label>
+        <label class="bias-label">hue add <input id="offsetHueAdd" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetHueAddValue">0.000</span></label>
       </fieldset>
       <fieldset>
         <legend>Export</legend>

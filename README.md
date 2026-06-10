@@ -742,7 +742,7 @@ accepted when its hash matches the palette colours and matching settings.
 Palette matching has two stages:
 
 1. Convert the input sRGB colour to OKLCH, then apply the optional input
-   offsets from `[matching]`.
+   biases from `[matching]`.
 2. Compare the adjusted input colour against the palette colours using the
    priority weights from `[matching]`.
 
@@ -755,7 +755,7 @@ chroma = 0.333
 hue = 0.334
 ```
 
-The optional input offsets are:
+The optional input biases are:
 
 ```toml
 lightness_multiply = 0.0

@@ -279,6 +279,30 @@ fn palette_lab_html() -> String {
     }
     .status.ok { color: #b6f5c7; }
     .status.bad { color: #ffb4a8; }
+    .progress-wrap {
+      border-bottom: 1px solid #2d3441;
+      padding: 10px 16px 12px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max-content;
+      gap: 10px;
+      align-items: center;
+      background: #101217;
+    }
+    .progress-wrap[hidden] {
+      display: none;
+    }
+    progress {
+      width: 100%;
+      height: 14px;
+      accent-color: #d7e8ff;
+    }
+    .progress-text {
+      color: #cbd5e1;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      min-width: 48px;
+      text-align: right;
+    }
     .stage {
       display: grid;
       align-content: start;
@@ -372,6 +396,10 @@ fn palette_lab_html() -> String {
       <strong>Palette Preview</strong>
       <span id="status" class="status">ready</span>
     </header>
+    <div id="bakeProgressWrap" class="progress-wrap" hidden>
+      <progress id="bakeProgress" max="100" value="0"></progress>
+      <span id="bakeProgressText" class="progress-text">0%</span>
+    </div>
     <section class="stage">
       <div class="preview">
         <h2>OKLCH strict-gamut palette</h2>
@@ -396,6 +424,9 @@ fn palette_lab_html() -> String {
     const roundedSrgbCanvas = document.getElementById("roundedSrgbCanvas");
     const roundedSrgbCtx = roundedSrgbCanvas.getContext("2d");
     const status = document.getElementById("status");
+    const bakeProgressWrap = document.getElementById("bakeProgressWrap");
+    const bakeProgress = document.getElementById("bakeProgress");
+    const bakeProgressText = document.getElementById("bakeProgressText");
     const previewButton = document.getElementById("previewButton");
     const bakeButton = document.getElementById("bakeButton");
     const downloadToml = document.getElementById("downloadToml");
@@ -953,6 +984,20 @@ fn palette_lab_html() -> String {
       downloadMap.setAttribute("aria-disabled", "true");
       bakeButton.disabled = true;
       bakeButton.textContent = "Bake";
+      hideBakeProgress();
+    }
+
+    function setBakeProgress(percent) {
+      const clamped = Math.max(0, Math.min(100, percent));
+      bakeProgressWrap.hidden = false;
+      bakeProgress.value = clamped;
+      bakeProgressText.textContent = `${Math.round(clamped)}%`;
+    }
+
+    function hideBakeProgress() {
+      bakeProgressWrap.hidden = true;
+      bakeProgress.value = 0;
+      bakeProgressText.textContent = "0%";
     }
 
     function setDownload(link, blob, filename) {
@@ -976,6 +1021,7 @@ fn palette_lab_html() -> String {
       const matching = artifact.settings.bias;
       const offset = artifact.settings.offset;
       let cursor = 0;
+      setBakeProgress(0);
 
       for (let r = 0; r < 256; r++) {
         for (let g = 0; g < 256; g++) {
@@ -984,10 +1030,13 @@ fn palette_lab_html() -> String {
           }
         }
         if (r % 4 === 0) {
-          status.textContent = `${artifact.baseStatus}\nbaking ${artifact.base}.ipsmap... ${Math.round(r / 255 * 100)}%`;
+          const percent = r / 255 * 100;
+          setBakeProgress(percent);
+          status.textContent = `${artifact.baseStatus}\nbaking ${artifact.base}.ipsmap... ${Math.round(percent)}%`;
           await new Promise(resolve => setTimeout(resolve, 0));
         }
       }
+      setBakeProgress(100);
 
       const header = new Uint8Array(30);
       header.set([0x49, 0x50, 0x53, 0x4d, 0x41, 0x50, 0x31, 0x00], 0);

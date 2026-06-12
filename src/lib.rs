@@ -34,10 +34,10 @@ pub use constants::{
 pub use custom_host::{
     CustomHostBranding, CustomHostLayout, CustomHostOverlayElement, CustomHostOverlayHub,
     CustomHostPanel, CustomHostPanelAction, CustomHostPanelAnchor, CustomHostPanelAudience,
-    CustomHostPanelElement, CustomHostPanelHub, CustomHostPanelPage, CustomHostPanelRegion,
-    CustomHostPanelSize, CustomHostPanelStyle, OverlayCoordinateSpace, OverlayElementKind,
-    OverlayElementStyle, PagedTextControls, PagedTextControlsPosition, PanelWhiteSpace,
-    StreamPointerClick,
+    CustomHostPanelElement, CustomHostPanelElementStyle, CustomHostPanelHub, CustomHostPanelPage,
+    CustomHostPanelRegion, CustomHostPanelSize, CustomHostPanelStyle, OverlayCoordinateSpace,
+    OverlayElementKind, OverlayElementStyle, PagedTextControls, PagedTextControlsPosition,
+    PanelOverflowMode, PanelWhiteSpace, StreamPointerClick,
 };
 pub use demo::{
     DemoMusicClip, DemoMusicStarted, DemoSfxClip, HelloWorldText, handle_demo_boing_command,

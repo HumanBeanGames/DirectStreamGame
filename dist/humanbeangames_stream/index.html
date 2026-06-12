@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MERCANTILE</title>
+  <title>Direct Stream Game</title>
   <style>
-    :root { color-scheme: dark; font-family: Arial, sans-serif; background: #111318; color: #eef3f8; --direct-stream-max-player-width: 1280px; }
+    :root { color-scheme: dark; font-family: Arial, sans-serif; background: #111318; color: #eef3f8; --direct-stream-max-player-width: 960px; }
     body { margin: 0; min-height: 100vh; display: grid; grid-template-rows: auto 1fr; }
     header { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 16px; background: #1b2029; border-bottom: 1px solid #303847; }
     header button { appearance: none; border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 6px 10px; font: inherit; cursor: pointer; }
@@ -39,6 +39,8 @@
     .right-region { grid-area: right; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; }
     .above-region { grid-area: above; }
     .below-region { grid-area: below; }
+    .panel-region.region-wrap-no-scroll,
+    .right-panels.region-wrap-no-scroll { overflow: visible; }
     .panel-region { display: grid; gap: 8px; align-content: start; }
     .panel-region:empty { display: none; }
     .right-panels { display: grid; gap: 8px; align-content: start; }
@@ -60,6 +62,12 @@
     .panel.panel-pre-wrap pre { white-space: pre-wrap; overflow-wrap: anywhere; }
     .panel.panel-nowrap pre { white-space: pre; overflow-wrap: normal; }
     .panel.panel-nowrap .panel-text { white-space: pre; overflow-wrap: normal; }
+    .panel.panel-wrap-no-scroll { width: auto; max-width: 100%; overflow: visible; }
+    .panel.panel-wrap-no-scroll pre,
+    .panel.panel-wrap-no-scroll .panel-content { min-width: 0; overflow: visible; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .panel.panel-wrap-no-scroll .panel-text,
+    .panel.panel-wrap-no-scroll .panel-paged-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .panel-styled-text { display: inline; }
     .overlay-panels { position: absolute; z-index: 4; display: grid; gap: 6px; max-width: min(44%, 280px); pointer-events: none; }
     .overlay-panels:empty { display: none; }
     .overlay-panels .panel { pointer-events: auto; background: rgba(11, 13, 18, 0.84); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28); }
@@ -75,7 +83,7 @@
   </style>
 </head>
 <body>
-  <header><span>MERCANTILE</span><button id="togglePlayerButton" type="button" hidden>Minimize stream</button></header>
+  <header><span>Direct Stream Game custom palette stream</span><button id="togglePlayerButton" type="button" hidden>Minimize stream</button></header>
   <main>
     <div class="stage" id="stage">
       <section class="panel-region above-region" id="abovePanels"></section>
@@ -133,6 +141,7 @@
     const overlayBottomLeftPanels = document.getElementById("overlayBottomLeftPanels");
     const overlayBottomRightPanels = document.getElementById("overlayBottomRightPanels");
     const namedPanelContainers = new Map();
+    const appliedPanelRegionClasses = new Set();
     const panelPageState = new Map();
     ctx.imageSmoothingEnabled = false;
 
@@ -181,7 +190,7 @@
     const audioUpsampleFactor = audioPlaybackSampleRate / audioTransportSampleRate;
     const deviceIdHeaderName = "X-DirectStream-Device-Id";
     const deviceIdStorageKey = "directstream_device_id";
-    const playerMinimizable = true;
+    const playerMinimizable = false;
     const startPlayerMinimized = false;
     const playerMinimizedStorageKey = "directstream_player_minimized";
     let volatileDeviceId = null;
@@ -1188,6 +1197,7 @@
       overlayTopRightPanels.textContent = "";
       overlayBottomLeftPanels.textContent = "";
       overlayBottomRightPanels.textContent = "";
+      clearPanelRegionClasses();
       namedPanelContainers.clear();
       panels
         .slice()
@@ -1198,12 +1208,15 @@
         .forEach(panel => {
         const section = document.createElement("article");
         section.className = "panel";
+        const styleHint = panel.style_hint || {};
         for (const className of safeCssClasses(panel.style_hint && panel.style_hint.css_class)) {
           section.classList.add(className);
         }
-        const styleHint = panel.style_hint || {};
         if (styleHint.hide_header) {
           section.classList.add("panel-headerless");
+        }
+        if (styleHint.overflow_mode === "WrapNoScroll") {
+          section.classList.add("panel-wrap-no-scroll");
         }
         if (styleHint.body_white_space === "NoWrap") {
           section.classList.add("panel-nowrap");
@@ -1217,7 +1230,9 @@
           section.appendChild(title);
         }
         section.appendChild(renderPanelBody(panel));
-        panelContainer(panel.anchor || panel.region).appendChild(section);
+        const container = panelContainer(panel.anchor || panel.region);
+        applyPanelRegionStyle(container, styleHint);
+        container.appendChild(section);
       });
       stage.classList.toggle("has-left", leftPanels.childElementCount > 0);
     }
@@ -1246,6 +1261,8 @@
           body.appendChild(button);
         } else if (element.type === "PagedText") {
           body.appendChild(renderPagedText(panel, element));
+        } else if (element.type === "StyledText") {
+          body.appendChild(renderStyledPanelText(element));
         } else {
           const text = document.createElement("span");
           text.className = "panel-text";
@@ -1254,6 +1271,25 @@
         }
       }
       return body;
+    }
+
+    function renderStyledPanelText(element) {
+      const text = document.createElement("span");
+      text.className = "panel-text panel-styled-text";
+      text.textContent = String(element.text || "");
+      const style = element.style || {};
+      for (const className of safeCssClasses(style.css_class)) {
+        text.classList.add(className);
+      }
+      const color = safeCssColor(style.text_color);
+      if (color) {
+        text.style.color = color;
+      }
+      const fontWeight = safeCssFontWeight(style.font_weight);
+      if (fontWeight) {
+        text.style.fontWeight = fontWeight;
+      }
+      return text;
     }
 
     function renderPagedText(panel, element) {
@@ -1496,6 +1532,37 @@
       return panels;
     }
 
+    function clearPanelRegionClasses() {
+      const regions = [
+        leftPanels,
+        rightPanels,
+        abovePanels,
+        belowPanels,
+        overlayTopLeftPanels,
+        overlayTopRightPanels,
+        overlayBottomLeftPanels,
+        overlayBottomRightPanels,
+      ];
+      for (const region of regions) {
+        region.classList.remove("region-wrap-no-scroll");
+        for (const className of appliedPanelRegionClasses) {
+          region.classList.remove(className);
+        }
+      }
+      appliedPanelRegionClasses.clear();
+    }
+
+    function applyPanelRegionStyle(region, styleHint) {
+      if (!region || !styleHint) return;
+      if (styleHint.overflow_mode === "WrapNoScroll") {
+        region.classList.add("region-wrap-no-scroll");
+      }
+      for (const className of safeCssClasses(styleHint.region_css_class)) {
+        region.classList.add(className);
+        appliedPanelRegionClasses.add(className);
+      }
+    }
+
     function applyPanelSizeHint(element, hint) {
       if (!hint || typeof hint !== "object") return;
       const pairs = [
@@ -1527,6 +1594,19 @@
       }
       if (/^(?:white|black|red|green|blue|yellow|cyan|magenta|orange|purple|pink|lime|teal|gold|silver|gray|grey)$/.test(color)) {
         return color;
+      }
+      return null;
+    }
+
+    function safeCssFontWeight(value) {
+      if (typeof value !== "string") return null;
+      const weight = value.trim();
+      if (/^(?:normal|bold|bolder|lighter)$/.test(weight)) {
+        return weight;
+      }
+      if (/^[1-9]00$/.test(weight)) {
+        const numeric = Number(weight);
+        return numeric >= 100 && numeric <= 900 ? weight : null;
       }
       return null;
     }

@@ -22,6 +22,10 @@ pub struct CustomHostPanel {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CustomHostPanelElement {
     Text(String),
+    StyledText {
+        text: String,
+        style: CustomHostPanelElementStyle,
+    },
     Button {
         label: String,
         action_id: String,
@@ -33,6 +37,30 @@ pub enum CustomHostPanelElement {
         initial_page: usize,
         controls: PagedTextControls,
     },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CustomHostPanelElementStyle {
+    pub text_color: Option<String>,
+    pub css_class: Option<String>,
+    pub font_weight: Option<String>,
+}
+
+impl CustomHostPanelElementStyle {
+    pub fn with_text_color(mut self, color: impl Into<String>) -> Self {
+        self.text_color = Some(color.into());
+        self
+    }
+
+    pub fn with_css_class(mut self, css_class: impl Into<String>) -> Self {
+        self.css_class = Some(css_class.into());
+        self
+    }
+
+    pub fn with_font_weight(mut self, font_weight: impl Into<String>) -> Self {
+        self.font_weight = Some(font_weight.into());
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -250,6 +278,8 @@ pub struct CustomHostPanelStyle {
     pub css_class: Option<String>,
     pub hide_header: bool,
     pub body_white_space: Option<PanelWhiteSpace>,
+    pub overflow_mode: Option<PanelOverflowMode>,
+    pub region_css_class: Option<String>,
 }
 
 impl CustomHostPanelStyle {
@@ -267,6 +297,22 @@ impl CustomHostPanelStyle {
 
     pub fn with_body_white_space(mut self, body_white_space: PanelWhiteSpace) -> Self {
         self.body_white_space = Some(body_white_space);
+        self
+    }
+
+    pub fn with_overflow_mode(mut self, overflow_mode: PanelOverflowMode) -> Self {
+        self.overflow_mode = Some(overflow_mode);
+        self
+    }
+
+    pub fn wrap_no_scroll(mut self) -> Self {
+        self.overflow_mode = Some(PanelOverflowMode::WrapNoScroll);
+        self.body_white_space = Some(PanelWhiteSpace::PreWrap);
+        self
+    }
+
+    pub fn with_region_css_class(mut self, css_class: impl Into<String>) -> Self {
+        self.region_css_class = Some(css_class.into());
         self
     }
 
@@ -292,6 +338,21 @@ impl PanelWhiteSpace {
         match self {
             PanelWhiteSpace::PreWrap => "PreWrap",
             PanelWhiteSpace::NoWrap => "NoWrap",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelOverflowMode {
+    Auto,
+    WrapNoScroll,
+}
+
+impl PanelOverflowMode {
+    pub(crate) fn as_json_str(self) -> &'static str {
+        match self {
+            PanelOverflowMode::Auto => "Auto",
+            PanelOverflowMode::WrapNoScroll => "WrapNoScroll",
         }
     }
 }

@@ -425,6 +425,22 @@ let style = CustomHostPanelStyle::headerless()
     .with_body_white_space(PanelWhiteSpace::NoWrap);
 ```
 
+For panels that should wrap and grow with their content without scrollbars, use
+`PanelOverflowMode::WrapNoScroll` or the convenience helper:
+
+```rust
+use direct_stream_game::CustomHostPanelStyle;
+
+let style = CustomHostPanelStyle::default()
+    .wrap_no_scroll()
+    .with_region_css_class("market-left-column");
+```
+
+`WrapNoScroll` preserves newlines, allows long words to wrap, sets panel content
+to `min-width: 0`, and avoids the horizontal/vertical scrollbar behavior used
+by the default `Auto` mode. `region_css_class` is applied to the browser layout
+region that receives the panel, after browser-side class-name validation.
+
 Panels can be shared globally or filtered to one viewer. This mirrors local chat
 audiences: `All`, `ViewerIdentity(String)`, or `ViewerName(String)`. The custom
 host filters `/custom-panels` per request, so every viewer can safely have a
@@ -434,7 +450,8 @@ panel with the same app-level id.
 use bevy::prelude::*;
 use direct_stream_game::{
     CustomHostPanel, CustomHostPanelAnchor, CustomHostPanelAudience, CustomHostPanelElement,
-    CustomHostPanelHub, CustomHostPanelPage, PagedTextControls, PagedTextControlsPosition,
+    CustomHostPanelElementStyle, CustomHostPanelHub, CustomHostPanelPage, PagedTextControls,
+    PagedTextControlsPosition,
 };
 
 fn publish_viewer_panel(panels: Res<CustomHostPanelHub>, viewer_identity: String) {
@@ -444,6 +461,13 @@ fn publish_viewer_panel(panels: Res<CustomHostPanelHub>, viewer_identity: String
         body: "wool 4g\nsalt 5g".to_owned(),
         elements: vec![
             CustomHostPanelElement::Text("wool 4g\nsalt 5g\n".to_owned()),
+            CustomHostPanelElement::StyledText {
+                text: "14. CozyDryad-KN - 176g\n".to_owned(),
+                style: CustomHostPanelElementStyle::default()
+                    .with_text_color("#f7c548")
+                    .with_css_class("personal-score")
+                    .with_font_weight("700"),
+            },
             CustomHostPanelElement::Button {
                 label: "Buy Wool".to_owned(),
                 action_id: "buy-wool".to_owned(),

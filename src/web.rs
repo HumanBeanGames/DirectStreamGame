@@ -10,9 +10,9 @@ use crate::{
     },
     custom_host::{
         CustomHostBranding, CustomHostLayout, CustomHostOverlayHub, CustomHostPanelAction,
-        CustomHostPanelActionHub, CustomHostPanelElement, CustomHostPanelHub, CustomHostPanelSize,
-        CustomHostPanelStyle, OverlayElementKind, OverlayElementStyle, PanelWhiteSpace,
-        StreamPointerClick, StreamPointerClickHub,
+        CustomHostPanelActionHub, CustomHostPanelElement, CustomHostPanelElementStyle,
+        CustomHostPanelHub, CustomHostPanelSize, CustomHostPanelStyle, OverlayElementKind,
+        OverlayElementStyle, PanelWhiteSpace, StreamPointerClick, StreamPointerClickHub,
     },
     frames::EncodedFrameHub,
     palette::PaletteFrameHub,
@@ -725,10 +725,12 @@ fn panel_style_hint_json(style: Option<&CustomHostPanelStyle>) -> String {
         return "null".to_owned();
     };
     format!(
-        r#"{{"css_class":{},"hide_header":{},"body_white_space":{}}}"#,
+        r#"{{"css_class":{},"hide_header":{},"body_white_space":{},"overflow_mode":{},"region_css_class":{}}}"#,
         json_optional_string(style.css_class.as_deref()),
         style.hide_header,
-        json_optional_string(style.body_white_space.map(PanelWhiteSpace::as_json_str))
+        json_optional_string(style.body_white_space.map(PanelWhiteSpace::as_json_str)),
+        json_optional_string(style.overflow_mode.map(|mode| mode.as_json_str())),
+        json_optional_string(style.region_css_class.as_deref())
     )
 }
 
@@ -743,6 +745,13 @@ fn panel_elements_json(elements: &[CustomHostPanelElement]) -> String {
                 json.push_str(&format!(
                     r#"{{"type":"Text","text":"{}"}}"#,
                     json_escape(text)
+                ));
+            }
+            CustomHostPanelElement::StyledText { text, style } => {
+                json.push_str(&format!(
+                    r#"{{"type":"StyledText","text":"{}","style":{}}}"#,
+                    json_escape(text),
+                    panel_element_style_json(style)
                 ));
             }
             CustomHostPanelElement::Button {
@@ -779,6 +788,15 @@ fn panel_elements_json(elements: &[CustomHostPanelElement]) -> String {
     }
     json.push(']');
     json
+}
+
+fn panel_element_style_json(style: &CustomHostPanelElementStyle) -> String {
+    format!(
+        r#"{{"text_color":{},"css_class":{},"font_weight":{}}}"#,
+        json_optional_string(style.text_color.as_deref()),
+        json_optional_string(style.css_class.as_deref()),
+        json_optional_string(style.font_weight.as_deref())
+    )
 }
 
 fn panel_pages_json(pages: &[crate::custom_host::CustomHostPanelPage]) -> String {
@@ -1168,6 +1186,8 @@ fn palette_stream_page_html_with_options(
     .right-region {{ grid-area: right; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; }}
     .above-region {{ grid-area: above; }}
     .below-region {{ grid-area: below; }}
+    .panel-region.region-wrap-no-scroll,
+    .right-panels.region-wrap-no-scroll {{ overflow: visible; }}
     .panel-region {{ display: grid; gap: 8px; align-content: start; }}
     .panel-region:empty {{ display: none; }}
     .right-panels {{ display: grid; gap: 8px; align-content: start; }}
@@ -1189,6 +1209,12 @@ fn palette_stream_page_html_with_options(
     .panel.panel-pre-wrap pre {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
     .panel.panel-nowrap pre {{ white-space: pre; overflow-wrap: normal; }}
     .panel.panel-nowrap .panel-text {{ white-space: pre; overflow-wrap: normal; }}
+    .panel.panel-wrap-no-scroll {{ width: auto; max-width: 100%; overflow: visible; }}
+    .panel.panel-wrap-no-scroll pre,
+    .panel.panel-wrap-no-scroll .panel-content {{ min-width: 0; overflow: visible; white-space: pre-wrap; overflow-wrap: anywhere; }}
+    .panel.panel-wrap-no-scroll .panel-text,
+    .panel.panel-wrap-no-scroll .panel-paged-body {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
+    .panel-styled-text {{ display: inline; }}
     .overlay-panels {{ position: absolute; z-index: 4; display: grid; gap: 6px; max-width: min(44%, 280px); pointer-events: none; }}
     .overlay-panels:empty {{ display: none; }}
     .overlay-panels .panel {{ pointer-events: auto; background: rgba(11, 13, 18, 0.84); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28); }}
@@ -1262,6 +1288,7 @@ fn palette_stream_page_html_with_options(
     const overlayBottomLeftPanels = document.getElementById("overlayBottomLeftPanels");
     const overlayBottomRightPanels = document.getElementById("overlayBottomRightPanels");
     const namedPanelContainers = new Map();
+    const appliedPanelRegionClasses = new Set();
     const panelPageState = new Map();
     ctx.imageSmoothingEnabled = false;
 
@@ -2317,6 +2344,7 @@ fn palette_stream_page_html_with_options(
       overlayTopRightPanels.textContent = "";
       overlayBottomLeftPanels.textContent = "";
       overlayBottomRightPanels.textContent = "";
+      clearPanelRegionClasses();
       namedPanelContainers.clear();
       panels
         .slice()
@@ -2327,12 +2355,15 @@ fn palette_stream_page_html_with_options(
         .forEach(panel => {{
         const section = document.createElement("article");
         section.className = "panel";
+        const styleHint = panel.style_hint || {{}};
         for (const className of safeCssClasses(panel.style_hint && panel.style_hint.css_class)) {{
           section.classList.add(className);
         }}
-        const styleHint = panel.style_hint || {{}};
         if (styleHint.hide_header) {{
           section.classList.add("panel-headerless");
+        }}
+        if (styleHint.overflow_mode === "WrapNoScroll") {{
+          section.classList.add("panel-wrap-no-scroll");
         }}
         if (styleHint.body_white_space === "NoWrap") {{
           section.classList.add("panel-nowrap");
@@ -2346,7 +2377,9 @@ fn palette_stream_page_html_with_options(
           section.appendChild(title);
         }}
         section.appendChild(renderPanelBody(panel));
-        panelContainer(panel.anchor || panel.region).appendChild(section);
+        const container = panelContainer(panel.anchor || panel.region);
+        applyPanelRegionStyle(container, styleHint);
+        container.appendChild(section);
       }});
       stage.classList.toggle("has-left", leftPanels.childElementCount > 0);
     }}
@@ -2375,6 +2408,8 @@ fn palette_stream_page_html_with_options(
           body.appendChild(button);
         }} else if (element.type === "PagedText") {{
           body.appendChild(renderPagedText(panel, element));
+        }} else if (element.type === "StyledText") {{
+          body.appendChild(renderStyledPanelText(element));
         }} else {{
           const text = document.createElement("span");
           text.className = "panel-text";
@@ -2383,6 +2418,25 @@ fn palette_stream_page_html_with_options(
         }}
       }}
       return body;
+    }}
+
+    function renderStyledPanelText(element) {{
+      const text = document.createElement("span");
+      text.className = "panel-text panel-styled-text";
+      text.textContent = String(element.text || "");
+      const style = element.style || {{}};
+      for (const className of safeCssClasses(style.css_class)) {{
+        text.classList.add(className);
+      }}
+      const color = safeCssColor(style.text_color);
+      if (color) {{
+        text.style.color = color;
+      }}
+      const fontWeight = safeCssFontWeight(style.font_weight);
+      if (fontWeight) {{
+        text.style.fontWeight = fontWeight;
+      }}
+      return text;
     }}
 
     function renderPagedText(panel, element) {{
@@ -2625,6 +2679,37 @@ fn palette_stream_page_html_with_options(
       return panels;
     }}
 
+    function clearPanelRegionClasses() {{
+      const regions = [
+        leftPanels,
+        rightPanels,
+        abovePanels,
+        belowPanels,
+        overlayTopLeftPanels,
+        overlayTopRightPanels,
+        overlayBottomLeftPanels,
+        overlayBottomRightPanels,
+      ];
+      for (const region of regions) {{
+        region.classList.remove("region-wrap-no-scroll");
+        for (const className of appliedPanelRegionClasses) {{
+          region.classList.remove(className);
+        }}
+      }}
+      appliedPanelRegionClasses.clear();
+    }}
+
+    function applyPanelRegionStyle(region, styleHint) {{
+      if (!region || !styleHint) return;
+      if (styleHint.overflow_mode === "WrapNoScroll") {{
+        region.classList.add("region-wrap-no-scroll");
+      }}
+      for (const className of safeCssClasses(styleHint.region_css_class)) {{
+        region.classList.add(className);
+        appliedPanelRegionClasses.add(className);
+      }}
+    }}
+
     function applyPanelSizeHint(element, hint) {{
       if (!hint || typeof hint !== "object") return;
       const pairs = [
@@ -2656,6 +2741,19 @@ fn palette_stream_page_html_with_options(
       }}
       if (/^(?:white|black|red|green|blue|yellow|cyan|magenta|orange|purple|pink|lime|teal|gold|silver|gray|grey)$/.test(color)) {{
         return color;
+      }}
+      return null;
+    }}
+
+    function safeCssFontWeight(value) {{
+      if (typeof value !== "string") return null;
+      const weight = value.trim();
+      if (/^(?:normal|bold|bolder|lighter)$/.test(weight)) {{
+        return weight;
+      }}
+      if (/^[1-9]00$/.test(weight)) {{
+        const numeric = Number(weight);
+        return numeric >= 100 && numeric <= 900 ? weight : null;
       }}
       return null;
     }}

@@ -3,8 +3,8 @@ use crate::frames::RawFrame;
 use crate::{
     frames::IndexedFrame,
     palette_lut::{
-        PaletteConfig, PaletteLookup, PaletteMatching, default_palette_config,
-        default_palette_lookup, load_lookup, load_palette_config, sibling_lut_path,
+        PaletteConfig, PaletteLookup, PaletteMatching, load_lookup, load_palette_config,
+        sibling_lut_path,
     },
     stats::SharedStats,
     stream_control::CustomStreamState,
@@ -25,12 +25,16 @@ const TILE_SIZE: usize = 8;
 const TILE_CACHE_LIMIT: usize = 4096;
 const KEYFRAME_INTERVAL: u32 = 25;
 const FRAME_HISTORY_SECONDS: u64 = 60;
+#[cfg(test)]
 const OKLCH_HUE_COUNT: usize = 20;
+#[cfg(test)]
 const OKLCH_HUE_OFFSET_DEGREES: f32 = 29.233885;
+#[cfg(test)]
 const OKLCH_LIGHTNESS_LEVELS: [f32; 16] = [
     0.0, 0.06666667, 0.13333334, 0.2, 0.26666668, 0.33333334, 0.4, 0.46666667, 0.53333336, 0.6,
     0.6666667, 0.73333335, 0.8, 0.8666667, 0.93333334, 1.0,
 ];
+#[cfg(test)]
 const OKLCH_CHROMA_LEVELS: [f32; 3] = [0.08589443, 0.17178887, 0.2576833];
 
 #[derive(Clone, Copy)]
@@ -79,16 +83,7 @@ pub(crate) fn load_palette_runtime(path: impl AsRef<Path>) -> (Vec<[u8; 4]>, Pal
 
 pub(crate) fn load_palette_config_runtime(path: &Path) -> PaletteConfig {
     load_palette_config(path).unwrap_or_else(|err| {
-        eprintln!("Could not load palette.toml, using embedded default palette: {err}");
-        default_palette_config().unwrap_or_else(|fallback_err| {
-            eprintln!(
-                "Could not parse embedded default palette, using generated fallback: {fallback_err}"
-            );
-            PaletteConfig {
-                colors: default_palette(),
-                matching: PaletteMatching::default(),
-            }
-        })
+        panic!("Could not load palette config {}: {err}", path.display());
     })
 }
 
@@ -99,21 +94,12 @@ pub(crate) fn load_prebaked_lookup_runtime(
     let sibling_path = sibling_lut_path(path);
     match load_lookup(&sibling_path, config) {
         Ok(lookup) => Some(lookup),
-        Err(sibling_err) => match default_palette_lookup(config) {
-            Ok(lookup) => {
-                eprintln!(
-                    "Could not load sibling lookup {}, using embedded default ipsmap: {sibling_err}",
-                    sibling_path.display()
-                );
-                Some(lookup)
-            }
-            Err(default_err) => {
-                eprintln!(
-                    "Could not load prebaked lookup; falling back to live GPU matching. sibling: {sibling_err}; embedded: {default_err}"
-                );
-                None
-            }
-        },
+        Err(err) => {
+            panic!(
+                "Could not load prebaked palette lookup {}: {err}",
+                sibling_path.display()
+            );
+        }
     }
 }
 
@@ -943,6 +929,7 @@ pub(crate) fn encode_palette_batch_packets(
     }
 }
 
+#[cfg(test)]
 fn default_palette() -> Vec<[u8; 4]> {
     let mut palette = Vec::with_capacity(256);
     for lightness in OKLCH_LIGHTNESS_LEVELS {
@@ -969,6 +956,7 @@ fn default_palette() -> Vec<[u8; 4]> {
     palette
 }
 
+#[cfg(test)]
 fn greyscale_color(lightness: f32) -> [u8; 4] {
     if lightness <= 0.0 {
         [0x00, 0x00, 0x00, 0xff]
@@ -1065,6 +1053,7 @@ fn rgb_to_oklab(r: u8, g: u8, b: u8) -> Oklab {
     }
 }
 
+#[cfg(test)]
 fn oklch_to_srgb(lightness: f32, chroma: f32, hue_degrees: f32) -> [u8; 4] {
     let (r, g, blue) = oklch_to_linear_srgb(lightness, chroma, hue_degrees);
     [
@@ -1075,11 +1064,13 @@ fn oklch_to_srgb(lightness: f32, chroma: f32, hue_degrees: f32) -> [u8; 4] {
     ]
 }
 
+#[cfg(test)]
 fn checked_oklch_to_srgb(lightness: f32, chroma: f32, hue_degrees: f32) -> Option<[u8; 4]> {
     let (r, g, b) = oklch_to_linear_srgb(lightness, chroma, hue_degrees);
     in_srgb_gamut(r, g, b).then(|| oklch_to_srgb(lightness, chroma, hue_degrees))
 }
 
+#[cfg(test)]
 fn oklch_to_linear_srgb(lightness: f32, chroma: f32, hue_degrees: f32) -> (f32, f32, f32) {
     let hue = hue_degrees.to_radians();
     let a = hue.cos() * chroma;
@@ -1109,6 +1100,7 @@ fn srgb_to_linear(value: f32) -> f32 {
     }
 }
 
+#[cfg(test)]
 fn linear_to_u8(value: f32) -> u8 {
     let srgb = if value <= 0.0031308 {
         value * 12.92
@@ -1118,6 +1110,7 @@ fn linear_to_u8(value: f32) -> u8 {
     (srgb * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
+#[cfg(test)]
 fn in_srgb_gamut(r: f32, g: f32, b: f32) -> bool {
     r.is_finite()
         && g.is_finite()

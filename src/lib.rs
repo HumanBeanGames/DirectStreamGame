@@ -49,7 +49,6 @@ pub use direct_world_sprite::{
     SpriteFacing,
 };
 pub use frames::{DirectStreamFrame, DirectStreamFrameAppExt};
-pub use palette_lut::{DEFAULT_PALETTE_IPSMAP, DEFAULT_PALETTE_TOML};
 pub use plugin::DirectStreamPlugin;
 pub use public_types::{
     AudioSyncMode, DirectStreamAudioSyncConfig, DirectStreamControlAction,

@@ -784,14 +784,14 @@ The player serves `http://127.0.0.1:8090`.
 
 ## Palette And Image Tools
 
-The embedded default palette and lookup map are available to downstream apps,
-so a game does not need to copy `src/default_palette` into its own assets.
+Custom-host mode requires a palette config file. Pass
+`--palette-config=path/to/palette.toml`, or place `palette.toml` in the current
+working directory. Missing or invalid palette configs fail startup immediately.
 
 Custom-host mode uses live OKLab/OKLCH palette matching by default. Pass
-`--prebaked` or `--use_prebaked_lookup` to use a sibling `.ipsmap` direct lookup
-table. If a configured palette path is missing, the embedded default palette is
-used. If a sibling lookup is missing, the embedded default `.ipsmap` is used
-when it matches; otherwise the stream falls back to live matching.
+`--prebaked` or `--use_prebaked_lookup` to require a sibling `.ipsmap` direct
+lookup table. Missing, invalid, or stale `.ipsmap` files fail startup
+immediately when prebaked lookup mode is enabled.
 
 The `.ipsmap` file is a 16 MB direct sRGB-to-palette lookup table. It is only
 accepted when its hash matches the palette colours and matching settings.

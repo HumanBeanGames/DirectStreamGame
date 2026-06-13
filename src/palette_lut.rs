@@ -5,8 +5,10 @@ use std::{
 };
 
 pub const LUT_ENTRY_COUNT: usize = 256 * 256 * 256;
-pub const DEFAULT_PALETTE_TOML: &str = include_str!("default_palette/default_palette.toml");
-pub const DEFAULT_PALETTE_IPSMAP: &[u8] = include_bytes!("default_palette/default_palette.ipsmap");
+#[cfg(test)]
+const DEFAULT_PALETTE_TOML: &str = include_str!("default_palette/default_palette.toml");
+#[cfg(test)]
+const DEFAULT_PALETTE_IPSMAP: &[u8] = include_bytes!("default_palette/default_palette.ipsmap");
 const LUT_MAGIC: &[u8; 8] = b"IPSMAP1\0";
 
 #[derive(Clone, Copy, Debug)]
@@ -70,7 +72,8 @@ pub fn load_palette_config(path: impl AsRef<Path>) -> Result<PaletteConfig, Stri
     parse_palette_config(&contents)
 }
 
-pub fn default_palette_config() -> Result<PaletteConfig, String> {
+#[cfg(test)]
+fn default_palette_config() -> Result<PaletteConfig, String> {
     parse_palette_config(DEFAULT_PALETTE_TOML)
 }
 
@@ -223,7 +226,8 @@ pub fn load_lookup(
     decode_lookup(&bytes, config)
 }
 
-pub fn default_palette_lookup(config: &PaletteConfig) -> Result<PaletteLookup, String> {
+#[cfg(test)]
+fn default_palette_lookup(config: &PaletteConfig) -> Result<PaletteLookup, String> {
     decode_lookup(DEFAULT_PALETTE_IPSMAP, config)
 }
 

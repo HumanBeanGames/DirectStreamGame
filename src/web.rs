@@ -2064,10 +2064,14 @@ fn palette_stream_page_html_with_options(
           const response = await fetch("{stream_status_url}?t=" + Date.now(), {{ cache: "no-store" }});
           const status = await response.json();
           streamOnline = !!status.online;
+          if (!streamOnline) {{
+            clearCustomHostUi();
+          }}
           applyRuntimeBranding(status);
           updateUnmuteOverlay();
         }} catch (error) {{
           streamOnline = false;
+          clearCustomHostUi();
           updateUnmuteOverlay();
         }}
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -2352,6 +2356,7 @@ fn palette_stream_page_html_with_options(
           await fetchCustomPanels();
         }} catch (error) {{
           console.error(error);
+          clearCustomPanels();
         }}
         await new Promise(resolve => setTimeout(resolve, 1000));
       }}
@@ -2363,9 +2368,25 @@ fn palette_stream_page_html_with_options(
           await fetchCustomOverlays();
         }} catch (error) {{
           console.error(error);
+          clearCustomOverlays();
         }}
         await new Promise(resolve => setTimeout(resolve, 250));
       }}
+    }}
+
+    function clearCustomHostUi() {{
+      clearCustomPanels();
+      clearCustomOverlays();
+    }}
+
+    function clearCustomPanels() {{
+      panelPageState.clear();
+      renderPanels([]);
+    }}
+
+    function clearCustomOverlays() {{
+      currentOverlays = [];
+      drawCustomOverlays();
     }}
 
     function appendSystemLine(message) {{

@@ -204,10 +204,7 @@ fn auto_start(mut requests: MessageWriter<DirectStreamStartRequest>) {
 
 Read `DirectStreamControlResult` messages if you need to react to success or
 validation failures. The stats-window Start/End buttons use the same message
-path. `DirectStreamStartRequest` also carries startup warmup controls:
-`warmup_frames` defaults to `2`, and `suppress_initial_blank_frame` defaults to
-`true`, which prevents initialized black render targets from becoming the first
-published keyframe.
+path.
 
 Audio/video sync can be tuned with `DirectStreamAudioSyncConfig`:
 
@@ -404,10 +401,9 @@ minimize/restore stream button. The minimized state is stored in browser
 
 Runtime and static pages both derive their visible title/header from
 `CustomHostBranding`. `/status.json` also reports the active branding, layout,
-package version, warmup count, and latency estimates, so a static Pages export
-can correct stale visible branding when it connects to a differently branded
-runtime host. Static exports include version and export-time metadata in the
-HTML.
+package version, and latency estimates, so a static Pages export can correct
+stale visible branding when it connects to a differently branded runtime host.
+Static exports include version and export-time metadata in the HTML.
 
 ## Panels And Clicks
 

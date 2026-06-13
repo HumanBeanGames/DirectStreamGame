@@ -19,7 +19,10 @@ pub(crate) const STREAM_AUDIO_SAMPLE_RATE: u32 = 48_000;
 pub(crate) const STREAM_AUDIO_CHANNELS: usize = 2;
 pub(crate) const CUSTOM_AUDIO_SAMPLE_RATE: u32 = 8_000;
 pub(crate) const CUSTOM_AUDIO_CHANNELS: usize = 1;
-pub(crate) const STREAM_AUDIO_BUFFER_SECONDS: usize = 3;
+// Must cover the maximum custom-host audio delay. MatchEstimatedVideoLatency can
+// reach several seconds with large frame batches, and CustomStreamState clamps
+// that delay to 10s.
+pub(crate) const STREAM_AUDIO_BUFFER_SECONDS: usize = 12;
 pub(crate) const STREAM_AUDIO_MAX_MIX_FRAMES_PER_UPDATE: usize =
     STREAM_AUDIO_SAMPLE_RATE as usize / 10;
 

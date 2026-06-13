@@ -2,20 +2,18 @@ use crate::{
     config::{AppConfig, WindowMode, effective_custom_batch_size},
     constants::{STREAM_FPS, STREAM_HEIGHT, STREAM_WIDTH, WEB_ADDR},
     gpu_palette::{PaletteMaterial, make_stream_source_image, spawn_custom_host_pipeline},
-    palette::{load_palette_config_runtime, load_prebaked_lookup_runtime},
+    palette::{load_palette_config_runtime, load_palette_lookup_runtime},
     public_types::DirectStreamTarget,
     stats::{SharedStats, StatsText},
     stream_control::{
         CustomFpsInputBox, CustomFpsInputText, CustomHeightInputBox, CustomHeightInputText,
-        CustomWidthInputBox, CustomWidthInputText, OpenStreamButton, PaletteBiasSlider,
-        PaletteBiasSliderFill, PaletteBiasSliderValueText, PurgeChatButton, StartStreamButton,
-        StopStreamButton, StreamControl, StreamControlStatusText,
+        CustomWidthInputBox, CustomWidthInputText, OpenStreamButton, PurgeChatButton,
+        StartStreamButton, StopStreamButton, StreamControlStatusText,
     },
 };
 use bevy::{
     camera::{RenderTarget, visibility::RenderLayers},
     prelude::*,
-    ui::RelativeCursorPosition,
 };
 use std::{
     collections::HashMap,
@@ -83,9 +81,7 @@ pub(crate) fn setup_direct_stream_scene(
                 Transform::from_scale(Vec3::ONE),
             ));
         }
-        WindowMode::Stats => {
-            spawn_stats_window(&mut commands, config.custom_host, config.prebaked_palette)
-        }
+        WindowMode::Stats => spawn_stats_window(&mut commands, config.custom_host),
     }
 
     let mut target = DirectStreamTarget {
@@ -102,10 +98,8 @@ pub(crate) fn setup_direct_stream_scene(
 
     if config.custom_host {
         let palette_config = load_palette_config_runtime(&config.palette_config_path);
-        let palette_lookup = config
-            .prebaked_palette
-            .then(|| load_prebaked_lookup_runtime(&config.palette_config_path, &palette_config))
-            .flatten();
+        let palette_lookup =
+            load_palette_lookup_runtime(&config.palette_config_path, &palette_config);
         let palette_colors = palette_config.colors.clone();
         let palette_bias = crate::palette::PaletteBias::from(palette_config.matching);
         let batch_size =
@@ -120,7 +114,7 @@ pub(crate) fn setup_direct_stream_scene(
             stream_image.clone(),
             &palette_colors,
             palette_bias,
-            palette_lookup.as_ref(),
+            &palette_lookup,
             &mut target,
             batch_size,
         );
@@ -158,7 +152,7 @@ fn spawn_readback_entities(commands: &mut Commands, count: usize) -> Vec<Entity>
         .collect()
 }
 
-fn spawn_stats_window(commands: &mut Commands, custom_host: bool, prebaked_palette: bool) {
+fn spawn_stats_window(commands: &mut Commands, custom_host: bool) {
     commands
         .spawn((
             Node {
@@ -215,40 +209,6 @@ fn spawn_stats_window(commands: &mut Commands, custom_host: bool, prebaked_palet
                         CustomFpsInputText,
                     ));
                 });
-            parent.spawn((
-                Text::new(if prebaked_palette {
-                    "palette match bias (prebaked)"
-                } else {
-                    "palette match bias"
-                }),
-                TextFont {
-                    font_size: 10.0,
-                    ..default()
-                },
-                TextColor(if prebaked_palette {
-                    Color::srgb(0.38, 0.43, 0.50)
-                } else {
-                    Color::srgb(0.64, 0.72, 0.80)
-                }),
-            ));
-            parent.spawn(bias_slider_row(
-                "value",
-                PaletteBiasSlider::Lightness,
-                33.3,
-                prebaked_palette,
-            ));
-            parent.spawn(bias_slider_row(
-                "chroma",
-                PaletteBiasSlider::Chroma,
-                33.3,
-                prebaked_palette,
-            ));
-            parent.spawn(bias_slider_row(
-                "hue",
-                PaletteBiasSlider::Hue,
-                33.4,
-                prebaked_palette,
-            ));
         })
         .with_child((
             Node {
@@ -327,91 +287,6 @@ fn compact_input_box<T: Component, U: Component>(
     )
 }
 
-fn bias_slider_row(
-    label: &'static str,
-    slider: PaletteBiasSlider,
-    initial_percent: f32,
-    disabled: bool,
-) -> impl Bundle {
-    (
-        Node {
-            width: percent(100),
-            height: px(18),
-            column_gap: px(6),
-            align_items: AlignItems::Center,
-            ..default()
-        },
-        children![
-            (
-                Text::new(label),
-                TextFont {
-                    font_size: 10.0,
-                    ..default()
-                },
-                TextColor(if disabled {
-                    Color::srgb(0.42, 0.47, 0.55)
-                } else {
-                    Color::srgb(0.78, 0.85, 0.92)
-                }),
-                Node {
-                    width: px(44),
-                    ..default()
-                },
-            ),
-            (
-                Button,
-                Node {
-                    flex_grow: 1.0,
-                    flex_basis: px(0),
-                    height: px(12),
-                    position_type: PositionType::Relative,
-                    ..default()
-                },
-                BackgroundColor(if disabled {
-                    Color::srgb(0.035, 0.040, 0.050)
-                } else {
-                    Color::srgb(0.045, 0.055, 0.07)
-                }),
-                RelativeCursorPosition::default(),
-                slider,
-                children![(
-                    Node {
-                        position_type: PositionType::Absolute,
-                        left: px(0),
-                        top: px(0),
-                        width: percent(initial_percent),
-                        height: percent(100),
-                        ..default()
-                    },
-                    BackgroundColor(if disabled {
-                        Color::srgb(0.20, 0.25, 0.32)
-                    } else {
-                        Color::srgb(0.24, 0.48, 0.82)
-                    }),
-                    PaletteBiasSliderFill(slider),
-                )],
-            ),
-            (
-                Text::new(format!("{:.3}", initial_percent / 100.0)),
-                TextFont {
-                    font_size: 10.0,
-                    ..default()
-                },
-                TextColor(if disabled {
-                    Color::srgb(0.42, 0.47, 0.55)
-                } else {
-                    Color::srgb(0.86, 0.92, 0.98)
-                }),
-                Node {
-                    width: px(42),
-                    ..default()
-                },
-                PaletteBiasSliderValueText(slider),
-            ),
-        ],
-    )
-}
-
 fn stream_button<T: Component>(label: &'static str, marker: T, color: Color) -> impl Bundle {
     (
         Button,
@@ -438,7 +313,6 @@ fn stream_button<T: Component>(label: &'static str, marker: T, color: Color) -> 
 
 pub(crate) fn update_stats_window(
     config: Res<AppConfig>,
-    stream_control: Res<StreamControl>,
     target: Res<DirectStreamTarget>,
     stats: Res<SharedStats>,
     mut query: Query<&mut Text, With<StatsText>>,
@@ -449,7 +323,7 @@ pub(crate) fn update_stats_window(
 
     if let Ok(stats) = stats.0.lock() {
         text.0 = if config.custom_host {
-            custom_host_stats_text(&stats, &target, &stream_control)
+            custom_host_stats_text(&stats, &target)
         } else {
             preview_stats_text(&stats, &target)
         };
@@ -459,7 +333,6 @@ pub(crate) fn update_stats_window(
 fn custom_host_stats_text(
     stats: &crate::stats::StreamStats,
     target: &DirectStreamTarget,
-    stream_control: &StreamControl,
 ) -> String {
     [
         "Direct Stream Game".to_owned(),
@@ -541,14 +414,7 @@ fn custom_host_stats_text(
         ),
         String::new(),
         "custom host".to_owned(),
-        stat_line(
-            "palette mode",
-            if stream_control.prebaked_palette {
-                "prebaked LUT"
-            } else {
-                "live matching"
-            },
-        ),
+        stat_line("palette mode", "ipsmap LUT"),
         stat_line("stage", stats.custom_stage),
         stat_line("error", &stats.custom_last_error),
         stat_line("packets sent", &stats.custom_frames_sent.to_string()),
@@ -601,15 +467,6 @@ fn custom_host_stats_text(
         stat_line("recording", &stats.custom_recording_path),
         stat_line("clients", &stats.stream_clients.to_string()),
         stat_line("page requests", &stats.preview_requests.to_string()),
-        stat_line(
-            "bias L/C/H",
-            &format!(
-                "{:.3} / {:.3} / {:.3}",
-                stream_control.palette_bias.lightness,
-                stream_control.palette_bias.chroma,
-                stream_control.palette_bias.hue
-            ),
-        ),
     ]
     .join("\n")
 }

@@ -143,10 +143,8 @@ pub(crate) fn make_palette_texture(colors: &[[u8; 4]]) -> Image {
     image
 }
 
-pub(crate) fn make_lookup_texture(lookup: Option<&PaletteLookup>) -> Image {
-    let data = lookup
-        .map(|lookup| lookup.entries().to_vec())
-        .unwrap_or_else(|| vec![0; 4096 * 4096]);
+pub(crate) fn make_lookup_texture(lookup: &PaletteLookup) -> Image {
+    let data = lookup.entries().to_vec();
     let mut image = Image::new_fill(
         Extent3d {
             width: 4096,
@@ -172,7 +170,7 @@ pub(crate) fn spawn_custom_host_pipeline(
     source_image: Handle<Image>,
     palette_colors: &[[u8; 4]],
     palette_bias: crate::palette::PaletteBias,
-    prebaked_lookup: Option<&PaletteLookup>,
+    palette_lookup: &PaletteLookup,
     target: &mut DirectStreamTarget,
     batch_size: usize,
 ) -> GpuPalettePipeline {
@@ -181,12 +179,12 @@ pub(crate) fn spawn_custom_host_pipeline(
         .collect();
     let first_output = output_images.first().cloned().unwrap();
     let palette_texture = images.add(make_palette_texture(palette_colors));
-    let lookup_texture = images.add(make_lookup_texture(prebaked_lookup));
+    let lookup_texture = images.add(make_lookup_texture(palette_lookup));
     let material = materials.add(PaletteMaterial {
         params: palette_material_params(&palette_bias, palette_colors.len()),
         source_image,
         palette_texture,
-        lookup_params: palette_lookup_params(prebaked_lookup.is_some()),
+        lookup_params: palette_lookup_params(),
         lookup_texture,
         input_offset_a: palette_input_offset_a(&palette_bias),
         input_offset_b: palette_input_offset_b(&palette_bias),
@@ -254,7 +252,7 @@ pub(crate) fn retarget_custom_host_pipeline(
     width: u32,
     height: u32,
     source_image: Handle<Image>,
-    prebaked_lookup: Option<&PaletteLookup>,
+    palette_lookup: &PaletteLookup,
     target: &mut DirectStreamTarget,
     batch_size: usize,
 ) -> Result<(), ()> {
@@ -277,8 +275,8 @@ pub(crate) fn retarget_custom_host_pipeline(
 
     if let Some(material) = materials.get_mut(&pipeline.material) {
         material.source_image = source_image;
-        material.lookup_texture = images.add(make_lookup_texture(prebaked_lookup));
-        material.lookup_params = palette_lookup_params(prebaked_lookup.is_some());
+        material.lookup_texture = images.add(make_lookup_texture(palette_lookup));
+        material.lookup_params = palette_lookup_params();
     } else {
         return Err(());
     }
@@ -454,13 +452,8 @@ fn palette_material_params(bias: &crate::palette::PaletteBias, palette_count: us
     )
 }
 
-fn palette_lookup_params(prebaked_lookup_active: bool) -> Vec4 {
-    Vec4::new(
-        if prebaked_lookup_active { 1.0 } else { 0.0 },
-        0.0,
-        0.0,
-        0.0,
-    )
+fn palette_lookup_params() -> Vec4 {
+    Vec4::new(1.0, 0.0, 0.0, 0.0)
 }
 
 fn palette_input_offset_a(bias: &crate::palette::PaletteBias) -> Vec4 {

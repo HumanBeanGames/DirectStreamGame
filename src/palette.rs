@@ -87,16 +87,13 @@ pub(crate) fn load_palette_config_runtime(path: &Path) -> PaletteConfig {
     })
 }
 
-pub(crate) fn load_prebaked_lookup_runtime(
-    path: &Path,
-    config: &PaletteConfig,
-) -> Option<PaletteLookup> {
+pub(crate) fn load_palette_lookup_runtime(path: &Path, config: &PaletteConfig) -> PaletteLookup {
     let sibling_path = sibling_lut_path(path);
     match load_lookup(&sibling_path, config) {
-        Ok(lookup) => Some(lookup),
+        Ok(lookup) => lookup,
         Err(err) => {
             panic!(
-                "Could not load prebaked palette lookup {}: {err}",
+                "Could not load palette lookup {}: {err}",
                 sibling_path.display()
             );
         }
@@ -418,7 +415,6 @@ pub(crate) fn start_palette_preview_encoder(
     palette_bias: SharedPaletteBias,
     active: CustomStreamState,
     palette_config_path: impl AsRef<Path>,
-    use_prebaked_lookup: bool,
     batch_size: usize,
 ) {
     let palette_config_path = palette_config_path.as_ref().to_owned();
@@ -427,9 +423,7 @@ pub(crate) fn start_palette_preview_encoder(
     let palette_matching = PaletteBias::from(palette_config.matching);
     palette_bias.set(palette_matching);
 
-    if use_prebaked_lookup {
-        let _ = load_prebaked_lookup_runtime(&palette_config_path, &palette_config);
-    }
+    let _ = load_palette_lookup_runtime(&palette_config_path, &palette_config);
 
     thread::spawn(move || {
         let mut publisher = IndexedFramePublisher::new(palette_colors);

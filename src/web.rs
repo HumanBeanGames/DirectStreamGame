@@ -1328,7 +1328,7 @@ fn palette_stream_page_html_with_options(
         </div>
       </div>
       <div class="right-region">
-        <aside class="chat">
+        <aside class="chat" id="chatPanel" hidden>
           <h2>Chat</h2>
           <div class="chat-log" id="chatLog">
             <p><strong>system</strong> custom host chat panel ready</p>
@@ -1358,6 +1358,7 @@ fn palette_stream_page_html_with_options(
     const volumeSlider = document.getElementById("volumeSlider");
     const chatForm = document.getElementById("chatForm");
     const chatInput = document.getElementById("chatInput");
+    const chatPanel = document.getElementById("chatPanel");
     const chatLog = document.getElementById("chatLog");
     const leftPanels = document.getElementById("leftPanels");
     const rightPanels = document.getElementById("rightPanels");
@@ -1403,6 +1404,7 @@ fn palette_stream_page_html_with_options(
     let audioShouldReconnect = false;
     let audioLoopRunning = false;
     let streamOnline = false;
+    let requestedUiVisible = false;
     let lastChatId = 0;
     let chatGeneration = null;
     let shownChatIds = new Set();
@@ -2064,14 +2066,12 @@ fn palette_stream_page_html_with_options(
           const response = await fetch("{stream_status_url}?t=" + Date.now(), {{ cache: "no-store" }});
           const status = await response.json();
           streamOnline = !!status.online;
-          if (!streamOnline) {{
-            clearCustomHostUi();
-          }}
+          setRequestedUiVisible(streamOnline);
           applyRuntimeBranding(status);
           updateUnmuteOverlay();
         }} catch (error) {{
           streamOnline = false;
-          clearCustomHostUi();
+          setRequestedUiVisible(false);
           updateUnmuteOverlay();
         }}
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -2287,6 +2287,7 @@ fn palette_stream_page_html_with_options(
     }});
 
     async function fetchChatFeed() {{
+      if (!streamOnline) return;
       const response = await fetch("{local_chat_feed_url}?after=" + lastChatId + "&t=" + Date.now(), identityFetchOptions({{ cache: "no-store" }}));
       if (!response.ok) {{
         throw new Error(`chat feed failed: ${{response.status}}`);
@@ -2321,17 +2322,20 @@ fn palette_stream_page_html_with_options(
 
     async function pollChatFeed() {{
       while (true) {{
-        try {{
-          await fetchChatFeed();
-        }} catch (error) {{
-          console.error(error);
-          appendSystemLine("chat feed offline");
+        if (streamOnline) {{
+          try {{
+            await fetchChatFeed();
+          }} catch (error) {{
+            console.error(error);
+            appendSystemLine("chat feed offline");
+          }}
         }}
         await new Promise(resolve => setTimeout(resolve, 650));
       }}
     }}
 
     async function fetchCustomPanels() {{
+      if (!streamOnline) return;
       const response = await fetch("{custom_panels_url}?t=" + Date.now(), identityFetchOptions({{ cache: "no-store" }}));
       if (!response.ok) {{
         throw new Error(`panel fetch failed: ${{response.status}}`);
@@ -2341,6 +2345,7 @@ fn palette_stream_page_html_with_options(
     }}
 
     async function fetchCustomOverlays() {{
+      if (!streamOnline) return;
       const response = await fetch("{custom_overlays_url}?t=" + Date.now(), identityFetchOptions({{ cache: "no-store" }}));
       if (!response.ok) {{
         throw new Error(`overlay fetch failed: ${{response.status}}`);
@@ -2352,11 +2357,13 @@ fn palette_stream_page_html_with_options(
 
     async function pollCustomPanels() {{
       while (true) {{
-        try {{
-          await fetchCustomPanels();
-        }} catch (error) {{
-          console.error(error);
-          clearCustomPanels();
+        if (streamOnline) {{
+          try {{
+            await fetchCustomPanels();
+          }} catch (error) {{
+            console.error(error);
+            clearCustomPanels();
+          }}
         }}
         await new Promise(resolve => setTimeout(resolve, 1000));
       }}
@@ -2364,17 +2371,31 @@ fn palette_stream_page_html_with_options(
 
     async function pollCustomOverlays() {{
       while (true) {{
-        try {{
-          await fetchCustomOverlays();
-        }} catch (error) {{
-          console.error(error);
-          clearCustomOverlays();
+        if (streamOnline) {{
+          try {{
+            await fetchCustomOverlays();
+          }} catch (error) {{
+            console.error(error);
+            clearCustomOverlays();
+          }}
         }}
         await new Promise(resolve => setTimeout(resolve, 250));
       }}
     }}
 
+    function setRequestedUiVisible(visible) {{
+      if (requestedUiVisible === visible) return;
+      requestedUiVisible = visible;
+      chatPanel.hidden = !visible;
+      if (!visible) {{
+        clearCustomHostUi();
+      }} else {{
+        clearChatLog();
+      }}
+    }}
+
     function clearCustomHostUi() {{
+      clearChatLog();
       clearCustomPanels();
       clearCustomOverlays();
     }}

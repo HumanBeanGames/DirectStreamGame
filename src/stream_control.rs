@@ -8,9 +8,7 @@ use crate::{
         retarget_custom_host_pipeline,
     },
     palette::PaletteFrameHub,
-    palette::{
-        PaletteBias, SharedPaletteBias, load_palette_config_runtime, load_prebaked_lookup_runtime,
-    },
+    palette::{load_palette_config_runtime, load_palette_lookup_runtime},
     public_types::{
         DirectStreamAudioSyncConfig, DirectStreamControlAction, DirectStreamControlResult,
         DirectStreamMode, DirectStreamStartRequest, DirectStreamState, DirectStreamStopRequest,
@@ -19,9 +17,7 @@ use crate::{
     scene::StreamReadback,
     stats::SharedStats,
 };
-use bevy::{
-    camera::RenderTarget, input::keyboard::KeyboardInput, prelude::*, ui::RelativeCursorPosition,
-};
+use bevy::{camera::RenderTarget, input::keyboard::KeyboardInput, prelude::*};
 use crossbeam_channel::Sender;
 use std::sync::{
     Arc,
@@ -33,14 +29,11 @@ pub(crate) struct StreamControl {
     pub(crate) custom_width: String,
     pub(crate) custom_height: String,
     pub(crate) custom_fps: String,
-    pub(crate) palette_bias: PaletteBias,
-    pub(crate) prebaked_palette: bool,
     pub(crate) focused_input: Option<StreamControlInput>,
     pub(crate) status: String,
     preview_sender: Option<Sender<RawFrame>>,
     custom_sender: Option<Sender<IndexedFrame>>,
     custom_stream_state: CustomStreamState,
-    shared_palette_bias: SharedPaletteBias,
 }
 
 impl StreamControl {
@@ -49,21 +42,16 @@ impl StreamControl {
         preview_sender: Option<Sender<RawFrame>>,
         custom_sender: Option<Sender<IndexedFrame>>,
         custom_stream_state: CustomStreamState,
-        shared_palette_bias: SharedPaletteBias,
     ) -> Self {
-        let palette_bias = shared_palette_bias.get();
         Self {
             custom_width: config.stream_width.to_string(),
             custom_height: config.stream_height.to_string(),
             custom_fps: config.stream_fps.to_string(),
-            palette_bias,
-            prebaked_palette: config.prebaked_palette,
             focused_input: None,
             status: "Ready".to_owned(),
             preview_sender,
             custom_sender,
             custom_stream_state,
-            shared_palette_bias,
         }
     }
 
@@ -110,10 +98,8 @@ impl StreamControl {
 
         let batch_size = effective_custom_batch_size(config.custom_host_batch_size, fps);
         let palette_config = load_palette_config_runtime(&config.palette_config_path);
-        let palette_lookup = self
-            .prebaked_palette
-            .then(|| load_prebaked_lookup_runtime(&config.palette_config_path, &palette_config))
-            .flatten();
+        let palette_lookup =
+            load_palette_lookup_runtime(&config.palette_config_path, &palette_config);
         let image = images.add(make_stream_source_image(width, height));
 
         if let Ok(mut camera_target) = camera_targets.get_mut(target.camera) {
@@ -132,7 +118,7 @@ impl StreamControl {
             width,
             height,
             image.clone(),
-            palette_lookup.as_ref(),
+            &palette_lookup,
             target,
             batch_size,
         )
@@ -248,45 +234,6 @@ impl StreamControl {
             status: self.status.clone(),
         }
     }
-
-    pub(crate) fn set_palette_bias_slider(&mut self, slider: PaletteBiasSlider, value: f32) {
-        if self.prebaked_palette {
-            return;
-        }
-
-        let value = value.clamp(0.0, 1.0);
-        let mut values = [
-            self.palette_bias.lightness,
-            self.palette_bias.chroma,
-            self.palette_bias.hue,
-        ];
-        let changed_index = slider.index();
-        values[changed_index] = value;
-        let remaining = 1.0 - value;
-        let other_indices: Vec<usize> = (0..3).filter(|index| *index != changed_index).collect();
-        let other_total: f32 = other_indices.iter().map(|index| values[*index]).sum();
-
-        if other_total <= f32::EPSILON {
-            let split = remaining / other_indices.len() as f32;
-            for index in other_indices {
-                values[index] = split;
-            }
-        } else {
-            for index in other_indices {
-                values[index] = values[index] / other_total * remaining;
-            }
-        }
-
-        let total = values.iter().sum::<f32>();
-        values[2] = (values[2] + 1.0 - total).clamp(0.0, 1.0);
-        self.palette_bias = PaletteBias {
-            lightness: values[0],
-            chroma: values[1],
-            hue: values[2],
-            ..self.palette_bias
-        };
-        self.shared_palette_bias.set(self.palette_bias);
-    }
 }
 
 #[derive(Clone, Resource)]
@@ -350,23 +297,6 @@ fn valid_custom_dimensions(width: u32, height: u32, fps: u32) -> bool {
         && (1..=60).contains(&fps)
 }
 
-#[derive(Component, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PaletteBiasSlider {
-    Lightness,
-    Chroma,
-    Hue,
-}
-
-impl PaletteBiasSlider {
-    fn index(self) -> usize {
-        match self {
-            Self::Lightness => 0,
-            Self::Chroma => 1,
-            Self::Hue => 2,
-        }
-    }
-}
-
 #[derive(Component)]
 pub(crate) struct CustomWidthInputBox;
 #[derive(Component)]
@@ -379,12 +309,6 @@ pub(crate) struct CustomWidthInputText;
 pub(crate) struct CustomHeightInputText;
 #[derive(Component)]
 pub(crate) struct CustomFpsInputText;
-
-#[derive(Component, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PaletteBiasSliderValueText(pub(crate) PaletteBiasSlider);
-
-#[derive(Component, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PaletteBiasSliderFill(pub(crate) PaletteBiasSlider);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StreamControlInput {
@@ -630,30 +554,6 @@ pub(crate) fn handle_stream_misc_button_interactions(
     }
 }
 
-pub(crate) fn handle_palette_bias_sliders(
-    mut control: ResMut<StreamControl>,
-    mut sliders: Query<
-        (
-            &Interaction,
-            &RelativeCursorPosition,
-            &PaletteBiasSlider,
-            &mut BackgroundColor,
-        ),
-        Changed<Interaction>,
-    >,
-) {
-    for (interaction, cursor, slider, mut color) in &mut sliders {
-        if *interaction == Interaction::Pressed && !control.prebaked_palette {
-            let value = cursor
-                .normalized
-                .map(|position| position.x.clamp(0.0, 1.0))
-                .unwrap_or(0.0);
-            control.set_palette_bias_slider(*slider, value);
-        }
-        *color = button_color(*interaction, Color::srgb(0.08, 0.10, 0.14));
-    }
-}
-
 pub(crate) fn update_stream_control_ui(
     control: Res<StreamControl>,
     mut texts: ParamSet<(
@@ -661,9 +561,7 @@ pub(crate) fn update_stream_control_ui(
         Query<&mut Text, With<CustomWidthInputText>>,
         Query<&mut Text, With<CustomHeightInputText>>,
         Query<&mut Text, With<CustomFpsInputText>>,
-        Query<(&PaletteBiasSliderValueText, &mut Text)>,
     )>,
-    mut slider_fills: Query<(&PaletteBiasSliderFill, &mut Node)>,
 ) {
     if !control.is_changed() {
         return;
@@ -688,13 +586,6 @@ pub(crate) fn update_stream_control_ui(
     }
     if let Ok(mut text) = texts.p3().single_mut() {
         **text = control.custom_fps.clone();
-    }
-
-    for (marker, mut text) in &mut texts.p4() {
-        **text = format!("{:.2}", slider_value(control.palette_bias, marker.0));
-    }
-    for (marker, mut node) in &mut slider_fills {
-        node.width = percent((slider_value(control.palette_bias, marker.0) * 100.0) as f64);
     }
 }
 
@@ -732,14 +623,6 @@ fn pop_focused_text(control: &mut StreamControl, focused_input: StreamControlInp
         StreamControlInput::CustomFps => {
             control.custom_fps.pop();
         }
-    }
-}
-
-fn slider_value(bias: PaletteBias, slider: PaletteBiasSlider) -> f32 {
-    match slider {
-        PaletteBiasSlider::Lightness => bias.lightness,
-        PaletteBiasSlider::Chroma => bias.chroma,
-        PaletteBiasSlider::Hue => bias.hue,
     }
 }
 

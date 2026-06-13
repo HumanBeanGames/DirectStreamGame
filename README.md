@@ -12,7 +12,7 @@ The repository binary is a demo. The reusable library is exposed from
 
 - Bevy `0.18.1` app shell with a dedicated stream render target.
 - GPU readback with bounded in-flight capture and fixed-size frame batching.
-- GPU palette indexing with optional prebaked `.ipsmap` lookup textures.
+- GPU palette indexing with required `.ipsmap` lookup textures in custom-host mode.
 - Indexed Pixel Stream Codec (`IPSC`) custom-host video.
 - 8 kHz mono mu-law browser audio for low-bandwidth custom streams.
 - Stream-only audio mixer. Bevy speaker output is disabled by default.
@@ -20,8 +20,8 @@ The repository binary is a demo. The reusable library is exposed from
   temporary messages, and purge support.
 - Side-panel publishing for custom app UI outside the stream canvas.
 - Stream canvas click events forwarded back into Bevy.
-- Stats/control window with Start, End, Open, Purge Chat, resolution, FPS, and
-  palette matching controls.
+- Stats/control window with Start, End, Open, Purge Chat, resolution, and FPS
+  controls.
 - Palette Lab and PNG Converter Lab for creating palettes, LUTs, and IPSI still
   images.
 - Demo scene with looping music, `!boing` sound effect, and drag-and-drop video
@@ -63,13 +63,13 @@ Then keep vcpkg on the environment when building/running:
 ```powershell
 $env:VCPKG_ROOT = "C:\vcpkg"
 $env:PATH = "C:\vcpkg\installed\x64-windows\bin;$env:PATH"
-cargo run --bin DirectStreamGame -- --stats-window --custom-host --prebaked
+cargo run --bin DirectStreamGame -- --stats-window --custom-host
 ```
 
 ## Running The Demo
 
 ```powershell
-cargo run --bin DirectStreamGame -- --stats-window --custom-host --prebaked
+cargo run --bin DirectStreamGame -- --stats-window --custom-host
 ```
 
 Then press **Start** in the stats window and open:
@@ -84,8 +84,6 @@ Useful flags:
 --stats-window
 --headless-window
 --custom-host
---prebaked
---use_prebaked_lookup
 --palette-config=palette.toml
 --stream-width=128
 --stream-height=128
@@ -658,7 +656,7 @@ sprites are synced each frame.
 Local custom host:
 
 ```powershell
-cargo run --bin DirectStreamGame -- --stats-window --custom-host --prebaked
+cargo run --bin DirectStreamGame -- --stats-window --custom-host
 ```
 
 Public hosting layout used by this project:
@@ -788,10 +786,8 @@ Custom-host mode requires a palette config file. Pass
 `--palette-config=path/to/palette.toml`, or place `palette.toml` in the current
 working directory. Missing or invalid palette configs fail startup immediately.
 
-Custom-host mode uses live OKLab/OKLCH palette matching by default. Pass
-`--prebaked` or `--use_prebaked_lookup` to require a sibling `.ipsmap` direct
-lookup table. Missing, invalid, or stale `.ipsmap` files fail startup
-immediately when prebaked lookup mode is enabled.
+Custom-host mode always requires a sibling `.ipsmap` direct lookup table.
+Missing, invalid, or stale `.ipsmap` files fail startup immediately.
 
 The `.ipsmap` file is a 16 MB direct sRGB-to-palette lookup table. It is only
 accepted when its hash matches the palette colours and matching settings.
@@ -845,9 +841,10 @@ dark_neutral_chroma_weight_scale = 8.0
 ```
 
 When enabled, colours below the lightness/chroma thresholds multiply the chroma
-distance weight by `dark_neutral_chroma_weight_scale`. CPU lookup generation and
-GPU live matching both use the same rule. Enabled dark-neutral settings are
-included in the `.ipsmap` hash, so stale lookup maps are rejected.
+distance weight by `dark_neutral_chroma_weight_scale`. Lookup generation uses
+the same rule that the custom-host GPU stream consumes through `.ipsmap`.
+Enabled dark-neutral settings are included in the `.ipsmap` hash, so stale
+lookup maps are rejected.
 
 Migration for existing apps:
 
@@ -857,8 +854,7 @@ Migration for existing apps:
    they are treated as zero-offset palettes.
 3. To use the shifted matching behavior, add the offset fields above or generate
    a new palette from the Palette Lab.
-4. If the app uses `--prebaked` or `--use_prebaked_lookup`, regenerate and ship
-   the sibling `.ipsmap` next to the updated `palette.toml`.
+4. Regenerate and ship the sibling `.ipsmap` next to the updated `palette.toml`.
 5. If you add `preserve_dark_neutrals = true`, regenerate the `.ipsmap`; old
    lookup files intentionally fail the hash check.
 6. Redeploy the static lab from `dist/ipsc_lab` if viewers or tools use the

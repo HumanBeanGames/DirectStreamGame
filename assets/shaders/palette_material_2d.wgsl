@@ -121,46 +121,12 @@ fn linear_to_srgb(rgb: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let source = textureSample(source_image, source_sampler, mesh.uv).rgb;
-    if lookup_params.flags.x > 0.5 {
-        let source_u8 = vec3<u32>(round(linear_to_srgb(source) * 255.0));
-        let lookup_index = source_u8.r * 65536u + source_u8.g * 256u + source_u8.b;
-        let lookup_coord = vec2<i32>(
-            i32(lookup_index % 4096u),
-            i32(lookup_index / 4096u)
-        );
-        let palette_index = textureLoad(lookup_texture, lookup_coord, 0).r;
-        return vec4<f32>(palette_index, 0.0, 0.0, 1.0);
-    }
-
-    let bias = palette_params.bias.xyz;
-    let palette_count = u32(max(palette_params.bias.w, 1.0));
-
-    var best_color = textureLoad(palette_texture, vec2<i32>(0, 0), 0).rgb;
-    var best_index: u32 = 0u;
-    let source_oklch = apply_input_offset(oklab_to_oklch(rgb_to_oklab(source)));
-    var best_distance = biased_distance_squared_oklch(
-        source_oklch,
-        oklab_to_oklch(rgb_to_oklab(best_color)),
-        bias
+    let source_u8 = vec3<u32>(round(linear_to_srgb(source) * 255.0));
+    let lookup_index = source_u8.r * 65536u + source_u8.g * 256u + source_u8.b;
+    let lookup_coord = vec2<i32>(
+        i32(lookup_index % 4096u),
+        i32(lookup_index / 4096u)
     );
-
-    for (var index: u32 = 1u; index < 256u; index = index + 1u) {
-        if index >= palette_count {
-            break;
-        }
-        let candidate = textureLoad(palette_texture, vec2<i32>(i32(index), 0), 0).rgb;
-        let distance = biased_distance_squared_oklch(
-            source_oklch,
-            oklab_to_oklch(rgb_to_oklab(candidate)),
-            bias
-        );
-        if distance < best_distance {
-            best_distance = distance;
-            best_color = candidate;
-            best_index = index;
-        }
-    }
-
-    let normalized_index = f32(best_index) / 255.0;
-    return vec4<f32>(normalized_index, 0.0, 0.0, 1.0);
+    let palette_index = textureLoad(lookup_texture, lookup_coord, 0).r;
+    return vec4<f32>(palette_index, 0.0, 0.0, 1.0);
 }

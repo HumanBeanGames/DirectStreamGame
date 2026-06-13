@@ -16,10 +16,9 @@ use crate::{
     scene::{setup_direct_stream_scene, update_stats_window},
     stream_control::{
         handle_direct_stream_start_requests, handle_direct_stream_stop_requests,
-        handle_palette_bias_sliders, handle_stream_input_box_interactions,
-        handle_stream_key_typing, handle_stream_misc_button_interactions,
-        handle_stream_start_interactions, handle_stream_stop_interactions,
-        update_stream_control_ui,
+        handle_stream_input_box_interactions, handle_stream_key_typing,
+        handle_stream_misc_button_interactions, handle_stream_start_interactions,
+        handle_stream_stop_interactions, update_stream_control_ui,
     },
     web::start_local_web_server_from_resources,
 };
@@ -72,7 +71,6 @@ impl Plugin for DirectStreamPlugin {
                     handle_direct_stream_start_requests,
                     handle_direct_stream_stop_requests,
                     handle_stream_misc_button_interactions,
-                    handle_palette_bias_sliders,
                 ),
             )
             .add_systems(Update, (update_stream_control_ui, update_stats_window));

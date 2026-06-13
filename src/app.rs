@@ -62,7 +62,6 @@ pub fn direct_stream_app() -> App {
         preview_enabled.then_some(preview_sender.clone()),
         custom_host.then_some(custom_sender.clone()),
         custom_stream_state.clone(),
-        palette_bias.clone(),
     );
     let window_resolution = match config.window_mode {
         WindowMode::Preview => (STREAM_WIDTH, STREAM_HEIGHT),
@@ -83,7 +82,6 @@ pub fn direct_stream_app() -> App {
             palette_bias.clone(),
             custom_stream_state.clone(),
             config.palette_config_path.clone(),
-            config.prebaked_palette,
             effective_custom_batch_size(config.custom_host_batch_size, config.stream_fps),
         );
     } else if preview_enabled {

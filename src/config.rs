@@ -11,7 +11,6 @@ pub(crate) enum WindowMode {
 pub(crate) struct AppConfig {
     pub(crate) window_mode: WindowMode,
     pub(crate) custom_host: bool,
-    pub(crate) prebaked_palette: bool,
     pub(crate) stream_width: u32,
     pub(crate) stream_height: u32,
     pub(crate) stream_fps: u32,
@@ -23,7 +22,6 @@ impl AppConfig {
     pub(crate) fn from_args() -> Self {
         let mut window_mode = WindowMode::Preview;
         let mut custom_host = false;
-        let mut prebaked_palette = false;
         let mut stream_width = STREAM_WIDTH;
         let mut stream_height = STREAM_HEIGHT;
         let mut stream_fps = STREAM_FPS;
@@ -38,8 +36,6 @@ impl AppConfig {
             } else if arg == "--custom-host" {
                 custom_host = true;
                 window_mode = WindowMode::Stats;
-            } else if arg == "--prebaked" || arg == "--use_prebaked_lookup" {
-                prebaked_palette = true;
             } else if let Some(width) = arg.strip_prefix("--stream-width=") {
                 stream_width = width.parse().unwrap_or(stream_width);
                 stream_width_set = true;
@@ -69,7 +65,6 @@ impl AppConfig {
         Self {
             window_mode,
             custom_host,
-            prebaked_palette,
             stream_width,
             stream_height,
             stream_fps,

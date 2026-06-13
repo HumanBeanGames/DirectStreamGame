@@ -16,6 +16,10 @@ struct InputHueOffsetParams {
     values: vec4<f32>,
 };
 
+struct DarkNeutralParams {
+    values: vec4<f32>,
+};
+
 @group(#{MATERIAL_BIND_GROUP}) @binding(0)
 var<uniform> palette_params: PaletteParams;
 
@@ -39,6 +43,9 @@ var<uniform> input_offset_params: InputOffsetParams;
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(7)
 var<uniform> input_hue_offset_params: InputHueOffsetParams;
+
+@group(#{MATERIAL_BIND_GROUP}) @binding(8)
+var<uniform> dark_neutral_params: DarkNeutralParams;
 
 fn rgb_to_oklab(rgb: vec3<f32>) -> vec3<f32> {
     let l = 0.41222146 * rgb.r + 0.53633255 * rgb.g + 0.051445995 * rgb.b;
@@ -85,8 +92,14 @@ fn biased_distance_squared_oklch(color: vec3<f32>, palette_color: vec3<f32>, bia
         hue_delta = 2.0 * 3.14159265 - hue_delta;
     }
     let dh = sin(hue_delta * 0.5) * 2.0 * max(color_c, palette_c);
+    let dark_values = dark_neutral_params.values;
+    let chroma_weight = select(
+        bias.y,
+        bias.y * max(dark_values.w, 1.0),
+        dark_values.x > 0.5 && color_l <= dark_values.y && color_c <= dark_values.z
+    );
 
-    return bias.x * dl * dl + bias.y * dc * dc + bias.z * dh * dh;
+    return bias.x * dl * dl + chroma_weight * dc * dc + bias.z * dh * dh;
 }
 
 fn linear_to_srgb_channel(value: f32) -> f32 {

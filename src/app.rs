@@ -15,7 +15,7 @@ use crate::{
         PaletteFrameHub, SharedPaletteBias, load_palette_runtime, start_palette_preview_encoder,
     },
     preview::start_preview_encoder,
-    public_types::{DirectStreamMode, DirectStreamState},
+    public_types::{DirectStreamAudioSyncConfig, DirectStreamMode, DirectStreamState},
     stats::SharedStats,
     stream_control::{CustomStreamState, StreamControl},
 };
@@ -103,6 +103,7 @@ pub fn direct_stream_app() -> App {
         .insert_resource(stream_clicks)
         .insert_resource(CustomHostBranding::default())
         .insert_resource(CustomHostLayout::default())
+        .insert_resource(DirectStreamAudioSyncConfig::default())
         .insert_resource(CustomHostViewerNameRefresh::default())
         .insert_resource(custom_stream_state)
         .insert_resource(palette_bias)

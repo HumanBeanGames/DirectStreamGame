@@ -43,6 +43,10 @@ pub(crate) struct PaletteBias {
     pub(crate) chroma_multiply: f32,
     pub(crate) chroma_add: f32,
     pub(crate) hue_add: f32,
+    pub(crate) preserve_dark_neutrals: bool,
+    pub(crate) dark_neutral_luma_threshold: f32,
+    pub(crate) dark_neutral_chroma_threshold: f32,
+    pub(crate) dark_neutral_chroma_weight_scale: f32,
 }
 
 impl Default for PaletteBias {
@@ -56,6 +60,10 @@ impl Default for PaletteBias {
             chroma_multiply: 0.0,
             chroma_add: 0.0,
             hue_add: 0.0,
+            preserve_dark_neutrals: false,
+            dark_neutral_luma_threshold: 0.18,
+            dark_neutral_chroma_threshold: 0.045,
+            dark_neutral_chroma_weight_scale: 8.0,
         }
     }
 }
@@ -120,6 +128,10 @@ impl From<PaletteMatching> for PaletteBias {
             chroma_multiply: matching.chroma_multiply,
             chroma_add: matching.chroma_add,
             hue_add: matching.hue_add,
+            preserve_dark_neutrals: matching.preserve_dark_neutrals,
+            dark_neutral_luma_threshold: matching.dark_neutral_luma_threshold,
+            dark_neutral_chroma_threshold: matching.dark_neutral_chroma_threshold,
+            dark_neutral_chroma_weight_scale: matching.dark_neutral_chroma_weight_scale,
         }
     }
 }
@@ -135,6 +147,10 @@ impl From<PaletteBias> for PaletteMatching {
             chroma_multiply: bias.chroma_multiply,
             chroma_add: bias.chroma_add,
             hue_add: bias.hue_add,
+            preserve_dark_neutrals: bias.preserve_dark_neutrals,
+            dark_neutral_luma_threshold: bias.dark_neutral_luma_threshold,
+            dark_neutral_chroma_threshold: bias.dark_neutral_chroma_threshold,
+            dark_neutral_chroma_weight_scale: bias.dark_neutral_chroma_weight_scale,
         }
     }
 }
@@ -202,6 +218,16 @@ impl PaletteFrameHub {
     pub(crate) fn new() -> Self {
         Self {
             inner: Arc::new((Mutex::new(LatestPaletteFrame::default()), Condvar::new())),
+        }
+    }
+
+    pub(crate) fn clear(&self) {
+        let (lock, ready) = &*self.inner;
+        if let Ok(mut latest) = lock.lock() {
+            latest.sequence = 0;
+            latest.stream_header = None;
+            latest.encoded_history.clear();
+            ready.notify_all();
         }
     }
 
@@ -419,10 +445,27 @@ pub(crate) fn start_palette_preview_encoder(
         let mut pending_batch = Vec::with_capacity(batch_size.max(1));
         let mut previous_framebuffer = None;
         let mut sequence = 0u64;
+        let mut was_active = false;
+        let mut warmup_remaining = 0u32;
 
         for raw_frame in receiver {
-            if !active.is_active() {
+            let is_active = active.is_active();
+            if !is_active {
+                if was_active {
+                    pending_batch.clear();
+                    previous_framebuffer = None;
+                    sequence = 0;
+                }
+                was_active = false;
                 continue;
+            }
+            if !was_active {
+                pending_batch.clear();
+                previous_framebuffer = None;
+                sequence = 0;
+                publisher.reset();
+                warmup_remaining = active.warmup_frames();
+                was_active = true;
             }
             let captured_at = raw_frame.captured_at;
             let pipeline_started = Instant::now();
@@ -435,6 +478,17 @@ pub(crate) fn start_palette_preview_encoder(
                     let is_keyframe = encoded.is_keyframe;
                     let frame_index = encoded.frame_index;
                     let framebuffer = encoded.framebuffer;
+                    if should_skip_startup_frame(
+                        &framebuffer,
+                        &mut warmup_remaining,
+                        active.suppress_initial_blank_frame(),
+                    ) {
+                        stats.with_mut(|stats| {
+                            stats.custom_warmup_frames_skipped += 1;
+                            stats.custom_stage = "warming";
+                        });
+                        continue;
+                    }
                     sequence += 1;
 
                     if !active.is_active() {
@@ -470,6 +524,13 @@ pub(crate) fn start_palette_preview_encoder(
                         let encoded_tile_counts = encoded_batch.tile_counts;
                         let latest_frame_bytes = encoded_bytes / encoded_frame_count.max(1);
                         stats.with_mut(|stats| {
+                            if stats.custom_first_nonblank_sequence == 0 {
+                                stats.custom_first_nonblank_sequence = sequence;
+                                if encoded_keyframes > 0 {
+                                    stats.custom_first_keyframe_age_ms =
+                                        captured_at.elapsed().as_secs_f64() * 1000.0;
+                                }
+                            }
                             stats.record_custom_http_batch(encoded_frame_count);
                             stats.custom_bytes_sent += (encoded_bytes + 4) as u64;
                             stats.custom_keyframes_sent += encoded_keyframes;
@@ -576,6 +637,13 @@ impl IndexedFramePublisher {
         }
     }
 
+    fn reset(&mut self) {
+        self.frame_index = 0;
+        self.header = None;
+        self.header_width = 0;
+        self.header_height = 0;
+    }
+
     fn publishable_frame(&mut self, indexed: IndexedFrame) -> Result<EncodedFrame, String> {
         let pixel_count = indexed.width as usize * indexed.height as usize;
         if indexed.indices.len() < pixel_count {
@@ -628,6 +696,22 @@ impl IndexedFramePublisher {
             frame_index,
         })
     }
+}
+
+fn should_skip_startup_frame(
+    framebuffer: &Framebuffer,
+    warmup_remaining: &mut u32,
+    suppress_initial_blank_frame: bool,
+) -> bool {
+    if *warmup_remaining > 0 {
+        *warmup_remaining -= 1;
+        return true;
+    }
+    suppress_initial_blank_frame && framebuffer_is_uniform(framebuffer, 0)
+}
+
+fn framebuffer_is_uniform(framebuffer: &Framebuffer, value: u8) -> bool {
+    framebuffer.pixels.iter().all(|pixel| *pixel == value)
 }
 
 #[cfg(any(test, feature = "cpu-palette-encoder"))]
@@ -777,6 +861,18 @@ impl IndexedPixelEncoder {
             && (bias.chroma_multiply - self.lookup_matching.chroma_multiply).abs() <= 0.000_5
             && (bias.chroma_add - self.lookup_matching.chroma_add).abs() <= 0.000_5
             && (bias.hue_add - self.lookup_matching.hue_add).abs() <= 0.000_5
+            && bias.preserve_dark_neutrals == self.lookup_matching.preserve_dark_neutrals
+            && (bias.dark_neutral_luma_threshold - self.lookup_matching.dark_neutral_luma_threshold)
+                .abs()
+                <= 0.000_5
+            && (bias.dark_neutral_chroma_threshold
+                - self.lookup_matching.dark_neutral_chroma_threshold)
+                .abs()
+                <= 0.000_5
+            && (bias.dark_neutral_chroma_weight_scale
+                - self.lookup_matching.dark_neutral_chroma_weight_scale)
+                .abs()
+                <= 0.000_5
     }
 
     fn nearest_palette_index(&self, r: u8, g: u8, b: u8, bias: PaletteBias) -> u8 {
@@ -962,7 +1058,15 @@ impl Oklch {
         let dl = self.l - other.l;
         let dc = self.c - other.c;
         let dh = (hue_delta(self.h, other.h) * 0.5).sin() * 2.0 * self.c.max(other.c);
-        bias.lightness * dl * dl + bias.chroma * dc * dc + bias.hue * dh * dh
+        let chroma_weight = if bias.preserve_dark_neutrals
+            && self.l <= bias.dark_neutral_luma_threshold
+            && self.c <= bias.dark_neutral_chroma_threshold
+        {
+            bias.chroma * bias.dark_neutral_chroma_weight_scale.max(1.0)
+        } else {
+            bias.chroma
+        };
+        bias.lightness * dl * dl + chroma_weight * dc * dc + bias.hue * dh * dh
     }
 }
 

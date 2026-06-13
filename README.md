@@ -195,21 +195,36 @@ Custom-host streams can also be started or stopped from game code with messages:
 
 ```rust
 use bevy::prelude::*;
-use direct_stream_game::{DirectStreamMode, DirectStreamStartRequest};
+use direct_stream_game::DirectStreamStartRequest;
 
 fn auto_start(mut requests: MessageWriter<DirectStreamStartRequest>) {
-    requests.write(DirectStreamStartRequest {
-        mode: DirectStreamMode::CustomHost,
-        width: 128,
-        height: 128,
-        fps: 30,
-    });
+    requests.write(DirectStreamStartRequest::custom_host(128, 128, 30));
 }
 ```
 
 Read `DirectStreamControlResult` messages if you need to react to success or
 validation failures. The stats-window Start/End buttons use the same message
-path.
+path. `DirectStreamStartRequest` also carries startup warmup controls:
+`warmup_frames` defaults to `2`, and `suppress_initial_blank_frame` defaults to
+`true`, which prevents initialized black render targets from becoming the first
+published keyframe.
+
+Audio/video sync can be tuned with `DirectStreamAudioSyncConfig`:
+
+```rust
+use direct_stream_game::{AudioSyncMode, DirectStreamAudioSyncConfig};
+
+app.insert_resource(DirectStreamAudioSyncConfig {
+    mode: AudioSyncMode::MatchEstimatedVideoLatency,
+    fixed_delay_ms: 1_000,
+    extra_delay_ms: 0,
+});
+```
+
+`Fixed` preserves the old fixed-delay behavior. `MatchEstimatedVideoLatency`
+uses the configured FPS and batch size to align stream audio with the expected
+video presentation delay. `MatchMeasuredVideoLatency` currently falls back to
+the estimate unless measured browser telemetry is supplied in a future version.
 
 ### Migrating An Existing Bevy Game
 
@@ -386,6 +401,13 @@ fn main() {
 larger default player cap, and whether the browser shows a persistent
 minimize/restore stream button. The minimized state is stored in browser
 `localStorage`.
+
+Runtime and static pages both derive their visible title/header from
+`CustomHostBranding`. `/status.json` also reports the active branding, layout,
+package version, warmup count, and latency estimates, so a static Pages export
+can correct stale visible branding when it connects to a differently branded
+runtime host. Static exports include version and export-time metadata in the
+HTML.
 
 ## Panels And Clicks
 
@@ -668,6 +690,21 @@ The exporter accepts the same browser options for static hosting:
 cargo run --bin ipsc_export_static_stream -- https://game.humanbeangames.com --page-title MERCANTILE --header-title MERCANTILE --prefer-larger-player --max-player-width 1280 --minimizable-player
 ```
 
+Downstream tools can export the same page without invoking the CLI:
+
+```rust
+use direct_stream_game::{
+    CustomHostBranding, CustomHostLayout, export_static_palette_stream_page,
+};
+
+export_static_palette_stream_page(
+    "dist/humanbeangames_stream",
+    "https://game.humanbeangames.com",
+    &CustomHostBranding::new("MERCANTILE", "MERCANTILE"),
+    &CustomHostLayout::default().prefer_larger_player(),
+)?;
+```
+
 Upload the contents of:
 
 ```text
@@ -800,6 +837,22 @@ lookup payload must contain the nearest palette result for the offset-adjusted
 input colour. Do not reuse an old `.ipsmap` after changing weights, offsets, or
 palette colours.
 
+Very dark, low-saturation colours can opt into neutral preservation. This keeps
+night/shadow pixels from snapping to saturated purple or pink when hue has a
+high priority:
+
+```toml
+preserve_dark_neutrals = true
+dark_neutral_luma_threshold = 0.18
+dark_neutral_chroma_threshold = 0.045
+dark_neutral_chroma_weight_scale = 8.0
+```
+
+When enabled, colours below the lightness/chroma thresholds multiply the chroma
+distance weight by `dark_neutral_chroma_weight_scale`. CPU lookup generation and
+GPU live matching both use the same rule. Enabled dark-neutral settings are
+included in the `.ipsmap` hash, so stale lookup maps are rejected.
+
 Migration for existing apps:
 
 1. Update the `DirectStreamGame` dependency to a version that supports input
@@ -810,7 +863,9 @@ Migration for existing apps:
    a new palette from the Palette Lab.
 4. If the app uses `--prebaked` or `--use_prebaked_lookup`, regenerate and ship
    the sibling `.ipsmap` next to the updated `palette.toml`.
-5. Redeploy the static lab from `dist/ipsc_lab` if viewers or tools use the
+5. If you add `preserve_dark_neutrals = true`, regenerate the `.ipsmap`; old
+   lookup files intentionally fail the hash check.
+6. Redeploy the static lab from `dist/ipsc_lab` if viewers or tools use the
    browser Palette Lab.
 
 Combined browser lab:

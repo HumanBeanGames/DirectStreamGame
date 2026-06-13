@@ -21,8 +21,10 @@ use crate::{
 };
 use bevy::prelude::*;
 use std::{
+    fs,
     io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
+    path::Path,
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -205,7 +207,7 @@ fn handle_web_request(
         }
     } else if path.starts_with(STREAM_STATUS_PATH) {
         if let LocalStreamSource::Palette { active, .. } = source {
-            serve_stream_status(stream, active);
+            serve_stream_status(stream, active, stats, &branding, &layout);
         } else {
             serve_not_found(stream);
         }
@@ -300,18 +302,77 @@ fn serve_not_found(mut stream: TcpStream) {
     let _ = stream.write_all(response.as_bytes());
 }
 
-fn serve_stream_status(mut stream: TcpStream, active: CustomStreamState) {
-    let body = if active.is_active() {
-        r#"{"online":true}"#
+fn serve_stream_status(
+    mut stream: TcpStream,
+    active: CustomStreamState,
+    stats: SharedStats,
+    branding: &CustomHostBranding,
+    layout: &CustomHostLayout,
+) {
+    let stats_snapshot = stats.0.lock().ok();
+    let (
+        batch_duration_ms,
+        readback_latency_ms,
+        http_batch_latency_ms,
+        video_latency_ms_estimate,
+        audio_delay_ms,
+        warmup_frames_skipped,
+    ) = if let Some(stats) = stats_snapshot.as_deref() {
+        let batch_duration_ms = if active.fps() > 0 && stats.custom_http_batch_last_frames > 0 {
+            stats.custom_http_batch_last_frames.saturating_sub(1) as f64 * 1000.0
+                / active.fps() as f64
+        } else {
+            0.0
+        };
+        let readback_latency_ms =
+            stats.custom_readback_wait_avg_ms + stats.custom_readback_cpu_avg_ms;
+        let http_batch_latency_ms = stats.custom_batch_latency_ms;
+        (
+            batch_duration_ms,
+            readback_latency_ms,
+            http_batch_latency_ms,
+            batch_duration_ms + readback_latency_ms + http_batch_latency_ms,
+            stats.custom_audio_delay_ms,
+            stats.custom_warmup_frames_skipped,
+        )
     } else {
-        r#"{"online":false}"#
+        (0.0, 0.0, 0.0, 0.0, active.audio_delay_ms(), 0)
     };
+    let body = format!(
+        r#"{{"online":{},"version":"{}","branding":{{"page_title":"{}","header_title":"{}"}},"layout":{{"max_player_width_px":{},"prefer_larger_player":{},"minimizable_player":{},"start_player_minimized":{}}},"fps":{},"audio_delay_ms":{},"video_latency_ms_estimate":{},"batch_duration_ms":{},"readback_latency_ms":{},"http_batch_latency_ms":{},"warmup_frames_skipped":{}}}"#,
+        active.is_active(),
+        env!("CARGO_PKG_VERSION"),
+        json_escape(&branding.page_title),
+        json_escape(&branding.header_title),
+        layout
+            .max_player_width_px
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".to_owned()),
+        layout.prefer_larger_player,
+        layout.minimizable_player,
+        layout.start_player_minimized,
+        active.fps(),
+        audio_delay_ms,
+        rounded_json_number(video_latency_ms_estimate),
+        rounded_json_number(batch_duration_ms),
+        rounded_json_number(readback_latency_ms),
+        rounded_json_number(http_batch_latency_ms),
+        warmup_frames_skipped,
+    );
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store, no-cache, must-revalidate, max-age=0\r\nPragma: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
         body.len(),
         body
     );
     let _ = stream.write_all(response.as_bytes());
+}
+
+fn rounded_json_number(value: f64) -> String {
+    if value.is_finite() {
+        format!("{value:.2}")
+    } else {
+        "0".to_owned()
+    }
 }
 
 fn submit_local_chat(
@@ -1116,6 +1177,21 @@ pub fn static_palette_stream_page_html_with_options(
     palette_stream_page_html_with_options(backend_origin, branding, layout)
 }
 
+pub fn export_static_palette_stream_page(
+    out_dir: impl AsRef<Path>,
+    backend_origin: &str,
+    branding: &CustomHostBranding,
+    layout: &CustomHostLayout,
+) -> Result<(), String> {
+    let out_dir = out_dir.as_ref();
+    fs::create_dir_all(out_dir).map_err(|err| err.to_string())?;
+    fs::write(
+        out_dir.join("index.html"),
+        static_palette_stream_page_html_with_options(backend_origin, branding, layout),
+    )
+    .map_err(|err| err.to_string())
+}
+
 fn palette_stream_page_html_with_options(
     backend_origin: &str,
     branding: &CustomHostBranding,
@@ -1133,6 +1209,10 @@ fn palette_stream_page_html_with_options(
     let stream_click_url = format!("{backend}{STREAM_CLICK_PATH}");
     let page_title = html_escape(&branding.page_title);
     let header_title = html_escape(&branding.header_title);
+    let page_title_js = json_escape(&branding.page_title);
+    let header_title_js = json_escape(&branding.header_title);
+    let version = env!("CARGO_PKG_VERSION");
+    let exported_at_ms = current_time_millis();
     let max_player_width = layout
         .max_player_width_px
         .unwrap_or(if layout.prefer_larger_player {
@@ -1151,6 +1231,8 @@ fn palette_stream_page_html_with_options(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{page_title}</title>
+  <meta name="direct-stream-version" content="{version}">
+  <meta name="direct-stream-exported-at-ms" content="{exported_at_ms}">
   <style>
     :root {{ color-scheme: dark; font-family: Arial, sans-serif; background: #111318; color: #eef3f8; --direct-stream-max-player-width: {max_player_width}px; }}
     body {{ margin: 0; min-height: 100vh; display: grid; grid-template-rows: auto 1fr; }}
@@ -1230,7 +1312,7 @@ fn palette_stream_page_html_with_options(
   </style>
 </head>
 <body>
-  <header><span>{header_title}</span><button id="togglePlayerButton" type="button" hidden>Minimize stream</button></header>
+  <header><span id="pageHeaderTitle">{header_title}</span><button id="togglePlayerButton" type="button" hidden>Minimize stream</button></header>
   <main>
     <div class="stage" id="stage">
       <section class="panel-region above-region" id="abovePanels"></section>
@@ -1270,6 +1352,7 @@ fn palette_stream_page_html_with_options(
     const overlayCanvas = document.getElementById("streamOverlay");
     const player = document.querySelector(".player");
     const togglePlayerButton = document.getElementById("togglePlayerButton");
+    const pageHeaderTitle = document.getElementById("pageHeaderTitle");
     const ctx = canvas.getContext("2d");
     const overlayCtx = overlayCanvas.getContext("2d");
     const unmuteButton = document.getElementById("unmuteButton");
@@ -1339,6 +1422,12 @@ fn palette_stream_page_html_with_options(
     const deviceIdStorageKey = "directstream_device_id";
     const playerMinimizable = {minimizable_player};
     const startPlayerMinimized = {start_player_minimized};
+    const staticBranding = {{
+      page_title: "{page_title_js}",
+      header_title: "{header_title_js}",
+      version: "{version}",
+      exported_at_ms: {exported_at_ms},
+    }};
     const playerMinimizedStorageKey = "directstream_player_minimized";
     let volatileDeviceId = null;
 
@@ -1978,12 +2067,27 @@ fn palette_stream_page_html_with_options(
           const response = await fetch("{stream_status_url}?t=" + Date.now(), {{ cache: "no-store" }});
           const status = await response.json();
           streamOnline = !!status.online;
+          applyRuntimeBranding(status);
           updateUnmuteOverlay();
         }} catch (error) {{
           streamOnline = false;
           updateUnmuteOverlay();
         }}
         await new Promise(resolve => setTimeout(resolve, 500));
+      }}
+    }}
+
+    function applyRuntimeBranding(status) {{
+      const branding = status && status.branding;
+      if (!branding) return;
+      if (typeof branding.page_title === "string" && branding.page_title && document.title !== branding.page_title) {{
+        document.title = branding.page_title;
+      }}
+      if (typeof branding.header_title === "string" && branding.header_title && pageHeaderTitle.textContent !== branding.header_title) {{
+        pageHeaderTitle.textContent = branding.header_title;
+      }}
+      if (status.version && status.version !== staticBranding.version) {{
+        document.documentElement.dataset.directStreamVersionMismatch = "true";
       }}
     }}
 

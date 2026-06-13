@@ -1,7 +1,5 @@
-use direct_stream_game::{
-    CustomHostBranding, CustomHostLayout, static_palette_stream_page_html_with_options,
-};
-use std::{env, fs, path::PathBuf};
+use direct_stream_game::{CustomHostBranding, CustomHostLayout, export_static_palette_stream_page};
+use std::{env, path::PathBuf};
 
 fn main() -> Result<(), String> {
     let mut backend = "https://game.humanbeangames.com".to_owned();
@@ -50,12 +48,7 @@ fn main() -> Result<(), String> {
     }
 
     let out_dir = PathBuf::from("dist/humanbeangames_stream");
-    fs::create_dir_all(&out_dir).map_err(|err| err.to_string())?;
-    fs::write(
-        out_dir.join("index.html"),
-        static_palette_stream_page_html_with_options(&backend, &branding, &layout),
-    )
-    .map_err(|err| err.to_string())?;
+    export_static_palette_stream_page(&out_dir, &backend, &branding, &layout)?;
 
     println!(
         "Exported stream player to {} using backend {}",

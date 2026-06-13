@@ -19,7 +19,6 @@ use std::{
 };
 
 const CUSTOM_AUDIO_PACKET_RATE: u32 = 50;
-const CUSTOM_AUDIO_DELAY: Duration = Duration::from_secs(1);
 const CUSTOM_AUDIO_LOWPASS_CUTOFF_HZ: f32 = 3_200.0;
 
 #[derive(Asset, TypePath, Clone)]
@@ -619,8 +618,6 @@ pub(crate) fn start_custom_audio_packet_pump(
 ) {
     thread::spawn(move || {
         let frames_per_packet = (STREAM_AUDIO_SAMPLE_RATE / CUSTOM_AUDIO_PACKET_RATE) as usize;
-        let delay_frames =
-            (STREAM_AUDIO_SAMPLE_RATE as u128 * CUSTOM_AUDIO_DELAY.as_millis() / 1000) as usize;
         let packet_duration = Duration::from_millis(1000 / CUSTOM_AUDIO_PACKET_RATE as u64);
         let mut next_tick = Instant::now();
         let mut started = false;
@@ -643,6 +640,8 @@ pub(crate) fn start_custom_audio_packet_pump(
                 continue;
             }
 
+            let delay_frames = (STREAM_AUDIO_SAMPLE_RATE as u128 * active.audio_delay_ms() as u128
+                / 1000) as usize;
             if audio.take_delayed_stereo_f32_into(frames_per_packet, delay_frames, &mut samples) {
                 if synthesized_previous_packet {
                     smooth_packet_start(&mut samples, last_left, last_right);

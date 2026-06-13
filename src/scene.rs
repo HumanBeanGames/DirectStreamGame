@@ -551,6 +551,18 @@ fn custom_host_stats_text(
         ),
         stat_line("stage", stats.custom_stage),
         stat_line("error", &stats.custom_last_error),
+        stat_line(
+            "warmup skipped",
+            &stats.custom_warmup_frames_skipped.to_string(),
+        ),
+        stat_line(
+            "first sequence",
+            &stats.custom_first_nonblank_sequence.to_string(),
+        ),
+        stat_line(
+            "first key age",
+            &format!("{:.2} ms", stats.custom_first_keyframe_age_ms),
+        ),
         stat_line("packets sent", &stats.custom_frames_sent.to_string()),
         stat_line(
             "packet types",
@@ -590,6 +602,10 @@ fn custom_host_stats_text(
             &stats.custom_audio_packets_sent.to_string(),
         ),
         stat_line("audio bytes", &stats.custom_audio_bytes_sent.to_string()),
+        stat_line(
+            "audio delay",
+            &format!("{} ms", stats.custom_audio_delay_ms),
+        ),
         stat_line(
             "latest packet",
             &format!("{} bytes", stats.latest_frame_bytes),

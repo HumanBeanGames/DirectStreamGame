@@ -15,7 +15,7 @@ pub(crate) struct AppConfig {
     pub(crate) stream_height: u32,
     pub(crate) stream_fps: u32,
     pub(crate) custom_host_batch_size: usize,
-    pub(crate) palette_config_path: PathBuf,
+    pub(crate) palette_lookup_path: PathBuf,
 }
 
 impl AppConfig {
@@ -28,7 +28,7 @@ impl AppConfig {
         let mut custom_host_batch_size = 30;
         let mut stream_width_set = false;
         let mut stream_height_set = false;
-        let mut palette_config_path = PathBuf::from("palette.toml");
+        let mut palette_lookup_path = PathBuf::from("palette.ipsmap");
 
         for arg in env::args().skip(1) {
             if arg == "--stats-window" || arg == "--headless-window" {
@@ -46,8 +46,10 @@ impl AppConfig {
                 stream_fps = fps.parse().unwrap_or(stream_fps);
             } else if let Some(batch_size) = arg.strip_prefix("--batch-size=") {
                 custom_host_batch_size = batch_size.parse().unwrap_or(custom_host_batch_size);
+            } else if let Some(path) = arg.strip_prefix("--palette-lookup=") {
+                palette_lookup_path = PathBuf::from(path);
             } else if let Some(path) = arg.strip_prefix("--palette-config=") {
-                palette_config_path = PathBuf::from(path);
+                palette_lookup_path = PathBuf::from(path).with_extension("ipsmap");
             }
         }
 
@@ -69,7 +71,7 @@ impl AppConfig {
             stream_height,
             stream_fps,
             custom_host_batch_size,
-            palette_config_path,
+            palette_lookup_path,
         }
     }
 }

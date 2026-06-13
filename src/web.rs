@@ -9,10 +9,11 @@ use crate::{
         STREAM_WIDTH, WEB_ADDR,
     },
     custom_host::{
-        CustomHostBranding, CustomHostLayout, CustomHostOverlayHub, CustomHostPanelAction,
-        CustomHostPanelActionHub, CustomHostPanelElement, CustomHostPanelElementStyle,
-        CustomHostPanelHub, CustomHostPanelSize, CustomHostPanelStyle, OverlayElementKind,
-        OverlayElementStyle, PanelWhiteSpace, StreamPointerClick, StreamPointerClickHub,
+        CustomHostBranding, CustomHostChatPanelHub, CustomHostLayout, CustomHostOverlayHub,
+        CustomHostPanelAction, CustomHostPanelActionHub, CustomHostPanelElement,
+        CustomHostPanelElementStyle, CustomHostPanelHub, CustomHostPanelSize, CustomHostPanelStyle,
+        OverlayElementKind, OverlayElementStyle, PanelWhiteSpace, StreamPointerClick,
+        StreamPointerClickHub,
     },
     frames::EncodedFrameHub,
     palette::PaletteFrameHub,
@@ -39,6 +40,7 @@ pub(crate) enum LocalStreamSource {
         frames: PaletteFrameHub,
         audio: CustomAudioPacketHub,
         chat: LocalChatHub,
+        chat_panel: CustomHostChatPanelHub,
         panels: CustomHostPanelHub,
         panel_actions: CustomHostPanelActionHub,
         overlays: CustomHostOverlayHub,
@@ -54,6 +56,7 @@ pub(crate) fn start_local_web_server_from_resources(
     palette_frame_hub: Res<PaletteFrameHub>,
     audio: Res<CustomAudioPacketHub>,
     chat: Res<LocalChatHub>,
+    chat_panel: Res<CustomHostChatPanelHub>,
     panels: Res<CustomHostPanelHub>,
     panel_actions: Res<CustomHostPanelActionHub>,
     overlays: Res<CustomHostOverlayHub>,
@@ -73,6 +76,7 @@ pub(crate) fn start_local_web_server_from_resources(
             frames: palette_frame_hub.clone(),
             audio: audio.clone(),
             chat: chat.clone(),
+            chat_panel: chat_panel.clone(),
             panels: panels.clone(),
             panel_actions: panel_actions.clone(),
             overlays: overlays.clone(),
@@ -206,8 +210,11 @@ fn handle_web_request(
             serve_not_found(stream);
         }
     } else if path.starts_with(STREAM_STATUS_PATH) {
-        if let LocalStreamSource::Palette { active, .. } = source {
-            serve_stream_status(stream, active, stats, &branding, &layout);
+        if let LocalStreamSource::Palette {
+            active, chat_panel, ..
+        } = source
+        {
+            serve_stream_status(stream, active, stats, &branding, &layout, chat_panel);
         } else {
             serve_not_found(stream);
         }
@@ -308,6 +315,7 @@ fn serve_stream_status(
     stats: SharedStats,
     branding: &CustomHostBranding,
     layout: &CustomHostLayout,
+    chat_panel: CustomHostChatPanelHub,
 ) {
     let stats_snapshot = stats.0.lock().ok();
     let (
@@ -336,8 +344,9 @@ fn serve_stream_status(
     } else {
         (0.0, 0.0, 0.0, 0.0, active.audio_delay_ms())
     };
+    let chat_panel = chat_panel.snapshot();
     let body = format!(
-        r#"{{"online":{},"version":"{}","branding":{{"page_title":"{}","header_title":"{}"}},"layout":{{"max_player_width_px":{},"prefer_larger_player":{},"minimizable_player":{},"start_player_minimized":{}}},"fps":{},"audio_delay_ms":{},"video_latency_ms_estimate":{},"batch_duration_ms":{},"readback_latency_ms":{},"http_batch_latency_ms":{}}}"#,
+        r#"{{"online":{},"version":"{}","branding":{{"page_title":"{}","header_title":"{}"}},"layout":{{"max_player_width_px":{},"prefer_larger_player":{},"minimizable_player":{},"start_player_minimized":{}}},"chat_panel":{{"requested":{},"title":"{}"}},"fps":{},"audio_delay_ms":{},"video_latency_ms_estimate":{},"batch_duration_ms":{},"readback_latency_ms":{},"http_batch_latency_ms":{}}}"#,
         active.is_active(),
         env!("CARGO_PKG_VERSION"),
         json_escape(&branding.page_title),
@@ -349,6 +358,8 @@ fn serve_stream_status(
         layout.prefer_larger_player,
         layout.minimizable_player,
         layout.start_player_minimized,
+        chat_panel.requested,
+        json_escape(&chat_panel.title),
         active.fps(),
         audio_delay_ms,
         rounded_json_number(video_latency_ms_estimate),
@@ -1329,16 +1340,6 @@ fn palette_stream_page_html_with_options(
         </div>
       </div>
       <div class="right-region">
-        <aside class="chat" id="chatPanel" hidden>
-          <h2>Chat</h2>
-          <div class="chat-log" id="chatLog">
-            <p><strong>system</strong> custom host chat panel ready</p>
-          </div>
-          <form class="chat-input" id="chatForm">
-            <input id="chatInput" autocomplete="off" placeholder="chat message">
-            <button type="submit">Send</button>
-          </form>
-        </aside>
         <section class="right-panels" id="rightPanels"></section>
       </div>
       <section class="panel-region below-region" id="belowPanels"></section>
@@ -1357,10 +1358,11 @@ fn palette_stream_page_html_with_options(
     const playerControls = document.getElementById("playerControls");
     const muteButton = document.getElementById("muteButton");
     const volumeSlider = document.getElementById("volumeSlider");
-    const chatForm = document.getElementById("chatForm");
-    const chatInput = document.getElementById("chatInput");
-    const chatPanel = document.getElementById("chatPanel");
-    const chatLog = document.getElementById("chatLog");
+    let chatForm = null;
+    let chatInput = null;
+    let chatPanel = null;
+    let chatLog = null;
+    const rightRegion = document.querySelector(".right-region");
     const leftPanels = document.getElementById("leftPanels");
     const rightPanels = document.getElementById("rightPanels");
     const abovePanels = document.getElementById("abovePanels");
@@ -2067,12 +2069,12 @@ fn palette_stream_page_html_with_options(
           const response = await fetch("{stream_status_url}?t=" + Date.now(), {{ cache: "no-store" }});
           const status = await response.json();
           streamOnline = !!status.online;
-          setRequestedUiVisible(streamOnline);
+          setRequestedUiVisible(streamOnline && !!(status.chat_panel && status.chat_panel.requested), status.chat_panel);
           applyRuntimeBranding(status);
           updateUnmuteOverlay();
         }} catch (error) {{
           streamOnline = false;
-          setRequestedUiVisible(false);
+          setRequestedUiVisible(false, null);
           updateUnmuteOverlay();
         }}
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -2265,8 +2267,9 @@ fn palette_stream_page_html_with_options(
       return Number.isFinite(parsed) ? parsed : 0;
     }}
 
-    chatForm.addEventListener("submit", event => {{
+    function submitLocalChat(event) {{
       event.preventDefault();
+      if (!chatInput) return;
       const message = chatInput.value.trim();
       if (!message) return;
       chatInput.value = "";
@@ -2285,10 +2288,10 @@ fn palette_stream_page_html_with_options(
           console.error(error);
           appendSystemLine("chat send failed");
         }});
-    }});
+    }}
 
     async function fetchChatFeed() {{
-      if (!streamOnline) return;
+      if (!streamOnline || !requestedUiVisible) return;
       const response = await fetch("{local_chat_feed_url}?after=" + lastChatId + "&t=" + Date.now(), identityFetchOptions({{ cache: "no-store" }}));
       if (!response.ok) {{
         throw new Error(`chat feed failed: ${{response.status}}`);
@@ -2323,7 +2326,7 @@ fn palette_stream_page_html_with_options(
 
     async function pollChatFeed() {{
       while (true) {{
-        if (streamOnline) {{
+        if (streamOnline && requestedUiVisible) {{
           try {{
             await fetchChatFeed();
           }} catch (error) {{
@@ -2384,13 +2387,20 @@ fn palette_stream_page_html_with_options(
       }}
     }}
 
-    function setRequestedUiVisible(visible) {{
-      if (requestedUiVisible === visible) return;
+    function setRequestedUiVisible(visible, chatPanelStatus) {{
+      if (visible) {{
+        ensureChatPanel(chatPanelStatus);
+      }}
+      if (requestedUiVisible === visible) {{
+        if (visible) updateChatPanelTitle(chatPanelStatus);
+        return;
+      }}
       requestedUiVisible = visible;
-      chatPanel.hidden = !visible;
       if (!visible) {{
         clearCustomHostUi();
+        removeChatPanel();
       }} else {{
+        updateChatPanelTitle(chatPanelStatus);
         clearChatLog();
       }}
     }}
@@ -2411,7 +2421,60 @@ fn palette_stream_page_html_with_options(
       drawCustomOverlays();
     }}
 
+    function ensureChatPanel(chatPanelStatus) {{
+      if (chatPanel) {{
+        updateChatPanelTitle(chatPanelStatus);
+        return;
+      }}
+      chatPanel = document.createElement("aside");
+      chatPanel.className = "chat";
+      const title = document.createElement("h2");
+      title.dataset.role = "chat-title";
+      title.textContent = chatPanelTitle(chatPanelStatus);
+      chatLog = document.createElement("div");
+      chatLog.className = "chat-log";
+      chatForm = document.createElement("form");
+      chatForm.className = "chat-input";
+      chatInput = document.createElement("input");
+      chatInput.autocomplete = "off";
+      chatInput.placeholder = "chat message";
+      const sendButton = document.createElement("button");
+      sendButton.type = "submit";
+      sendButton.textContent = "Send";
+      chatForm.appendChild(chatInput);
+      chatForm.appendChild(sendButton);
+      chatForm.addEventListener("submit", submitLocalChat);
+      chatPanel.appendChild(title);
+      chatPanel.appendChild(chatLog);
+      chatPanel.appendChild(chatForm);
+      rightRegion.insertBefore(chatPanel, rightPanels);
+    }}
+
+    function removeChatPanel() {{
+      if (chatForm) chatForm.removeEventListener("submit", submitLocalChat);
+      if (chatPanel) chatPanel.remove();
+      chatPanel = null;
+      chatForm = null;
+      chatInput = null;
+      chatLog = null;
+      lastChatId = 0;
+      chatGeneration = null;
+      shownChatIds.clear();
+    }}
+
+    function updateChatPanelTitle(chatPanelStatus) {{
+      if (!chatPanel) return;
+      const title = chatPanel.querySelector("[data-role='chat-title']");
+      if (title) title.textContent = chatPanelTitle(chatPanelStatus);
+    }}
+
+    function chatPanelTitle(chatPanelStatus) {{
+      const title = chatPanelStatus && typeof chatPanelStatus.title === "string" ? chatPanelStatus.title.trim() : "";
+      return title || "Chat";
+    }}
+
     function appendSystemLine(message) {{
+      if (!chatLog) return;
       const last = chatLog.lastElementChild;
       if (last && last.dataset.system === message) return;
       const stickToBottom = chatIsNearBottom();
@@ -2426,11 +2489,13 @@ fn palette_stream_page_html_with_options(
     }}
 
     function clearChatLog() {{
+      if (!chatLog) return;
       chatLog.textContent = "";
       appendSystemLine("chat panel ready");
     }}
 
     function appendChatLine(message) {{
+      if (!chatLog) return;
       const stickToBottom = chatIsNearBottom();
       const row = document.createElement("p");
       row.dataset.chatId = String(message.id || "");
@@ -2463,10 +2528,12 @@ fn palette_stream_page_html_with_options(
     }}
 
     function chatIsNearBottom() {{
+      if (!chatLog) return true;
       return chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 32;
     }}
 
     function scrollChatToBottom() {{
+      if (!chatLog) return;
       chatLog.scrollTop = chatLog.scrollHeight;
     }}
 

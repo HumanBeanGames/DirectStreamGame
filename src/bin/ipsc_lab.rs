@@ -1,4 +1,6 @@
-use direct_stream_game::palette_lut::{build_lookup, encode_lookup, parse_palette_config};
+use direct_stream_game::palette_lut::{
+    build_lookup, encode_lookup_with_palette_toml, parse_palette_config,
+};
 use std::{
     fs,
     io::{Read, Write},
@@ -158,7 +160,7 @@ fn serve_lut(stream: TcpStream, body: &[u8]) {
         }
     };
     let entries = build_lookup(&config);
-    match encode_lookup(&config, &entries) {
+    match encode_lookup_with_palette_toml(&config, toml, &entries) {
         Ok(bytes) => serve_binary(stream, &bytes),
         Err(err) => serve_bad_request(stream, &err),
     }

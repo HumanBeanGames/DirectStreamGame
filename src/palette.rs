@@ -2,10 +2,7 @@
 use crate::frames::RawFrame;
 use crate::{
     frames::IndexedFrame,
-    palette_lut::{
-        PaletteConfig, PaletteLookup, PaletteMatching, load_lookup, load_palette_config,
-        sibling_lut_path,
-    },
+    palette_lut::{PaletteLookup, PaletteMatching, load_lookup_bundle},
     stats::SharedStats,
     stream_control::CustomStreamState,
 };
@@ -73,7 +70,7 @@ impl Default for PaletteBias {
 }
 
 pub(crate) fn load_palette_runtime(path: impl AsRef<Path>) -> (Vec<[u8; 4]>, PaletteBias) {
-    let palette_config = load_palette_config_runtime(path.as_ref());
+    let palette_config = load_palette_lookup_runtime(path.as_ref()).config().clone();
 
     (
         palette_config.colors,
@@ -81,21 +78,11 @@ pub(crate) fn load_palette_runtime(path: impl AsRef<Path>) -> (Vec<[u8; 4]>, Pal
     )
 }
 
-pub(crate) fn load_palette_config_runtime(path: &Path) -> PaletteConfig {
-    load_palette_config(path).unwrap_or_else(|err| {
-        panic!("Could not load palette config {}: {err}", path.display());
-    })
-}
-
-pub(crate) fn load_palette_lookup_runtime(path: &Path, config: &PaletteConfig) -> PaletteLookup {
-    let sibling_path = sibling_lut_path(path);
-    match load_lookup(&sibling_path, config) {
+pub(crate) fn load_palette_lookup_runtime(path: &Path) -> PaletteLookup {
+    match load_lookup_bundle(path) {
         Ok(lookup) => lookup,
         Err(err) => {
-            panic!(
-                "Could not load palette lookup {}: {err}",
-                sibling_path.display()
-            );
+            panic!("Could not load palette lookup {}: {err}", path.display());
         }
     }
 }
@@ -414,16 +401,15 @@ pub(crate) fn start_palette_preview_encoder(
     stats: SharedStats,
     palette_bias: SharedPaletteBias,
     active: CustomStreamState,
-    palette_config_path: impl AsRef<Path>,
+    palette_lookup_path: impl AsRef<Path>,
     batch_size: usize,
 ) {
-    let palette_config_path = palette_config_path.as_ref().to_owned();
-    let palette_config = load_palette_config_runtime(&palette_config_path);
+    let palette_lookup_path = palette_lookup_path.as_ref().to_owned();
+    let palette_lookup = load_palette_lookup_runtime(&palette_lookup_path);
+    let palette_config = palette_lookup.config().clone();
     let palette_colors = palette_config.colors.clone();
     let palette_matching = PaletteBias::from(palette_config.matching);
     palette_bias.set(palette_matching);
-
-    let _ = load_palette_lookup_runtime(&palette_config_path, &palette_config);
 
     thread::spawn(move || {
         let mut publisher = IndexedFramePublisher::new(palette_colors);

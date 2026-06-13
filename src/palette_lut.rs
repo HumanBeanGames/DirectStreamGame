@@ -9,7 +9,10 @@ pub const LUT_ENTRY_COUNT: usize = 256 * 256 * 256;
 const DEFAULT_PALETTE_TOML: &str = include_str!("default_palette/default_palette.toml");
 #[cfg(test)]
 const DEFAULT_PALETTE_IPSMAP: &[u8] = include_bytes!("default_palette/default_palette.ipsmap");
-const LUT_MAGIC: &[u8; 8] = b"IPSMAP1\0";
+const LUT_MAGIC_V1: &[u8; 8] = b"IPSMAP1\0";
+const LUT_MAGIC_V2: &[u8; 8] = b"IPSMAP2\0";
+const LUT_V1_HEADER_LEN: usize = 30;
+const LUT_V2_HEADER_LEN: usize = 24;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PaletteMatching {
@@ -55,6 +58,8 @@ pub struct PaletteConfig {
 pub struct PaletteLookup {
     hash: u64,
     entries: Vec<u8>,
+    config: PaletteConfig,
+    palette_toml: Option<String>,
 }
 
 impl PaletteLookup {
@@ -64,6 +69,14 @@ impl PaletteLookup {
 
     pub fn hash(&self) -> u64 {
         self.hash
+    }
+
+    pub fn config(&self) -> &PaletteConfig {
+        &self.config
+    }
+
+    pub fn palette_toml(&self) -> Option<&str> {
+        self.palette_toml.as_deref()
     }
 }
 
@@ -145,6 +158,53 @@ pub fn parse_palette_config(contents: &str) -> Result<PaletteConfig, String> {
     }
 }
 
+pub fn serialize_palette_config(config: &PaletteConfig) -> String {
+    let mut output = String::new();
+    output.push_str("colors = [\n");
+    for [r, g, b, a] in &config.colors {
+        if *a == 0xff {
+            output.push_str(&format!("    \"#{r:02x}{g:02x}{b:02x}\",\n"));
+        } else {
+            output.push_str(&format!("    \"#{r:02x}{g:02x}{b:02x}{a:02x}\",\n"));
+        }
+    }
+    output.push_str("]\n\n[matching]\n");
+    output.push_str(&format!("lightness = {}\n", config.matching.lightness));
+    output.push_str(&format!("chroma = {}\n", config.matching.chroma));
+    output.push_str(&format!("hue = {}\n", config.matching.hue));
+    output.push_str(&format!(
+        "lightness_multiply = {}\n",
+        config.matching.lightness_multiply
+    ));
+    output.push_str(&format!(
+        "lightness_add = {}\n",
+        config.matching.lightness_add
+    ));
+    output.push_str(&format!(
+        "chroma_multiply = {}\n",
+        config.matching.chroma_multiply
+    ));
+    output.push_str(&format!("chroma_add = {}\n", config.matching.chroma_add));
+    output.push_str(&format!("hue_add = {}\n", config.matching.hue_add));
+    output.push_str(&format!(
+        "preserve_dark_neutrals = {}\n",
+        config.matching.preserve_dark_neutrals
+    ));
+    output.push_str(&format!(
+        "dark_neutral_luma_threshold = {}\n",
+        config.matching.dark_neutral_luma_threshold
+    ));
+    output.push_str(&format!(
+        "dark_neutral_chroma_threshold = {}\n",
+        config.matching.dark_neutral_chroma_threshold
+    ));
+    output.push_str(&format!(
+        "dark_neutral_chroma_weight_scale = {}\n",
+        config.matching.dark_neutral_chroma_weight_scale
+    ));
+    output
+}
+
 fn parse_f32_value(value: &str) -> Result<f32, String> {
     value
         .trim()
@@ -200,20 +260,47 @@ pub fn write_lookup(
 }
 
 pub fn encode_lookup(config: &PaletteConfig, entries: &[u8]) -> Result<Vec<u8>, String> {
+    encode_lookup_with_palette_toml(config, &serialize_palette_config(config), entries)
+}
+
+pub fn write_lookup_with_palette_toml(
+    path: impl AsRef<Path>,
+    config: &PaletteConfig,
+    palette_toml: &str,
+    entries: &[u8],
+) -> Result<(), String> {
+    let bytes = encode_lookup_with_palette_toml(config, palette_toml, entries)?;
+    fs::File::create(path)
+        .and_then(|mut file| file.write_all(&bytes))
+        .map_err(|err| err.to_string())
+}
+
+pub fn encode_lookup_with_palette_toml(
+    config: &PaletteConfig,
+    palette_toml: &str,
+    entries: &[u8],
+) -> Result<Vec<u8>, String> {
     if entries.len() != LUT_ENTRY_COUNT {
         return Err(format!(
             "LUT must contain {LUT_ENTRY_COUNT} entries, got {}",
             entries.len()
         ));
     }
+    let embedded_config = parse_palette_config(palette_toml)?;
+    let hash = palette_hash(config);
+    if palette_hash(&embedded_config) != hash {
+        return Err("embedded palette TOML does not match palette config".to_owned());
+    }
+    let toml_bytes = palette_toml.as_bytes();
+    let toml_len = u32::try_from(toml_bytes.len())
+        .map_err(|_| "palette TOML is too large to embed in LUT".to_owned())?;
 
-    let mut bytes = Vec::with_capacity(30 + entries.len());
-    bytes.extend_from_slice(LUT_MAGIC);
-    bytes.extend_from_slice(&palette_hash(config).to_le_bytes());
-    bytes.extend_from_slice(&(config.colors.len() as u16).to_le_bytes());
-    bytes.extend_from_slice(&config.matching.lightness.to_le_bytes());
-    bytes.extend_from_slice(&config.matching.chroma.to_le_bytes());
-    bytes.extend_from_slice(&config.matching.hue.to_le_bytes());
+    let mut bytes = Vec::with_capacity(LUT_V2_HEADER_LEN + toml_bytes.len() + entries.len());
+    bytes.extend_from_slice(LUT_MAGIC_V2);
+    bytes.extend_from_slice(&hash.to_le_bytes());
+    bytes.extend_from_slice(&toml_len.to_le_bytes());
+    bytes.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(toml_bytes);
     bytes.extend_from_slice(entries);
     Ok(bytes)
 }
@@ -226,22 +313,36 @@ pub fn load_lookup(
     decode_lookup(&bytes, config)
 }
 
+pub fn load_lookup_bundle(path: impl AsRef<Path>) -> Result<PaletteLookup, String> {
+    let bytes = fs::read(path).map_err(|err| err.to_string())?;
+    decode_lookup_bundle(&bytes)
+}
+
 #[cfg(test)]
 fn default_palette_lookup(config: &PaletteConfig) -> Result<PaletteLookup, String> {
     decode_lookup(DEFAULT_PALETTE_IPSMAP, config)
 }
 
 pub fn decode_lookup(bytes: &[u8], config: &PaletteConfig) -> Result<PaletteLookup, String> {
-    if bytes.len() < 30 {
+    if bytes.len() >= LUT_MAGIC_V2.len() && &bytes[0..8] == LUT_MAGIC_V2 {
+        let lookup = decode_lookup_bundle(bytes)?;
+        let expected_hash = palette_hash(config);
+        if lookup.hash != expected_hash {
+            return Err("LUT does not match palette colors and matching settings".to_owned());
+        }
+        return Ok(lookup);
+    }
+
+    if bytes.len() < LUT_V1_HEADER_LEN {
         return Err(format!(
-            "LUT has {} bytes, expected at least 30",
+            "LUT has {} bytes, expected at least {LUT_V1_HEADER_LEN}",
             bytes.len()
         ));
     }
 
-    let header = &bytes[0..30];
+    let header = &bytes[0..LUT_V1_HEADER_LEN];
 
-    if &header[0..8] != LUT_MAGIC {
+    if &header[0..8] != LUT_MAGIC_V1 {
         return Err("LUT magic/version mismatch".to_owned());
     }
 
@@ -256,7 +357,7 @@ pub fn decode_lookup(bytes: &[u8], config: &PaletteConfig) -> Result<PaletteLook
         return Err("LUT color count does not match palette".to_owned());
     }
 
-    let entries = bytes[30..].to_vec();
+    let entries = bytes[LUT_V1_HEADER_LEN..].to_vec();
     if entries.len() != LUT_ENTRY_COUNT {
         return Err(format!(
             "LUT has {} entries, expected {LUT_ENTRY_COUNT}",
@@ -264,7 +365,61 @@ pub fn decode_lookup(bytes: &[u8], config: &PaletteConfig) -> Result<PaletteLook
         ));
     }
 
-    Ok(PaletteLookup { hash, entries })
+    Ok(PaletteLookup {
+        hash,
+        entries,
+        config: config.clone(),
+        palette_toml: None,
+    })
+}
+
+pub fn decode_lookup_bundle(bytes: &[u8]) -> Result<PaletteLookup, String> {
+    if bytes.len() < LUT_V2_HEADER_LEN {
+        return Err(format!(
+            "LUT has {} bytes, expected at least {LUT_V2_HEADER_LEN}",
+            bytes.len()
+        ));
+    }
+    let header = &bytes[0..LUT_V2_HEADER_LEN];
+    if &header[0..8] != LUT_MAGIC_V2 {
+        return Err("LUT is not a self-contained IPSMAP2 lookup".to_owned());
+    }
+    let hash = u64::from_le_bytes(header[8..16].try_into().expect("header slice length"));
+    let toml_len =
+        u32::from_le_bytes(header[16..20].try_into().expect("header slice length")) as usize;
+    let entry_count =
+        u32::from_le_bytes(header[20..24].try_into().expect("header slice length")) as usize;
+    if entry_count != LUT_ENTRY_COUNT {
+        return Err(format!(
+            "LUT header declares {entry_count} entries, expected {LUT_ENTRY_COUNT}"
+        ));
+    }
+    let entries_start = LUT_V2_HEADER_LEN
+        .checked_add(toml_len)
+        .ok_or_else(|| "LUT embedded palette TOML length overflowed".to_owned())?;
+    let expected_len = entries_start
+        .checked_add(LUT_ENTRY_COUNT)
+        .ok_or_else(|| "LUT entry length overflowed".to_owned())?;
+    if bytes.len() != expected_len {
+        return Err(format!(
+            "LUT has {} bytes, expected {expected_len} for embedded palette and entries",
+            bytes.len()
+        ));
+    }
+    let palette_toml = std::str::from_utf8(&bytes[LUT_V2_HEADER_LEN..entries_start])
+        .map_err(|err| format!("embedded palette TOML is not UTF-8: {err}"))?
+        .to_owned();
+    let config = parse_palette_config(&palette_toml)?;
+    if palette_hash(&config) != hash {
+        return Err("embedded palette TOML does not match LUT hash".to_owned());
+    }
+    let entries = bytes[entries_start..].to_vec();
+    Ok(PaletteLookup {
+        hash,
+        entries,
+        config,
+        palette_toml: Some(palette_toml),
+    })
 }
 
 pub fn palette_hash(config: &PaletteConfig) -> u64 {
@@ -513,6 +668,31 @@ mod tests {
         assert_eq!(nearest_palette_index(source, &palette, plain), 0);
         assert_eq!(nearest_palette_index(source, &palette, shifted), 1);
         assert_ne!(palette_hash(&plain_config), palette_hash(&shifted_config));
+    }
+
+    #[test]
+    fn self_contained_lookup_embeds_palette_config() {
+        let toml = r##"
+colors = [
+    "#000000",
+    "#ffffff",
+]
+
+[matching]
+lightness = 1.0
+chroma = 0.0
+hue = 0.0
+"##;
+        let config = parse_palette_config(toml).expect("test palette parses");
+        let entries = vec![0u8; LUT_ENTRY_COUNT];
+        let bytes =
+            encode_lookup_with_palette_toml(&config, toml, &entries).expect("lookup encodes");
+        let lookup = decode_lookup_bundle(&bytes).expect("lookup decodes");
+
+        assert_eq!(lookup.entries().len(), LUT_ENTRY_COUNT);
+        assert_eq!(lookup.hash(), palette_hash(&config));
+        assert_eq!(lookup.config().colors, config.colors);
+        assert_eq!(lookup.palette_toml(), Some(toml));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use direct_stream_game::palette_lut::{
-    build_lookup, load_palette_config, sibling_lut_path, write_lookup,
+    build_lookup, load_palette_config, sibling_lut_path, write_lookup_with_palette_toml,
 };
-use std::{env, path::PathBuf, time::Instant};
+use std::{env, fs, path::PathBuf, time::Instant};
 
 fn main() {
     let mut palette_config_path = PathBuf::from("src/default_palette/default_palette.toml");
@@ -24,6 +24,17 @@ fn main() {
     let output_path = output_path.unwrap_or_else(|| sibling_lut_path(&palette_config_path));
     let start = Instant::now();
 
+    let palette_toml = match fs::read_to_string(&palette_config_path) {
+        Ok(contents) => contents,
+        Err(err) => {
+            eprintln!(
+                "Could not read palette config {}: {err}",
+                palette_config_path.display()
+            );
+            std::process::exit(1);
+        }
+    };
+
     let config = match load_palette_config(&palette_config_path) {
         Ok(config) => config,
         Err(err) => {
@@ -43,7 +54,8 @@ fn main() {
 
     let entries = build_lookup(&config);
 
-    if let Err(err) = write_lookup(&output_path, &config, &entries) {
+    if let Err(err) = write_lookup_with_palette_toml(&output_path, &config, &palette_toml, &entries)
+    {
         eprintln!("Could not write LUT {}: {err}", output_path.display());
         std::process::exit(1);
     }

@@ -172,6 +172,56 @@ impl CustomHostLayout {
     }
 }
 
+#[derive(Clone, Resource, Default)]
+pub struct CustomHostChatPanelHub {
+    state: Arc<Mutex<CustomHostChatPanelState>>,
+}
+
+#[derive(Default)]
+struct CustomHostChatPanelState {
+    requested: bool,
+    title: String,
+}
+
+impl CustomHostChatPanelHub {
+    pub fn show(&self) {
+        self.show_with_title("Chat");
+    }
+
+    pub fn show_with_title(&self, title: impl Into<String>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.requested = true;
+            state.title = title.into();
+        }
+    }
+
+    pub fn clear(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.requested = false;
+        }
+    }
+
+    pub fn snapshot(&self) -> CustomHostChatPanelSnapshot {
+        self.state
+            .lock()
+            .map(|state| CustomHostChatPanelSnapshot {
+                requested: state.requested,
+                title: if state.title.trim().is_empty() {
+                    "Chat".to_owned()
+                } else {
+                    state.title.clone()
+                },
+            })
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CustomHostChatPanelSnapshot {
+    pub requested: bool,
+    pub title: String,
+}
+
 impl CustomHostPanel {
     pub fn text_elements(&self) -> Vec<CustomHostPanelElement> {
         if self.elements.is_empty() && !self.body.is_empty() {

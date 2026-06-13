@@ -84,7 +84,7 @@ Useful flags:
 --stats-window
 --headless-window
 --custom-host
---palette-config=palette.toml
+--palette-lookup=palette.ipsmap
 --stream-width=128
 --stream-height=128
 --stream-fps=5
@@ -370,6 +370,19 @@ fn reply(chat: Res<StreamChatSender>) {
 Chat colors accept safe `#RGB`, `#RRGGBB`, `rgb(r,g,b)`, `hsl(h s% l%)`, or a
 small named-color set. CSS classes are sanitized to short alphanumeric,
 underscore, or hyphen tokens before they reach the browser.
+
+The custom-host chat window is opt-in. Downstream apps request it with
+`CustomHostChatPanelHub`; otherwise the browser page does not create a chat
+panel or poll the chat feed.
+
+```rust
+use bevy::prelude::*;
+use direct_stream_game::CustomHostChatPanelHub;
+
+fn request_chat(chat_panel: Res<CustomHostChatPanelHub>) {
+    chat_panel.show();
+}
+```
 
 ## Custom Host Page
 
@@ -782,15 +795,19 @@ The player serves `http://127.0.0.1:8090`.
 
 ## Palette And Image Tools
 
-Custom-host mode requires a palette config file. Pass
-`--palette-config=path/to/palette.toml`, or place `palette.toml` in the current
-working directory. Missing or invalid palette configs fail startup immediately.
+Custom-host mode requires a self-contained `.ipsmap` palette lookup file. Pass
+`--palette-lookup=path/to/palette.ipsmap`, or place `palette.ipsmap` in the
+current working directory. Missing, invalid, or stale lookup files fail startup
+immediately.
 
-Custom-host mode always requires a sibling `.ipsmap` direct lookup table.
-Missing, invalid, or stale `.ipsmap` files fail startup immediately.
+`--palette-config=path/to/palette.toml` is accepted as a compatibility alias,
+but custom-host runtime still loads `path/to/palette.ipsmap`; it does not read
+the TOML file. Palette TOML remains the editable source format used by the
+palette tools and lab.
 
-The `.ipsmap` file is a 16 MB direct sRGB-to-palette lookup table. It is only
-accepted when its hash matches the palette colours and matching settings.
+The `.ipsmap` file is a direct sRGB-to-palette lookup table plus an embedded
+copy of the palette TOML/config data needed to build stream headers and verify
+the map hash. New maps use the `IPSMAP2` format.
 
 Palette matching has two stages:
 
@@ -849,14 +866,14 @@ lookup maps are rejected.
 Migration for existing apps:
 
 1. Update the `DirectStreamGame` dependency to a version that supports input
-   offsets.
-2. Keep existing `palette.toml` files as-is if you want the previous behavior;
-   they are treated as zero-offset palettes.
-3. To use the shifted matching behavior, add the offset fields above or generate
-   a new palette from the Palette Lab.
-4. Regenerate and ship the sibling `.ipsmap` next to the updated `palette.toml`.
+   offsets and self-contained `IPSMAP2` lookup files.
+2. Keep `palette.toml` as your editable source if useful, but ship
+   `palette.ipsmap` as the runtime artifact.
+3. Regenerate `.ipsmap` with `ipsc_build_palette_lut` or the Palette Lab.
+4. Change app launch commands from `--palette-config=palette.toml` to
+   `--palette-lookup=palette.ipsmap`.
 5. If you add `preserve_dark_neutrals = true`, regenerate the `.ipsmap`; old
-   lookup files intentionally fail the hash check.
+   lookup files intentionally fail the format/hash check.
 6. Redeploy the static lab from `dist/ipsc_lab` if viewers or tools use the
    browser Palette Lab.
 

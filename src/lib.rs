@@ -32,12 +32,13 @@ pub use constants::{
     DIRECT_STREAM_HEIGHT, DIRECT_STREAM_WIDTH,
 };
 pub use custom_host::{
-    CustomHostBranding, CustomHostLayout, CustomHostOverlayElement, CustomHostOverlayHub,
-    CustomHostPanel, CustomHostPanelAction, CustomHostPanelAnchor, CustomHostPanelAudience,
-    CustomHostPanelElement, CustomHostPanelElementStyle, CustomHostPanelHub, CustomHostPanelPage,
-    CustomHostPanelRegion, CustomHostPanelSize, CustomHostPanelStyle, OverlayCoordinateSpace,
-    OverlayElementKind, OverlayElementStyle, PagedTextControls, PagedTextControlsPosition,
-    PanelOverflowMode, PanelWhiteSpace, StreamPointerClick,
+    CustomHostBranding, CustomHostChatPanelHub, CustomHostChatPanelSnapshot, CustomHostLayout,
+    CustomHostOverlayElement, CustomHostOverlayHub, CustomHostPanel, CustomHostPanelAction,
+    CustomHostPanelAnchor, CustomHostPanelAudience, CustomHostPanelElement,
+    CustomHostPanelElementStyle, CustomHostPanelHub, CustomHostPanelPage, CustomHostPanelRegion,
+    CustomHostPanelSize, CustomHostPanelStyle, OverlayCoordinateSpace, OverlayElementKind,
+    OverlayElementStyle, PagedTextControls, PagedTextControlsPosition, PanelOverflowMode,
+    PanelWhiteSpace, StreamPointerClick,
 };
 pub use demo::{
     DemoMusicClip, DemoMusicStarted, DemoSfxClip, HelloWorldText, handle_demo_boing_command,

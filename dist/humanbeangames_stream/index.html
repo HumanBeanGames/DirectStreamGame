@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Direct Stream Game</title>
+  <title>MERCANTILE</title>
   <meta name="direct-stream-version" content="0.1.0">
-  <meta name="direct-stream-exported-at-ms" content="1781382834889">
+  <meta name="direct-stream-exported-at-ms" content="1781383536275">
   <style>
-    :root { color-scheme: dark; font-family: Arial, sans-serif; background: #111318; color: #eef3f8; --direct-stream-max-player-width: 960px; }
+    :root { color-scheme: dark; font-family: Arial, sans-serif; background: #111318; color: #eef3f8; --direct-stream-max-player-width: 1280px; }
     body { margin: 0; min-height: 100vh; display: grid; grid-template-rows: auto 1fr; }
     header { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 16px; background: #1b2029; border-bottom: 1px solid #303847; }
     header button { appearance: none; border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 6px 10px; font: inherit; cursor: pointer; }
@@ -86,7 +86,7 @@
   </style>
 </head>
 <body>
-  <header><span id="pageHeaderTitle">Direct Stream Game custom palette stream</span><button id="togglePlayerButton" type="button" hidden>Minimize stream</button></header>
+  <header><span id="pageHeaderTitle">MERCANTILE</span><button id="togglePlayerButton" type="button" hidden>Minimize stream</button></header>
   <main>
     <div class="stage" id="stage">
       <section class="panel-region above-region" id="abovePanels"></section>
@@ -105,16 +105,6 @@
         </div>
       </div>
       <div class="right-region">
-        <aside class="chat" id="chatPanel" hidden>
-          <h2>Chat</h2>
-          <div class="chat-log" id="chatLog">
-            <p><strong>system</strong> custom host chat panel ready</p>
-          </div>
-          <form class="chat-input" id="chatForm">
-            <input id="chatInput" autocomplete="off" placeholder="chat message">
-            <button type="submit">Send</button>
-          </form>
-        </aside>
         <section class="right-panels" id="rightPanels"></section>
       </div>
       <section class="panel-region below-region" id="belowPanels"></section>
@@ -133,10 +123,11 @@
     const playerControls = document.getElementById("playerControls");
     const muteButton = document.getElementById("muteButton");
     const volumeSlider = document.getElementById("volumeSlider");
-    const chatForm = document.getElementById("chatForm");
-    const chatInput = document.getElementById("chatInput");
-    const chatPanel = document.getElementById("chatPanel");
-    const chatLog = document.getElementById("chatLog");
+    let chatForm = null;
+    let chatInput = null;
+    let chatPanel = null;
+    let chatLog = null;
+    const rightRegion = document.querySelector(".right-region");
     const leftPanels = document.getElementById("leftPanels");
     const rightPanels = document.getElementById("rightPanels");
     const abovePanels = document.getElementById("abovePanels");
@@ -196,13 +187,13 @@
     const audioUpsampleFactor = audioPlaybackSampleRate / audioTransportSampleRate;
     const deviceIdHeaderName = "X-DirectStream-Device-Id";
     const deviceIdStorageKey = "directstream_device_id";
-    const playerMinimizable = false;
+    const playerMinimizable = true;
     const startPlayerMinimized = false;
     const staticBranding = {
-      page_title: "Direct Stream Game",
-      header_title: "Direct Stream Game custom palette stream",
+      page_title: "MERCANTILE",
+      header_title: "MERCANTILE",
       version: "0.1.0",
-      exported_at_ms: 1781382834889,
+      exported_at_ms: 1781383536275,
     };
     const playerMinimizedStorageKey = "directstream_player_minimized";
     let volatileDeviceId = null;
@@ -843,12 +834,12 @@
           const response = await fetch("https://game.humanbeangames.com/status.json?t=" + Date.now(), { cache: "no-store" });
           const status = await response.json();
           streamOnline = !!status.online;
-          setRequestedUiVisible(streamOnline);
+          setRequestedUiVisible(streamOnline && !!(status.chat_panel && status.chat_panel.requested), status.chat_panel);
           applyRuntimeBranding(status);
           updateUnmuteOverlay();
         } catch (error) {
           streamOnline = false;
-          setRequestedUiVisible(false);
+          setRequestedUiVisible(false, null);
           updateUnmuteOverlay();
         }
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -1041,8 +1032,9 @@
       return Number.isFinite(parsed) ? parsed : 0;
     }
 
-    chatForm.addEventListener("submit", event => {
+    function submitLocalChat(event) {
       event.preventDefault();
+      if (!chatInput) return;
       const message = chatInput.value.trim();
       if (!message) return;
       chatInput.value = "";
@@ -1061,10 +1053,10 @@
           console.error(error);
           appendSystemLine("chat send failed");
         });
-    });
+    }
 
     async function fetchChatFeed() {
-      if (!streamOnline) return;
+      if (!streamOnline || !requestedUiVisible) return;
       const response = await fetch("https://game.humanbeangames.com/local-chat-feed?after=" + lastChatId + "&t=" + Date.now(), identityFetchOptions({ cache: "no-store" }));
       if (!response.ok) {
         throw new Error(`chat feed failed: ${response.status}`);
@@ -1099,7 +1091,7 @@
 
     async function pollChatFeed() {
       while (true) {
-        if (streamOnline) {
+        if (streamOnline && requestedUiVisible) {
           try {
             await fetchChatFeed();
           } catch (error) {
@@ -1160,13 +1152,20 @@
       }
     }
 
-    function setRequestedUiVisible(visible) {
-      if (requestedUiVisible === visible) return;
+    function setRequestedUiVisible(visible, chatPanelStatus) {
+      if (visible) {
+        ensureChatPanel(chatPanelStatus);
+      }
+      if (requestedUiVisible === visible) {
+        if (visible) updateChatPanelTitle(chatPanelStatus);
+        return;
+      }
       requestedUiVisible = visible;
-      chatPanel.hidden = !visible;
       if (!visible) {
         clearCustomHostUi();
+        removeChatPanel();
       } else {
+        updateChatPanelTitle(chatPanelStatus);
         clearChatLog();
       }
     }
@@ -1187,7 +1186,60 @@
       drawCustomOverlays();
     }
 
+    function ensureChatPanel(chatPanelStatus) {
+      if (chatPanel) {
+        updateChatPanelTitle(chatPanelStatus);
+        return;
+      }
+      chatPanel = document.createElement("aside");
+      chatPanel.className = "chat";
+      const title = document.createElement("h2");
+      title.dataset.role = "chat-title";
+      title.textContent = chatPanelTitle(chatPanelStatus);
+      chatLog = document.createElement("div");
+      chatLog.className = "chat-log";
+      chatForm = document.createElement("form");
+      chatForm.className = "chat-input";
+      chatInput = document.createElement("input");
+      chatInput.autocomplete = "off";
+      chatInput.placeholder = "chat message";
+      const sendButton = document.createElement("button");
+      sendButton.type = "submit";
+      sendButton.textContent = "Send";
+      chatForm.appendChild(chatInput);
+      chatForm.appendChild(sendButton);
+      chatForm.addEventListener("submit", submitLocalChat);
+      chatPanel.appendChild(title);
+      chatPanel.appendChild(chatLog);
+      chatPanel.appendChild(chatForm);
+      rightRegion.insertBefore(chatPanel, rightPanels);
+    }
+
+    function removeChatPanel() {
+      if (chatForm) chatForm.removeEventListener("submit", submitLocalChat);
+      if (chatPanel) chatPanel.remove();
+      chatPanel = null;
+      chatForm = null;
+      chatInput = null;
+      chatLog = null;
+      lastChatId = 0;
+      chatGeneration = null;
+      shownChatIds.clear();
+    }
+
+    function updateChatPanelTitle(chatPanelStatus) {
+      if (!chatPanel) return;
+      const title = chatPanel.querySelector("[data-role='chat-title']");
+      if (title) title.textContent = chatPanelTitle(chatPanelStatus);
+    }
+
+    function chatPanelTitle(chatPanelStatus) {
+      const title = chatPanelStatus && typeof chatPanelStatus.title === "string" ? chatPanelStatus.title.trim() : "";
+      return title || "Chat";
+    }
+
     function appendSystemLine(message) {
+      if (!chatLog) return;
       const last = chatLog.lastElementChild;
       if (last && last.dataset.system === message) return;
       const stickToBottom = chatIsNearBottom();
@@ -1202,11 +1254,13 @@
     }
 
     function clearChatLog() {
+      if (!chatLog) return;
       chatLog.textContent = "";
       appendSystemLine("chat panel ready");
     }
 
     function appendChatLine(message) {
+      if (!chatLog) return;
       const stickToBottom = chatIsNearBottom();
       const row = document.createElement("p");
       row.dataset.chatId = String(message.id || "");
@@ -1239,10 +1293,12 @@
     }
 
     function chatIsNearBottom() {
+      if (!chatLog) return true;
       return chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 32;
     }
 
     function scrollChatToBottom() {
+      if (!chatLog) return;
       chatLog.scrollTop = chatLog.scrollHeight;
     }
 

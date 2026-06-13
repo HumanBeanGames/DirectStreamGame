@@ -8,7 +8,7 @@ use crate::{
         retarget_custom_host_pipeline,
     },
     palette::PaletteFrameHub,
-    palette::{load_palette_config_runtime, load_palette_lookup_runtime},
+    palette::load_palette_lookup_runtime,
     public_types::{
         DirectStreamAudioSyncConfig, DirectStreamControlAction, DirectStreamControlResult,
         DirectStreamMode, DirectStreamStartRequest, DirectStreamState, DirectStreamStopRequest,
@@ -97,9 +97,7 @@ impl StreamControl {
         };
 
         let batch_size = effective_custom_batch_size(config.custom_host_batch_size, fps);
-        let palette_config = load_palette_config_runtime(&config.palette_config_path);
-        let palette_lookup =
-            load_palette_lookup_runtime(&config.palette_config_path, &palette_config);
+        let palette_lookup = load_palette_lookup_runtime(&config.palette_lookup_path);
         let image = images.add(make_stream_source_image(width, height));
 
         if let Ok(mut camera_target) = camera_targets.get_mut(target.camera) {

@@ -1,4 +1,6 @@
-use direct_stream_game::palette_lut::{build_lookup, encode_lookup, parse_palette_config};
+use direct_stream_game::palette_lut::{
+    build_lookup, encode_lookup_with_palette_toml, parse_palette_config,
+};
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -128,7 +130,7 @@ fn serve_lut(mut stream: TcpStream, body: &[u8]) {
     };
 
     let entries = build_lookup(&config);
-    let bytes = match encode_lookup(&config, &entries) {
+    let bytes = match encode_lookup_with_palette_toml(&config, toml, &entries) {
         Ok(bytes) => bytes,
         Err(err) => {
             serve_bad_request(stream, &err);
@@ -1038,14 +1040,13 @@ fn palette_lab_html() -> String {
       }
       setBakeProgress(100);
 
-      const header = new Uint8Array(30);
-      header.set([0x49, 0x50, 0x53, 0x4d, 0x41, 0x50, 0x31, 0x00], 0);
+      const tomlBytes = new TextEncoder().encode(artifact.tomlText);
+      const header = new Uint8Array(24);
+      header.set([0x49, 0x50, 0x53, 0x4d, 0x41, 0x50, 0x32, 0x00], 0);
       writeU64(header, 8, paletteHash(artifact.colors, matching, offset));
-      writeU16(header, 16, artifact.colors.length);
-      writeF32(header, 18, matching.lightness);
-      writeF32(header, 22, matching.chroma);
-      writeF32(header, 26, matching.hue);
-      return new Blob([header, entries], { type: "application/octet-stream" });
+      writeU32(header, 16, tomlBytes.length);
+      writeU32(header, 20, entries.length);
+      return new Blob([header, tomlBytes, entries], { type: "application/octet-stream" });
     }
 
     function nearestPaletteIndexForMap(oklab, paletteOklch, matching, offset) {
@@ -1099,19 +1100,17 @@ fn palette_lab_html() -> String {
       return hash;
     }
 
-    function writeU16(bytes, offset, value) {
+    function writeU32(bytes, offset, value) {
       bytes[offset] = value & 0xff;
       bytes[offset + 1] = (value >> 8) & 0xff;
+      bytes[offset + 2] = (value >> 16) & 0xff;
+      bytes[offset + 3] = (value >> 24) & 0xff;
     }
 
     function writeU64(bytes, offset, value) {
       for (let i = 0; i < 8; i++) {
         bytes[offset + i] = Number((value >> BigInt(i * 8)) & 0xffn);
       }
-    }
-
-    function writeF32(bytes, offset, value) {
-      new DataView(bytes.buffer).setFloat32(offset, value, true);
     }
 
     function previewOnly() {

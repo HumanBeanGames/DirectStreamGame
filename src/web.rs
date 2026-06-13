@@ -316,7 +316,6 @@ fn serve_stream_status(
         http_batch_latency_ms,
         video_latency_ms_estimate,
         audio_delay_ms,
-        warmup_frames_skipped,
     ) = if let Some(stats) = stats_snapshot.as_deref() {
         let batch_duration_ms = if active.fps() > 0 && stats.custom_http_batch_last_frames > 0 {
             stats.custom_http_batch_last_frames.saturating_sub(1) as f64 * 1000.0
@@ -333,13 +332,12 @@ fn serve_stream_status(
             http_batch_latency_ms,
             batch_duration_ms + readback_latency_ms + http_batch_latency_ms,
             stats.custom_audio_delay_ms,
-            stats.custom_warmup_frames_skipped,
         )
     } else {
-        (0.0, 0.0, 0.0, 0.0, active.audio_delay_ms(), 0)
+        (0.0, 0.0, 0.0, 0.0, active.audio_delay_ms())
     };
     let body = format!(
-        r#"{{"online":{},"version":"{}","branding":{{"page_title":"{}","header_title":"{}"}},"layout":{{"max_player_width_px":{},"prefer_larger_player":{},"minimizable_player":{},"start_player_minimized":{}}},"fps":{},"audio_delay_ms":{},"video_latency_ms_estimate":{},"batch_duration_ms":{},"readback_latency_ms":{},"http_batch_latency_ms":{},"warmup_frames_skipped":{}}}"#,
+        r#"{{"online":{},"version":"{}","branding":{{"page_title":"{}","header_title":"{}"}},"layout":{{"max_player_width_px":{},"prefer_larger_player":{},"minimizable_player":{},"start_player_minimized":{}}},"fps":{},"audio_delay_ms":{},"video_latency_ms_estimate":{},"batch_duration_ms":{},"readback_latency_ms":{},"http_batch_latency_ms":{}}}"#,
         active.is_active(),
         env!("CARGO_PKG_VERSION"),
         json_escape(&branding.page_title),
@@ -357,7 +355,6 @@ fn serve_stream_status(
         rounded_json_number(batch_duration_ms),
         rounded_json_number(readback_latency_ms),
         rounded_json_number(http_batch_latency_ms),
-        warmup_frames_skipped,
     );
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store, no-cache, must-revalidate, max-age=0\r\nPragma: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",

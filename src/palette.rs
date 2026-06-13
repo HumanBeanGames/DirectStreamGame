@@ -446,7 +446,6 @@ pub(crate) fn start_palette_preview_encoder(
         let mut previous_framebuffer = None;
         let mut sequence = 0u64;
         let mut was_active = false;
-        let mut warmup_remaining = 0u32;
 
         for raw_frame in receiver {
             let is_active = active.is_active();
@@ -464,7 +463,6 @@ pub(crate) fn start_palette_preview_encoder(
                 previous_framebuffer = None;
                 sequence = 0;
                 publisher.reset();
-                warmup_remaining = active.warmup_frames();
                 was_active = true;
             }
             let captured_at = raw_frame.captured_at;
@@ -478,20 +476,6 @@ pub(crate) fn start_palette_preview_encoder(
                     let is_keyframe = encoded.is_keyframe;
                     let frame_index = encoded.frame_index;
                     let framebuffer = encoded.framebuffer;
-                    if should_skip_startup_frame(
-                        &framebuffer,
-                        &mut warmup_remaining,
-                        active.suppress_initial_blank_frame(),
-                    ) {
-                        pending_batch.clear();
-                        previous_framebuffer = None;
-                        publisher.reset();
-                        stats.with_mut(|stats| {
-                            stats.custom_warmup_frames_skipped += 1;
-                            stats.custom_stage = "warming";
-                        });
-                        continue;
-                    }
                     sequence += 1;
 
                     if !active.is_active() {
@@ -512,13 +496,7 @@ pub(crate) fn start_palette_preview_encoder(
                         stats.record_custom_encode(encode_ms);
                     });
 
-                    let initial_keyframe_ready =
-                        previous_framebuffer.is_none() && is_keyframe && pending_batch.len() == 1;
-                    let startup_dribble = sequence <= batch_size.max(1) as u64;
-                    if initial_keyframe_ready
-                        || startup_dribble
-                        || pending_batch.len() >= batch_size.max(1)
-                    {
+                    if pending_batch.len() >= batch_size.max(1) {
                         let publish_started = Instant::now();
                         let encoded_batch = encode_palette_batch_packets(
                             previous_framebuffer.clone(),
@@ -532,13 +510,6 @@ pub(crate) fn start_palette_preview_encoder(
                         let encoded_tile_counts = encoded_batch.tile_counts;
                         let latest_frame_bytes = encoded_bytes / encoded_frame_count.max(1);
                         stats.with_mut(|stats| {
-                            if stats.custom_first_nonblank_sequence == 0 {
-                                stats.custom_first_nonblank_sequence = sequence;
-                                if encoded_keyframes > 0 {
-                                    stats.custom_first_keyframe_age_ms =
-                                        captured_at.elapsed().as_secs_f64() * 1000.0;
-                                }
-                            }
                             stats.record_custom_http_batch(encoded_frame_count);
                             stats.custom_bytes_sent += (encoded_bytes + 4) as u64;
                             stats.custom_keyframes_sent += encoded_keyframes;
@@ -704,22 +675,6 @@ impl IndexedFramePublisher {
             frame_index,
         })
     }
-}
-
-fn should_skip_startup_frame(
-    framebuffer: &Framebuffer,
-    warmup_remaining: &mut u32,
-    suppress_initial_blank_frame: bool,
-) -> bool {
-    if *warmup_remaining > 0 {
-        *warmup_remaining -= 1;
-        return true;
-    }
-    suppress_initial_blank_frame && framebuffer_is_uniform(framebuffer, 0)
-}
-
-fn framebuffer_is_uniform(framebuffer: &Framebuffer, value: u8) -> bool {
-    framebuffer.pixels.iter().all(|pixel| *pixel == value)
 }
 
 #[cfg(any(test, feature = "cpu-palette-encoder"))]

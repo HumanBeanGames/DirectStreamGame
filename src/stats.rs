@@ -57,9 +57,6 @@ pub(crate) struct StreamStats {
     pub(crate) custom_batch_buffered_frames: usize,
     pub(crate) custom_sender_wait_timeouts: u64,
     pub(crate) custom_sender_wait_wakeups: u64,
-    pub(crate) custom_warmup_frames_skipped: u64,
-    pub(crate) custom_first_nonblank_sequence: u64,
-    pub(crate) custom_first_keyframe_age_ms: f64,
     pub(crate) custom_audio_delay_ms: u32,
     pub(crate) stream_clients: u32,
     pub(crate) preview_requests: u64,
@@ -186,9 +183,6 @@ impl StreamStats {
         self.custom_batch_buffered_frames = 0;
         self.custom_sender_wait_timeouts = 0;
         self.custom_sender_wait_wakeups = 0;
-        self.custom_warmup_frames_skipped = 0;
-        self.custom_first_nonblank_sequence = 0;
-        self.custom_first_keyframe_age_ms = 0.0;
         self.custom_audio_delay_ms = 0;
     }
 

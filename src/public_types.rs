@@ -40,8 +40,6 @@ pub struct DirectStreamStartRequest {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
-    pub warmup_frames: u32,
-    pub suppress_initial_blank_frame: bool,
 }
 
 impl DirectStreamStartRequest {
@@ -51,8 +49,6 @@ impl DirectStreamStartRequest {
             width,
             height,
             fps,
-            warmup_frames: 0,
-            suppress_initial_blank_frame: false,
         }
     }
 }

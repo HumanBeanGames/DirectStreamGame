@@ -86,8 +86,6 @@ impl StreamControl {
         gpu_palette: Option<&mut GpuPalettePipeline>,
         frame_hub: &PaletteFrameHub,
         audio_sync: &DirectStreamAudioSyncConfig,
-        warmup_frames: u32,
-        suppress_initial_blank_frame: bool,
         camera_targets: &mut Query<&mut RenderTarget>,
         quad_transforms: &mut Query<&mut Transform>,
         config: &AppConfig,
@@ -170,8 +168,6 @@ impl StreamControl {
         senders.preview = None;
         senders.custom = Some(custom_sender);
         self.custom_stream_state.set_fps(fps);
-        self.custom_stream_state
-            .set_startup_warmup(warmup_frames, suppress_initial_blank_frame);
         let estimated_latency_ms =
             estimated_video_latency_ms(batch_size, fps, readback.frame_interval);
         let audio_delay_ms = audio_sync.effective_delay_ms(estimated_latency_ms, None);
@@ -297,8 +293,6 @@ impl StreamControl {
 pub(crate) struct CustomStreamState {
     active: Arc<AtomicBool>,
     fps: Arc<AtomicU32>,
-    warmup_frames: Arc<AtomicU32>,
-    suppress_initial_blank_frame: Arc<AtomicBool>,
     audio_delay_ms: Arc<AtomicU32>,
 }
 
@@ -307,8 +301,6 @@ impl CustomStreamState {
         Self {
             active: Arc::new(AtomicBool::new(false)),
             fps: Arc::new(AtomicU32::new(1)),
-            warmup_frames: Arc::new(AtomicU32::new(0)),
-            suppress_initial_blank_frame: Arc::new(AtomicBool::new(false)),
             audio_delay_ms: Arc::new(AtomicU32::new(1_000)),
         }
     }
@@ -327,20 +319,6 @@ impl CustomStreamState {
 
     fn set_fps(&self, fps: u32) {
         self.fps.store(fps.max(1), Ordering::Relaxed);
-    }
-
-    pub(crate) fn warmup_frames(&self) -> u32 {
-        self.warmup_frames.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn suppress_initial_blank_frame(&self) -> bool {
-        self.suppress_initial_blank_frame.load(Ordering::Relaxed)
-    }
-
-    fn set_startup_warmup(&self, warmup_frames: u32, suppress_initial_blank_frame: bool) {
-        self.warmup_frames.store(warmup_frames, Ordering::Relaxed);
-        self.suppress_initial_blank_frame
-            .store(suppress_initial_blank_frame, Ordering::Relaxed);
     }
 
     pub(crate) fn audio_delay_ms(&self) -> u32 {
@@ -580,8 +558,6 @@ pub(crate) fn handle_direct_stream_start_requests(
                         gpu_palette,
                         &frame_hub,
                         &audio_sync,
-                        request.warmup_frames,
-                        request.suppress_initial_blank_frame,
                         &mut camera_targets,
                         &mut quad_transforms,
                         &config,

@@ -1254,6 +1254,7 @@ fn palette_stream_page_html_with_options(
     .player-controls button {{ appearance: none; border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 4px 8px; font: inherit; cursor: pointer; }}
     .player-controls input {{ flex: 1; min-width: 0; }}
     .chat {{ min-height: 0; max-height: 100%; display: flex; flex-direction: column; border: 1px solid #303847; background: #0b0d12; }}
+    .chat[hidden] {{ display: none; }}
     .chat h2 {{ margin: 0; padding: 10px 12px; border-bottom: 1px solid #303847; font-size: 14px; }}
     .chat-log {{ flex: 1 1 auto; min-height: 0; padding: 10px 12px; overflow-y: auto; color: #cbd5e1; font: 13px Consolas, monospace; }}
     .chat-log p {{ margin: 0 0 8px; }}

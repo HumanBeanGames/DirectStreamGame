@@ -498,10 +498,11 @@ pub(crate) fn start_palette_preview_encoder(
                         continue;
                     }
 
+                    let force_batch_start_keyframe = pending_batch.is_empty();
                     pending_batch.push(PaletteFramePacket {
                         sequence,
                         framebuffer: Arc::new(framebuffer),
-                        is_keyframe,
+                        is_keyframe: is_keyframe || force_batch_start_keyframe,
                         frame_index,
                     });
 
@@ -513,7 +514,11 @@ pub(crate) fn start_palette_preview_encoder(
 
                     let initial_keyframe_ready =
                         previous_framebuffer.is_none() && is_keyframe && pending_batch.len() == 1;
-                    if initial_keyframe_ready || pending_batch.len() >= batch_size.max(1) {
+                    let startup_dribble = sequence <= batch_size.max(1) as u64;
+                    if initial_keyframe_ready
+                        || startup_dribble
+                        || pending_batch.len() >= batch_size.max(1)
+                    {
                         let publish_started = Instant::now();
                         let encoded_batch = encode_palette_batch_packets(
                             previous_framebuffer.clone(),

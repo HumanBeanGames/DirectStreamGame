@@ -307,8 +307,8 @@ impl CustomStreamState {
         Self {
             active: Arc::new(AtomicBool::new(false)),
             fps: Arc::new(AtomicU32::new(1)),
-            warmup_frames: Arc::new(AtomicU32::new(2)),
-            suppress_initial_blank_frame: Arc::new(AtomicBool::new(true)),
+            warmup_frames: Arc::new(AtomicU32::new(0)),
+            suppress_initial_blank_frame: Arc::new(AtomicBool::new(false)),
             audio_delay_ms: Arc::new(AtomicU32::new(1_000)),
         }
     }

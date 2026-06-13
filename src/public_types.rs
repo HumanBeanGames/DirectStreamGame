@@ -51,8 +51,8 @@ impl DirectStreamStartRequest {
             width,
             height,
             fps,
-            warmup_frames: 8,
-            suppress_initial_blank_frame: true,
+            warmup_frames: 0,
+            suppress_initial_blank_frame: false,
         }
     }
 }

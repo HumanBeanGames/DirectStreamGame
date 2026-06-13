@@ -508,9 +508,7 @@ pub(crate) fn start_palette_preview_encoder(
                         stats.record_custom_encode(encode_ms);
                     });
 
-                    let initial_keyframe_ready =
-                        previous_framebuffer.is_none() && is_keyframe && pending_batch.len() == 1;
-                    if initial_keyframe_ready || pending_batch.len() >= batch_size.max(1) {
+                    if pending_batch.len() >= batch_size.max(1) {
                         let publish_started = Instant::now();
                         let encoded_batch = encode_palette_batch_packets(
                             previous_framebuffer.clone(),

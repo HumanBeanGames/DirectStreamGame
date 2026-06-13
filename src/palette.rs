@@ -483,6 +483,9 @@ pub(crate) fn start_palette_preview_encoder(
                         &mut warmup_remaining,
                         active.suppress_initial_blank_frame(),
                     ) {
+                        pending_batch.clear();
+                        previous_framebuffer = None;
+                        publisher.reset();
                         stats.with_mut(|stats| {
                             stats.custom_warmup_frames_skipped += 1;
                             stats.custom_stage = "warming";
@@ -508,7 +511,9 @@ pub(crate) fn start_palette_preview_encoder(
                         stats.record_custom_encode(encode_ms);
                     });
 
-                    if pending_batch.len() >= batch_size.max(1) {
+                    let initial_keyframe_ready =
+                        previous_framebuffer.is_none() && is_keyframe && pending_batch.len() == 1;
+                    if initial_keyframe_ready || pending_batch.len() >= batch_size.max(1) {
                         let publish_started = Instant::now();
                         let encoded_batch = encode_palette_batch_packets(
                             previous_framebuffer.clone(),

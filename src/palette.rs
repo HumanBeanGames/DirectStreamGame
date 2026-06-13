@@ -241,10 +241,15 @@ impl PaletteFrameHub {
         let (lock, ready) = &*self.inner;
         if let Ok(mut latest) = lock.lock() {
             latest.sequence = latest.sequence.max(sequence);
+            let start_packet_index = if encoded.packets.is_empty() {
+                None
+            } else {
+                Some(0)
+            };
             let batch = EncodedPaletteBatch {
                 sequence,
                 packets: Arc::new(encoded.packets),
-                start_packet_index: encoded.latest_keyframe_packet_index,
+                start_packet_index,
                 bytes: encoded.bytes,
             };
             latest.stream_header = Some(Arc::new(stream_header));
@@ -885,7 +890,6 @@ pub(crate) struct PaletteBatchEncoding {
     pub(crate) keyframes: u64,
     pub(crate) delta_frames: u64,
     pub(crate) last_framebuffer: Option<Arc<Framebuffer>>,
-    pub(crate) latest_keyframe_packet_index: Option<usize>,
 }
 
 pub(crate) fn encode_palette_batch_packets(
@@ -899,14 +903,12 @@ pub(crate) fn encode_palette_batch_packets(
     let mut bytes = 0usize;
     let mut keyframes = 0u64;
     let mut delta_frames = 0u64;
-    let mut latest_keyframe_packet_index = None;
 
     for packet in batch {
         let current = packet.framebuffer.as_ref();
         let encode_as_keyframe = packet.is_keyframe || previous.is_none();
         let (payload, counts) = if encode_as_keyframe {
             keyframes += 1;
-            latest_keyframe_packet_index = Some(packets.len());
             let payload = encode_keyframe_raw(current);
             tile_cache = TileCache::default();
             seed_tile_cache_from_frame(current, &mut tile_cache);
@@ -938,7 +940,6 @@ pub(crate) fn encode_palette_batch_packets(
         keyframes,
         delta_frames,
         last_framebuffer: previous,
-        latest_keyframe_packet_index,
     }
 }
 

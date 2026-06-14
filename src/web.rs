@@ -1243,30 +1243,30 @@ fn palette_stream_page_html_with_options(
   <meta name="direct-stream-exported-at-ms" content="{exported_at_ms}">
   <style>
     :root {{ color-scheme: dark; font-family: Arial, sans-serif; background: #111318; color: #eef3f8; --direct-stream-max-player-width: {max_player_width}px; }}
+    * {{ box-sizing: border-box; }}
     body {{ margin: 0; min-height: 100vh; display: grid; grid-template-rows: auto 1fr; }}
     header {{ display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 16px; background: #1b2029; border-bottom: 1px solid #303847; }}
     header button {{ appearance: none; border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 6px 10px; font: inherit; cursor: pointer; }}
     header button[hidden] {{ display: none; }}
     main {{ display: grid; place-items: center; padding: 16px; min-height: 0; }}
-    .stage {{ --stage-left-column: 0px; --stage-right-column: 0px; --direct-stream-player-size: 240px; width: min(100%, var(--direct-stream-max-player-width)); display: grid; grid-template-columns: minmax(240px, auto); grid-template-areas: "player"; gap: 8px; align-items: start; justify-content: center; min-height: 0; }}
-    .stage.app-ui-active {{ width: min(100%, calc(var(--direct-stream-max-player-width) + 648px)); grid-template-columns: var(--stage-left-column) minmax(240px, max-content) var(--stage-right-column); grid-template-areas: "above above above" "left player right" "below below below"; }}
-    .stage.app-ui-active.has-left {{ --stage-left-column: minmax(180px, 320px); }}
-    .stage.app-ui-active.has-right {{ --stage-right-column: minmax(220px, 320px); }}
+    .stage {{ --stage-left-column: 0px; --stage-right-column: 0px; --direct-stream-player-css-size: min(calc(100vw - 32px), calc(100vh - 84px), var(--direct-stream-max-player-width)); --direct-stream-player-size: 240px; width: min(100%, var(--direct-stream-player-css-size)); display: grid; grid-template-columns: var(--direct-stream-player-css-size); grid-template-areas: "player"; gap: 8px; align-items: start; justify-content: center; min-height: 0; }}
+    .stage.app-ui-active {{ --direct-stream-player-css-size: min(max(240px, calc(100vw - 384px)), calc(100vh - 84px), var(--direct-stream-max-player-width)); width: min(100%, calc(var(--stage-left-column) + var(--direct-stream-player-css-size) + var(--stage-right-column) + 16px)); grid-template-columns: var(--stage-left-column) var(--direct-stream-player-css-size) var(--stage-right-column); grid-template-areas: "above above above" "left player right" "below below below"; }}
+    .stage.app-ui-active.has-left {{ --stage-left-column: 320px; }}
+    .stage.app-ui-active.has-right {{ --stage-right-column: 320px; }}
     .stage.player-minimized {{ width: 0; height: 0; gap: 0; overflow: hidden; }}
     .stage.player-minimized .player,
     .stage.player-minimized .left-region,
     .stage.player-minimized .right-region,
     .stage.player-minimized .above-region,
     .stage.player-minimized .below-region {{ display: none; }}
-    .player {{ grid-area: player; position: relative; width: min(calc(100vw - 32px), calc(100vh - 84px), var(--direct-stream-max-player-width)); aspect-ratio: 1 / 1; min-width: 240px; }}
-    .stage.app-ui-active.has-right .player {{ width: min(max(240px, calc(100vw - 384px)), calc(100vh - 84px), var(--direct-stream-max-player-width)); }}
-    .stage.app-ui-active.has-left.has-right .player {{ width: min(max(240px, calc(100vw - 720px)), calc(100vh - 84px), var(--direct-stream-max-player-width)); }}
+    .stage.app-ui-active.has-left.has-right {{ --direct-stream-player-css-size: min(max(240px, calc(100vw - 720px)), calc(100vh - 84px), var(--direct-stream-max-player-width)); }}
+    .player {{ grid-area: player; position: relative; width: var(--direct-stream-player-css-size); aspect-ratio: 1 / 1; min-width: 240px; }}
     canvas {{ display: block; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; image-rendering: crisp-edges; background: #050608; border: 1px solid #303847; }}
     .stream-overlay {{ position: absolute; inset: 0; width: 100%; height: 100%; border: 0; pointer-events: none; z-index: 3; background: transparent; }}
     .unmute {{ appearance: none; position: absolute; inset: -1px; z-index: 4; display: grid; place-items: center; box-sizing: border-box; margin: 0; padding: 0; border: 0; border-radius: 0; background: rgba(5, 6, 8, 0.54); color: #f8fafc; font: 700 clamp(18px, 4vw, 34px) Arial, sans-serif; cursor: pointer; text-shadow: 0 2px 8px #000; }}
     .unmute[hidden] {{ display: none; }}
     .player-controls {{ position: absolute; z-index: 7; left: 10px; right: 10px; bottom: 10px; display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 5px; background: rgba(5, 6, 8, 0.62); opacity: 0; pointer-events: none; transition: opacity 120ms ease; }}
-    .player:hover .player-controls, .player-controls:focus-within {{ opacity: 1; pointer-events: auto; }}
+    .player:hover .player-controls, .unmute:hover ~ .player-controls, .player-controls:focus-within {{ opacity: 1; pointer-events: auto; }}
     .player-controls[hidden] {{ display: none; }}
     .player-controls button {{ appearance: none; border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 4px 8px; font: inherit; cursor: pointer; }}
     .player-controls input {{ flex: 1; min-width: 0; }}
@@ -1279,8 +1279,8 @@ fn palette_stream_page_html_with_options(
     .chat-input input {{ flex: 1; min-width: 0; background: #111722; color: #eef3f8; border: 1px solid #3a4353; border-radius: 4px; padding: 7px 8px; }}
     .chat-input button {{ border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 7px 10px; }}
     .chat-log p.mentioned-me {{ color: #fff7d6; background: rgba(247, 197, 72, 0.18); margin-inline: -4px; padding: 2px 4px; border-left: 2px solid #f7c548; }}
-    .left-region {{ grid-area: left; min-width: 0; min-height: 0; display: none; grid-auto-rows: minmax(0, 1fr); align-content: stretch; overflow-x: hidden; overflow-y: hidden; }}
-    .right-region {{ grid-area: right; min-width: 0; min-height: 0; display: none; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; overflow-x: hidden; }}
+    .left-region {{ grid-area: left; width: var(--stage-left-column); min-width: 0; min-height: 0; display: none; grid-auto-rows: minmax(0, 1fr); align-content: stretch; overflow-x: hidden; overflow-y: hidden; }}
+    .right-region {{ grid-area: right; width: var(--stage-right-column); min-width: 0; min-height: 0; display: none; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; overflow-x: hidden; }}
     .stage.app-ui-active.has-left .left-region,
     .stage.app-ui-active.has-right .right-region {{ display: grid; height: var(--direct-stream-player-size); max-height: var(--direct-stream-player-size); }}
     .left-region > .panel {{ height: 100%; min-height: 0; display: flex; flex-direction: column; }}
@@ -1460,6 +1460,9 @@ fn palette_stream_page_html_with_options(
 
     function setPlayerMinimized(minimized) {{
       if (!playerMinimizable) return;
+      if (minimized && !audioMuted) {{
+        muteAudio();
+      }}
       stage.classList.toggle("player-minimized", minimized);
       togglePlayerButton.textContent = minimized ? "Restore stream" : "Minimize stream";
       updateStageUiClasses();
@@ -2222,12 +2225,16 @@ fn palette_stream_page_html_with_options(
         }});
         return;
       }}
+      muteAudio();
+    }});
+
+    function muteAudio() {{
       audioQueue = [];
       audioQueueOffset = 0;
       audioPrimed = false;
       lastTransportSample = null;
       setMuted(true);
-    }});
+    }}
 
     volumeSlider.addEventListener("input", () => {{
       audioVolume = Number(volumeSlider.value);

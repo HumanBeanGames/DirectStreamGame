@@ -1248,18 +1248,24 @@ fn palette_stream_page_html_with_options(
     header button {{ appearance: none; border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 6px 10px; font: inherit; cursor: pointer; }}
     header button[hidden] {{ display: none; }}
     main {{ display: grid; place-items: center; padding: 16px; min-height: 0; }}
-    .stage {{ width: min(100%, calc(var(--direct-stream-max-player-width) + 520px)); display: grid; grid-template-columns: 0 auto minmax(220px, 320px); grid-template-areas: "above above above" "left player right" "below below below"; gap: 8px; align-items: stretch; justify-content: center; min-height: 0; }}
-    .stage.has-left {{ grid-template-columns: minmax(180px, 280px) auto minmax(220px, 320px); }}
-    .stage.player-minimized {{ grid-template-columns: minmax(180px, 280px) minmax(220px, 320px); grid-template-areas: "above above" "left right" "below below"; }}
-    .stage.player-minimized .player {{ display: none; }}
-    .stage.player-minimized:not(.has-left) {{ grid-template-columns: minmax(220px, 320px); grid-template-areas: "above" "right" "below"; }}
-    .player {{ grid-area: player; position: relative; width: min(calc(100vw - 384px), calc(100vh - 84px), var(--direct-stream-max-player-width)); aspect-ratio: 1 / 1; min-width: 240px; }}
-    .stage.has-left .player {{ width: min(max(240px, calc(100vw - 680px)), calc(100vh - 84px), var(--direct-stream-max-player-width)); }}
+    .stage {{ --stage-left-column: 0px; --stage-right-column: 0px; --direct-stream-player-size: 240px; width: min(100%, var(--direct-stream-max-player-width)); display: grid; grid-template-columns: minmax(240px, auto); grid-template-areas: "player"; gap: 8px; align-items: start; justify-content: center; min-height: 0; }}
+    .stage.app-ui-active {{ width: min(100%, calc(var(--direct-stream-max-player-width) + 648px)); grid-template-columns: var(--stage-left-column) minmax(240px, auto) var(--stage-right-column); grid-template-areas: "above above above" "left player right" "below below below"; }}
+    .stage.app-ui-active.has-left {{ --stage-left-column: minmax(180px, 320px); }}
+    .stage.app-ui-active.has-right {{ --stage-right-column: minmax(220px, 320px); }}
+    .stage.player-minimized {{ width: 0; height: 0; gap: 0; overflow: hidden; }}
+    .stage.player-minimized .player,
+    .stage.player-minimized .left-region,
+    .stage.player-minimized .right-region,
+    .stage.player-minimized .above-region,
+    .stage.player-minimized .below-region {{ display: none; }}
+    .player {{ grid-area: player; position: relative; width: min(calc(100vw - 32px), calc(100vh - 84px), var(--direct-stream-max-player-width)); aspect-ratio: 1 / 1; min-width: 240px; }}
+    .stage.app-ui-active.has-right .player {{ width: min(max(240px, calc(100vw - 384px)), calc(100vh - 84px), var(--direct-stream-max-player-width)); }}
+    .stage.app-ui-active.has-left.has-right .player {{ width: min(max(240px, calc(100vw - 720px)), calc(100vh - 84px), var(--direct-stream-max-player-width)); }}
     canvas {{ display: block; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; image-rendering: crisp-edges; background: #050608; border: 1px solid #303847; }}
-    .stream-overlay {{ position: absolute; inset: 1px; width: calc(100% - 2px); height: calc(100% - 2px); border: 0; pointer-events: none; z-index: 3; background: transparent; }}
-    .unmute {{ position: absolute; inset: 1px; z-index: 5; display: grid; place-items: center; border: 0; background: rgba(5, 6, 8, 0.54); color: #f8fafc; font: 700 clamp(18px, 4vw, 34px) Arial, sans-serif; cursor: pointer; text-shadow: 0 2px 8px #000; }}
+    .stream-overlay {{ position: absolute; inset: 0; width: 100%; height: 100%; border: 0; pointer-events: none; z-index: 3; background: transparent; }}
+    .unmute {{ position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; border: 0; background: rgba(5, 6, 8, 0.54); color: #f8fafc; font: 700 clamp(18px, 4vw, 34px) Arial, sans-serif; cursor: pointer; text-shadow: 0 2px 8px #000; }}
     .unmute[hidden] {{ display: none; }}
-    .player-controls {{ position: absolute; z-index: 5; left: 10px; right: 10px; bottom: 10px; display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 5px; background: rgba(5, 6, 8, 0.62); opacity: 0; pointer-events: none; transition: opacity 120ms ease; }}
+    .player-controls {{ position: absolute; z-index: 6; left: 10px; right: 10px; bottom: 10px; display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 5px; background: rgba(5, 6, 8, 0.62); opacity: 0; pointer-events: none; transition: opacity 120ms ease; }}
     .player:hover .player-controls, .player-controls:focus-within {{ opacity: 1; pointer-events: auto; }}
     .player-controls[hidden] {{ display: none; }}
     .player-controls button {{ appearance: none; border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 4px 8px; font: inherit; cursor: pointer; }}
@@ -1273,21 +1279,25 @@ fn palette_stream_page_html_with_options(
     .chat-input input {{ flex: 1; min-width: 0; background: #111722; color: #eef3f8; border: 1px solid #3a4353; border-radius: 4px; padding: 7px 8px; }}
     .chat-input button {{ border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 7px 10px; }}
     .chat-log p.mentioned-me {{ color: #fff7d6; background: rgba(247, 197, 72, 0.18); margin-inline: -4px; padding: 2px 4px; border-left: 2px solid #f7c548; }}
-    .left-region {{ grid-area: left; min-height: 0; overflow-y: auto; }}
-    .right-region {{ grid-area: right; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; }}
-    .above-region {{ grid-area: above; }}
-    .below-region {{ grid-area: below; }}
+    .left-region {{ grid-area: left; min-width: 0; min-height: 0; display: none; overflow-x: hidden; overflow-y: auto; }}
+    .right-region {{ grid-area: right; min-width: 0; min-height: 0; display: none; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; overflow-x: hidden; }}
+    .stage.app-ui-active.has-left .left-region,
+    .stage.app-ui-active.has-right .right-region {{ display: grid; height: var(--direct-stream-player-size); max-height: var(--direct-stream-player-size); }}
+    .above-region {{ grid-area: above; display: none; min-width: 0; }}
+    .below-region {{ grid-area: below; display: none; min-width: 0; }}
+    .stage.app-ui-active.has-above .above-region,
+    .stage.app-ui-active.has-below .below-region {{ display: grid; }}
     .panel-region.region-wrap-no-scroll,
     .right-panels.region-wrap-no-scroll {{ overflow: visible; }}
     .panel-region {{ display: grid; gap: 8px; align-content: start; }}
     .panel-region:empty {{ display: none; }}
     .right-panels {{ display: grid; gap: 8px; align-content: start; }}
     .right-panels:empty {{ display: none; }}
-    .panel {{ border: 1px solid #303847; background: #0b0d12; max-width: 100%; }}
-    .panel.panel-headerless {{ width: max-content; max-width: min(100%, 720px); }}
+    .panel {{ border: 1px solid #303847; background: #0b0d12; min-width: 0; max-width: 100%; overflow: hidden; }}
+    .panel.panel-headerless {{ width: auto; max-width: min(100%, 720px); }}
     .panel h2 {{ margin: 0; padding: 9px 12px; border-bottom: 1px solid #303847; font-size: 14px; }}
-    .panel pre {{ margin: 0; padding: 10px 12px; min-width: min-content; overflow-x: auto; color: #dbe4ef; font: 13px Consolas, monospace; }}
-    .panel-content {{ margin: 0; padding: 10px 12px; min-width: min-content; overflow-x: auto; color: #dbe4ef; font: 13px Consolas, monospace; }}
+    .panel pre {{ margin: 0; padding: 10px 12px; min-width: 0; max-width: 100%; overflow-x: hidden; white-space: pre-wrap; overflow-wrap: anywhere; color: #dbe4ef; font: 13px Consolas, monospace; }}
+    .panel-content {{ margin: 0; padding: 10px 12px; min-width: 0; max-width: 100%; overflow-x: hidden; color: #dbe4ef; font: 13px Consolas, monospace; }}
     .panel-text {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
     .panel-button {{ margin: 0 6px 6px 0; border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 4px 8px; font: inherit; cursor: pointer; }}
     .panel-button:disabled {{ opacity: 0.5; cursor: default; }}
@@ -1296,7 +1306,7 @@ fn palette_stream_page_html_with_options(
     .panel-paged-body {{ display: block; }}
     .panel-page-controls {{ display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }}
     .panel-page-indicator {{ color: #9fb0c4; font-size: 12px; }}
-    .panel.panel-headerless pre {{ min-width: max-content; max-width: 100%; }}
+    .panel.panel-headerless pre {{ min-width: 0; max-width: 100%; }}
     .panel.panel-pre-wrap pre {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
     .panel.panel-nowrap pre {{ white-space: pre; overflow-wrap: normal; }}
     .panel.panel-nowrap .panel-text {{ white-space: pre; overflow-wrap: normal; }}
@@ -1317,7 +1327,7 @@ fn palette_stream_page_html_with_options(
     .overlay-bottom-right {{ bottom: 54px; right: 10px; }}
     .named-panel-region {{ border-top: 1px solid #303847; padding-top: 8px; }}
     .named-panel-region h2 {{ margin: 0 0 8px; color: #b9c7d7; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }}
-    @media (max-width: 900px) {{ .stage, .stage.has-left {{ grid-template-columns: 1fr; grid-template-areas: "above" "player" "left" "right" "below"; }} .player, .stage.has-left .player {{ width: min(calc(100vw - 32px), calc(100vh - 360px), 960px); margin-inline: auto; }} .right-region {{ min-height: 300px; }} .chat {{ min-height: 220px; max-height: 420px; }} }}
+    @media (max-width: 900px) {{ .stage.app-ui-active, .stage.app-ui-active.has-left, .stage.app-ui-active.has-right {{ width: min(100%, var(--direct-stream-max-player-width)); grid-template-columns: 1fr; grid-template-areas: "above" "player" "left" "right" "below"; }} .player, .stage.app-ui-active .player, .stage.app-ui-active.has-left.has-right .player {{ width: min(calc(100vw - 32px), calc(100vh - 360px), 960px); margin-inline: auto; }} .stage.app-ui-active.has-left .left-region, .stage.app-ui-active.has-right .right-region {{ height: auto; max-height: 420px; }} .chat {{ min-height: 220px; max-height: 420px; }} }}
   </style>
 </head>
 <body>
@@ -1449,11 +1459,40 @@ fn palette_stream_page_html_with_options(
       if (!playerMinimizable) return;
       stage.classList.toggle("player-minimized", minimized);
       togglePlayerButton.textContent = minimized ? "Restore stream" : "Minimize stream";
+      updateStageUiClasses();
       try {{
         localStorage.setItem(playerMinimizedStorageKey, minimized ? "true" : "false");
       }} catch (error) {{
         console.error(error);
       }}
+    }}
+
+    function updatePlayerSizeVariable() {{
+      const rect = player.getBoundingClientRect();
+      const size = Math.max(0, Math.round(rect.height || rect.width || 0));
+      if (size > 0) {{
+        stage.style.setProperty("--direct-stream-player-size", `${{size}}px`);
+      }}
+    }}
+
+    function updateStageUiClasses() {{
+      const hasLeft = leftPanels.childElementCount > 0;
+      const hasRight = !!chatPanel || rightPanels.childElementCount > 0;
+      const hasAbove = abovePanels.childElementCount > 0;
+      const hasBelow = belowPanels.childElementCount > 0;
+      const appUiActive = hasLeft || hasRight || hasAbove || hasBelow;
+      stage.classList.toggle("has-left", hasLeft);
+      stage.classList.toggle("has-right", hasRight);
+      stage.classList.toggle("has-above", hasAbove);
+      stage.classList.toggle("has-below", hasBelow);
+      stage.classList.toggle("app-ui-active", appUiActive);
+      updatePlayerSizeVariable();
+    }}
+
+    if (typeof ResizeObserver !== "undefined") {{
+      new ResizeObserver(updatePlayerSizeVariable).observe(player);
+    }} else {{
+      window.addEventListener("resize", updatePlayerSizeVariable);
     }}
 
     if (playerMinimizable) {{
@@ -1463,6 +1502,8 @@ fn palette_stream_page_html_with_options(
         setPlayerMinimized(!stage.classList.contains("player-minimized"));
       }});
     }}
+    updateStageUiClasses();
+    syncPlayerControls();
 
     function getDeviceId() {{
       try {{
@@ -2053,7 +2094,7 @@ fn palette_stream_page_html_with_options(
         audioGain.gain.linearRampToValueAtTime(target, audioContext.currentTime + 0.025);
       }}
       unmuteButton.hidden = !muted;
-      playerControls.hidden = muted;
+      syncPlayerControls();
       updateUnmuteOverlay();
     }}
 
@@ -2061,6 +2102,14 @@ fn palette_stream_page_html_with_options(
       if (!audioMuted) return;
       unmuteButton.textContent = streamOnline ? "Click to unmute" : "Not Online";
       unmuteButton.disabled = !streamOnline;
+      syncPlayerControls();
+    }}
+
+    function syncPlayerControls() {{
+      playerControls.hidden = false;
+      muteButton.textContent = audioMuted ? "Unmute" : "Mute";
+      muteButton.disabled = audioMuted && !streamOnline;
+      volumeSlider.disabled = audioMuted && !streamOnline;
     }}
 
     async function pollStreamStatus() {{
@@ -2163,6 +2212,13 @@ fn palette_stream_page_html_with_options(
     }});
 
     muteButton.addEventListener("click", () => {{
+      if (audioMuted) {{
+        startAudio().catch(error => {{
+          console.error(error);
+          unmuteButton.hidden = false;
+        }});
+        return;
+      }}
       audioQueue = [];
       audioQueueOffset = 0;
       audioPrimed = false;
@@ -2448,6 +2504,7 @@ fn palette_stream_page_html_with_options(
       chatPanel.appendChild(chatLog);
       chatPanel.appendChild(chatForm);
       rightRegion.insertBefore(chatPanel, rightPanels);
+      updateStageUiClasses();
     }}
 
     function removeChatPanel() {{
@@ -2460,6 +2517,7 @@ fn palette_stream_page_html_with_options(
       lastChatId = 0;
       chatGeneration = null;
       shownChatIds.clear();
+      updateStageUiClasses();
     }}
 
     function updateChatPanelTitle(chatPanelStatus) {{
@@ -2592,7 +2650,7 @@ fn palette_stream_page_html_with_options(
         applyPanelRegionStyle(container, styleHint);
         container.appendChild(section);
       }});
-      stage.classList.toggle("has-left", leftPanels.childElementCount > 0);
+      updateStageUiClasses();
     }}
 
     function renderPanelBody(panel) {{

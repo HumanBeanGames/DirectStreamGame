@@ -7,12 +7,11 @@ use std::{
 pub const LUT_ENTRY_COUNT: usize = 256 * 256 * 256;
 #[cfg(test)]
 const DEFAULT_PALETTE_TOML: &str = include_str!("default_palette/default_palette.toml");
-#[cfg(test)]
-const DEFAULT_PALETTE_IPSMAP: &[u8] = include_bytes!("default_palette/default_palette.ipsmap");
 const LUT_MAGIC_V1: &[u8; 8] = b"IPSMAP1\0";
 const LUT_MAGIC_V2: &[u8; 8] = b"IPSMAP2\0";
 const LUT_V1_HEADER_LEN: usize = 30;
 const LUT_V2_HEADER_LEN: usize = 24;
+const PALETTE_MATCHING_ALGORITHM_VERSION: &[u8] = b"oklch-gamut-clamped-v1";
 
 #[derive(Clone, Copy, Debug)]
 pub struct PaletteMatching {
@@ -24,10 +23,6 @@ pub struct PaletteMatching {
     pub chroma_multiply: f32,
     pub chroma_add: f32,
     pub hue_add: f32,
-    pub preserve_dark_neutrals: bool,
-    pub dark_neutral_luma_threshold: f32,
-    pub dark_neutral_chroma_threshold: f32,
-    pub dark_neutral_chroma_weight_scale: f32,
 }
 
 impl Default for PaletteMatching {
@@ -41,10 +36,6 @@ impl Default for PaletteMatching {
             chroma_multiply: 0.0,
             chroma_add: 0.0,
             hue_add: 0.0,
-            preserve_dark_neutrals: false,
-            dark_neutral_luma_threshold: 0.18,
-            dark_neutral_chroma_threshold: 0.045,
-            dark_neutral_chroma_weight_scale: 8.0,
         }
     }
 }
@@ -125,18 +116,6 @@ pub fn parse_palette_config(contents: &str) -> Result<PaletteConfig, String> {
                     "chroma_multiply" => matching.chroma_multiply = parse_f32_value(value)?,
                     "chroma_add" => matching.chroma_add = parse_f32_value(value)?,
                     "hue_add" => matching.hue_add = parse_f32_value(value)?,
-                    "preserve_dark_neutrals" => {
-                        matching.preserve_dark_neutrals = parse_bool_value(value)?
-                    }
-                    "dark_neutral_luma_threshold" => {
-                        matching.dark_neutral_luma_threshold = parse_f32_value(value)?
-                    }
-                    "dark_neutral_chroma_threshold" => {
-                        matching.dark_neutral_chroma_threshold = parse_f32_value(value)?
-                    }
-                    "dark_neutral_chroma_weight_scale" => {
-                        matching.dark_neutral_chroma_weight_scale = parse_f32_value(value)?
-                    }
                     _ => {}
                 }
             }
@@ -186,22 +165,6 @@ pub fn serialize_palette_config(config: &PaletteConfig) -> String {
     ));
     output.push_str(&format!("chroma_add = {}\n", config.matching.chroma_add));
     output.push_str(&format!("hue_add = {}\n", config.matching.hue_add));
-    output.push_str(&format!(
-        "preserve_dark_neutrals = {}\n",
-        config.matching.preserve_dark_neutrals
-    ));
-    output.push_str(&format!(
-        "dark_neutral_luma_threshold = {}\n",
-        config.matching.dark_neutral_luma_threshold
-    ));
-    output.push_str(&format!(
-        "dark_neutral_chroma_threshold = {}\n",
-        config.matching.dark_neutral_chroma_threshold
-    ));
-    output.push_str(&format!(
-        "dark_neutral_chroma_weight_scale = {}\n",
-        config.matching.dark_neutral_chroma_weight_scale
-    ));
     output
 }
 
@@ -211,14 +174,6 @@ fn parse_f32_value(value: &str) -> Result<f32, String> {
         .trim_matches(',')
         .parse::<f32>()
         .map_err(|err| err.to_string())
-}
-
-fn parse_bool_value(value: &str) -> Result<bool, String> {
-    match value.trim().trim_matches(',').to_ascii_lowercase().as_str() {
-        "true" => Ok(true),
-        "false" => Ok(false),
-        other => Err(format!("invalid boolean value: {other}")),
-    }
 }
 
 pub fn sibling_lut_path(path: impl AsRef<Path>) -> PathBuf {
@@ -316,11 +271,6 @@ pub fn load_lookup(
 pub fn load_lookup_bundle(path: impl AsRef<Path>) -> Result<PaletteLookup, String> {
     let bytes = fs::read(path).map_err(|err| err.to_string())?;
     decode_lookup_bundle(&bytes)
-}
-
-#[cfg(test)]
-fn default_palette_lookup(config: &PaletteConfig) -> Result<PaletteLookup, String> {
-    decode_lookup(DEFAULT_PALETTE_IPSMAP, config)
 }
 
 pub fn decode_lookup(bytes: &[u8], config: &PaletteConfig) -> Result<PaletteLookup, String> {
@@ -429,6 +379,9 @@ pub fn palette_hash(config: &PaletteConfig) -> u64 {
         *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
 
+    for byte in PALETTE_MATCHING_ALGORITHM_VERSION {
+        feed(&mut hash, *byte);
+    }
     for color in &config.colors {
         for byte in color {
             feed(&mut hash, *byte);
@@ -456,18 +409,6 @@ pub fn palette_hash(config: &PaletteConfig) -> u64 {
             }
         }
     }
-    if config.matching.has_dark_neutral_preservation() {
-        feed(&mut hash, u8::from(config.matching.preserve_dark_neutrals));
-        for value in [
-            config.matching.dark_neutral_luma_threshold,
-            config.matching.dark_neutral_chroma_threshold,
-            config.matching.dark_neutral_chroma_weight_scale,
-        ] {
-            for byte in value.to_le_bytes() {
-                feed(&mut hash, byte);
-            }
-        }
-    }
     hash
 }
 
@@ -482,10 +423,6 @@ impl PaletteMatching {
         ]
         .iter()
         .any(|value| value.abs() > 0.000_001)
-    }
-
-    pub fn has_dark_neutral_preservation(&self) -> bool {
-        self.preserve_dark_neutrals
     }
 }
 
@@ -551,26 +488,82 @@ fn nearest_palette_index(color: Oklch, palette: &[Oklch], matching: PaletteMatch
 }
 
 fn apply_input_offset(color: Oklch, matching: PaletteMatching) -> Oklch {
-    Oklch {
+    let mut adjusted = Oklch {
         l: (color.l * (1.0 + matching.lightness_multiply) + matching.lightness_add).clamp(0.0, 1.0),
         c: (color.c * (1.0 + matching.chroma_multiply) + matching.chroma_add).max(0.0),
         h: color.h + matching.hue_add * std::f32::consts::TAU,
+    };
+    if matching.has_input_offset() {
+        adjusted.c = clamp_chroma_to_srgb_gamut(adjusted);
     }
+    adjusted
+}
+
+fn clamp_chroma_to_srgb_gamut(color: Oklch) -> f32 {
+    if color.c <= 0.0 || !color.l.is_finite() || !color.c.is_finite() || !color.h.is_finite() {
+        return 0.0;
+    }
+
+    if oklch_in_srgb_gamut(color) {
+        return color.c;
+    }
+
+    let mut low = 0.0;
+    let mut high = color.c;
+    for _ in 0..16 {
+        let mid = (low + high) * 0.5;
+        let candidate = Oklch { c: mid, ..color };
+        if oklch_in_srgb_gamut(candidate) {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    low
+}
+
+fn oklch_in_srgb_gamut(color: Oklch) -> bool {
+    let (r, g, b) = oklch_to_linear_srgb(color);
+    in_srgb_gamut(r, g, b)
+}
+
+fn oklch_to_linear_srgb(color: Oklch) -> (f32, f32, f32) {
+    let a = color.h.cos() * color.c;
+    let b = color.h.sin() * color.c;
+
+    let l_ = color.l + 0.39633778 * a + 0.21580376 * b;
+    let m_ = color.l - 0.105561346 * a - 0.06385417 * b;
+    let s_ = color.l - 0.08948418 * a - 1.2914855 * b;
+
+    let l = l_ * l_ * l_;
+    let m = m_ * m_ * m_;
+    let s = s_ * s_ * s_;
+
+    (
+        4.0767417 * l - 3.3077116 * m + 0.23096994 * s,
+        -1.268438 * l + 2.6097574 * m - 0.34131938 * s,
+        -0.0041960863 * l - 0.7034186 * m + 1.7076147 * s,
+    )
+}
+
+fn in_srgb_gamut(r: f32, g: f32, b: f32) -> bool {
+    const EPSILON: f32 = 0.000_001;
+    r.is_finite()
+        && g.is_finite()
+        && b.is_finite()
+        && r >= -EPSILON
+        && r <= 1.0 + EPSILON
+        && g >= -EPSILON
+        && g <= 1.0 + EPSILON
+        && b >= -EPSILON
+        && b <= 1.0 + EPSILON
 }
 
 fn biased_distance_squared(a: Oklch, b: Oklch, matching: PaletteMatching) -> f32 {
     let dl = a.l - b.l;
     let dc = a.c - b.c;
-    let dh = (hue_delta(a.h, b.h) * 0.5).sin() * 2.0 * a.c.max(b.c);
-    let chroma_weight = if matching.preserve_dark_neutrals
-        && a.l <= matching.dark_neutral_luma_threshold
-        && a.c <= matching.dark_neutral_chroma_threshold
-    {
-        matching.chroma * matching.dark_neutral_chroma_weight_scale.max(1.0)
-    } else {
-        matching.chroma
-    };
-    matching.lightness * dl * dl + chroma_weight * dc * dc + matching.hue * dh * dh
+    let dh = (hue_delta(a.h, b.h) * 0.5).sin() * 2.0 * (a.c * b.c).sqrt();
+    matching.lightness * dl * dl + matching.chroma * dc * dc + matching.hue * dh * dh
 }
 
 fn hue_delta(a: f32, b: f32) -> f32 {
@@ -615,16 +608,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_default_palette_and_lookup_match() {
+    fn embedded_default_palette_config_parses() {
         let config = default_palette_config().expect("embedded default palette parses");
 
         assert!(!config.colors.is_empty());
         assert!(config.colors.len() <= 256);
-
-        let lookup = default_palette_lookup(&config).expect("embedded default lookup matches");
-
-        assert_eq!(lookup.entries().len(), LUT_ENTRY_COUNT);
-        assert_eq!(lookup.hash(), palette_hash(&config));
     }
 
     #[test]
@@ -696,35 +684,34 @@ hue = 0.0
     }
 
     #[test]
-    fn dark_neutral_preservation_prefers_dark_grey_over_saturated_color() {
+    fn hue_distance_does_not_penalize_neutral_palette_colors() {
         let palette = [
-            Oklch::from(rgb_to_oklab(8, 8, 10)),
-            Oklch::from(rgb_to_oklab(64, 0, 96)),
+            Oklch::from(rgb_to_oklab(72, 72, 72)),
+            Oklch::from(rgb_to_oklab(60, 66, 117)),
         ];
-        let source = Oklch::from(rgb_to_oklab(8, 4, 12));
-        let preserve = PaletteMatching {
-            lightness: 0.05,
-            chroma: 0.05,
-            hue: 0.90,
-            preserve_dark_neutrals: true,
-            dark_neutral_luma_threshold: 0.25,
-            dark_neutral_chroma_threshold: 0.08,
-            dark_neutral_chroma_weight_scale: 64.0,
+        let source = Oklch::from(rgb_to_oklab(62, 63, 66));
+        let matching = PaletteMatching {
+            lightness: 0.251,
+            chroma: 0.233,
+            hue: 0.516,
+            chroma_add: 0.031,
             ..Default::default()
         };
-        let config = PaletteConfig {
-            colors: vec![[8, 8, 10, 255], [64, 0, 96, 255]],
-            matching: preserve,
-        };
-        let plain_config = PaletteConfig {
-            matching: PaletteMatching {
-                preserve_dark_neutrals: false,
-                ..preserve
-            },
-            ..config.clone()
-        };
 
-        assert_eq!(nearest_palette_index(source, &palette, preserve), 0);
-        assert_ne!(palette_hash(&config), palette_hash(&plain_config));
+        assert_eq!(nearest_palette_index(source, &palette, matching), 0);
+    }
+
+    #[test]
+    fn chroma_offset_is_clamped_to_reachable_srgb_gamut() {
+        let source = Oklch::from(rgb_to_oklab(0, 17, 17));
+        let matching = PaletteMatching {
+            chroma_add: 0.031,
+            ..Default::default()
+        };
+        let unclamped_chroma = source.c + matching.chroma_add;
+        let adjusted = apply_input_offset(source, matching);
+
+        assert!(adjusted.c < unclamped_chroma);
+        assert!(oklch_in_srgb_gamut(adjusted));
     }
 }

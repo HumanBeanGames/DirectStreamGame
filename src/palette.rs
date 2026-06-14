@@ -44,10 +44,6 @@ pub(crate) struct PaletteBias {
     pub(crate) chroma_multiply: f32,
     pub(crate) chroma_add: f32,
     pub(crate) hue_add: f32,
-    pub(crate) preserve_dark_neutrals: bool,
-    pub(crate) dark_neutral_luma_threshold: f32,
-    pub(crate) dark_neutral_chroma_threshold: f32,
-    pub(crate) dark_neutral_chroma_weight_scale: f32,
 }
 
 impl Default for PaletteBias {
@@ -61,10 +57,6 @@ impl Default for PaletteBias {
             chroma_multiply: 0.0,
             chroma_add: 0.0,
             hue_add: 0.0,
-            preserve_dark_neutrals: false,
-            dark_neutral_luma_threshold: 0.18,
-            dark_neutral_chroma_threshold: 0.045,
-            dark_neutral_chroma_weight_scale: 8.0,
         }
     }
 }
@@ -98,10 +90,6 @@ impl From<PaletteMatching> for PaletteBias {
             chroma_multiply: matching.chroma_multiply,
             chroma_add: matching.chroma_add,
             hue_add: matching.hue_add,
-            preserve_dark_neutrals: matching.preserve_dark_neutrals,
-            dark_neutral_luma_threshold: matching.dark_neutral_luma_threshold,
-            dark_neutral_chroma_threshold: matching.dark_neutral_chroma_threshold,
-            dark_neutral_chroma_weight_scale: matching.dark_neutral_chroma_weight_scale,
         }
     }
 }
@@ -117,10 +105,6 @@ impl From<PaletteBias> for PaletteMatching {
             chroma_multiply: bias.chroma_multiply,
             chroma_add: bias.chroma_add,
             hue_add: bias.hue_add,
-            preserve_dark_neutrals: bias.preserve_dark_neutrals,
-            dark_neutral_luma_threshold: bias.dark_neutral_luma_threshold,
-            dark_neutral_chroma_threshold: bias.dark_neutral_chroma_threshold,
-            dark_neutral_chroma_weight_scale: bias.dark_neutral_chroma_weight_scale,
         }
     }
 }
@@ -795,18 +779,6 @@ impl IndexedPixelEncoder {
             && (bias.chroma_multiply - self.lookup_matching.chroma_multiply).abs() <= 0.000_5
             && (bias.chroma_add - self.lookup_matching.chroma_add).abs() <= 0.000_5
             && (bias.hue_add - self.lookup_matching.hue_add).abs() <= 0.000_5
-            && bias.preserve_dark_neutrals == self.lookup_matching.preserve_dark_neutrals
-            && (bias.dark_neutral_luma_threshold - self.lookup_matching.dark_neutral_luma_threshold)
-                .abs()
-                <= 0.000_5
-            && (bias.dark_neutral_chroma_threshold
-                - self.lookup_matching.dark_neutral_chroma_threshold)
-                .abs()
-                <= 0.000_5
-            && (bias.dark_neutral_chroma_weight_scale
-                - self.lookup_matching.dark_neutral_chroma_weight_scale)
-                .abs()
-                <= 0.000_5
     }
 
     fn nearest_palette_index(&self, r: u8, g: u8, b: u8, bias: PaletteBias) -> u8 {
@@ -979,27 +951,53 @@ impl From<Oklab> for Oklch {
 #[cfg(any(test, feature = "cpu-palette-encoder"))]
 impl Oklch {
     fn with_input_offset(self, bias: PaletteBias) -> Self {
-        Self {
+        let mut adjusted = Self {
             l: (self.l * (1.0 + bias.lightness_multiply) + bias.lightness_add).clamp(0.0, 1.0),
             c: (self.c * (1.0 + bias.chroma_multiply) + bias.chroma_add).max(0.0),
             h: self.h + bias.hue_add * std::f32::consts::TAU,
+        };
+        if PaletteMatching::from(bias).has_input_offset() {
+            adjusted.c = clamp_chroma_to_srgb_gamut(adjusted);
         }
+        adjusted
     }
 
     fn biased_distance_squared(self, other: Self, bias: PaletteBias) -> f32 {
         let dl = self.l - other.l;
         let dc = self.c - other.c;
-        let dh = (hue_delta(self.h, other.h) * 0.5).sin() * 2.0 * self.c.max(other.c);
-        let chroma_weight = if bias.preserve_dark_neutrals
-            && self.l <= bias.dark_neutral_luma_threshold
-            && self.c <= bias.dark_neutral_chroma_threshold
-        {
-            bias.chroma * bias.dark_neutral_chroma_weight_scale.max(1.0)
-        } else {
-            bias.chroma
-        };
-        bias.lightness * dl * dl + chroma_weight * dc * dc + bias.hue * dh * dh
+        let dh = (hue_delta(self.h, other.h) * 0.5).sin() * 2.0 * (self.c * other.c).sqrt();
+        bias.lightness * dl * dl + bias.chroma * dc * dc + bias.hue * dh * dh
     }
+}
+
+#[cfg(any(test, feature = "cpu-palette-encoder"))]
+fn clamp_chroma_to_srgb_gamut(color: Oklch) -> f32 {
+    if color.c <= 0.0 || !color.l.is_finite() || !color.c.is_finite() || !color.h.is_finite() {
+        return 0.0;
+    }
+
+    if oklch_in_srgb_gamut(color) {
+        return color.c;
+    }
+
+    let mut low = 0.0;
+    let mut high = color.c;
+    for _ in 0..16 {
+        let mid = (low + high) * 0.5;
+        let candidate = Oklch { c: mid, ..color };
+        if oklch_in_srgb_gamut(candidate) {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    low
+}
+
+#[cfg(any(test, feature = "cpu-palette-encoder"))]
+fn oklch_in_srgb_gamut(color: Oklch) -> bool {
+    let (r, g, b) = oklch_to_linear_srgb_radians(color.l, color.c, color.h);
+    in_srgb_gamut(r, g, b)
 }
 
 #[cfg(any(test, feature = "cpu-palette-encoder"))]
@@ -1052,9 +1050,13 @@ fn checked_oklch_to_srgb(lightness: f32, chroma: f32, hue_degrees: f32) -> Optio
 
 #[cfg(test)]
 fn oklch_to_linear_srgb(lightness: f32, chroma: f32, hue_degrees: f32) -> (f32, f32, f32) {
-    let hue = hue_degrees.to_radians();
-    let a = hue.cos() * chroma;
-    let b = hue.sin() * chroma;
+    oklch_to_linear_srgb_radians(lightness, chroma, hue_degrees.to_radians())
+}
+
+#[cfg(any(test, feature = "cpu-palette-encoder"))]
+fn oklch_to_linear_srgb_radians(lightness: f32, chroma: f32, hue_radians: f32) -> (f32, f32, f32) {
+    let a = hue_radians.cos() * chroma;
+    let b = hue_radians.sin() * chroma;
 
     let l_ = lightness + 0.39633778 * a + 0.21580376 * b;
     let m_ = lightness - 0.105561346 * a - 0.06385417 * b;
@@ -1090,14 +1092,18 @@ fn linear_to_u8(value: f32) -> u8 {
     (srgb * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "cpu-palette-encoder"))]
 fn in_srgb_gamut(r: f32, g: f32, b: f32) -> bool {
+    const EPSILON: f32 = 0.000_001;
     r.is_finite()
         && g.is_finite()
         && b.is_finite()
-        && (0.0..=1.0).contains(&r)
-        && (0.0..=1.0).contains(&g)
-        && (0.0..=1.0).contains(&b)
+        && r >= -EPSILON
+        && r <= 1.0 + EPSILON
+        && g >= -EPSILON
+        && g <= 1.0 + EPSILON
+        && b >= -EPSILON
+        && b <= 1.0 + EPSILON
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

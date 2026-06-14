@@ -839,29 +839,16 @@ hue_add = 0.0
 `0.5` means “treat this channel as 1.5x higher” and `-0.5` means “treat it as
 0.5x”. Additive lightness/chroma offsets are applied after multiplication.
 `hue_add` is measured in turns, so `0.25` is a 90 degree hue rotation.
+After these offsets are applied, the adjusted OKLCH target is clamped back into
+the reachable sRGB gamut by reducing chroma at the same lightness and hue. This
+keeps creative chroma boosts from asking the matcher to chase impossible dark,
+high-chroma colours.
 
 Old palettes without these offset fields still work; the missing values default
 to zero. If any offset is non-zero, rebake the sibling `.ipsmap`, because the
 lookup payload must contain the nearest palette result for the offset-adjusted
 input colour. Do not reuse an old `.ipsmap` after changing weights, offsets, or
-palette colours.
-
-Very dark, low-saturation colours can opt into neutral preservation. This keeps
-night/shadow pixels from snapping to saturated purple or pink when hue has a
-high priority:
-
-```toml
-preserve_dark_neutrals = true
-dark_neutral_luma_threshold = 0.18
-dark_neutral_chroma_threshold = 0.045
-dark_neutral_chroma_weight_scale = 8.0
-```
-
-When enabled, colours below the lightness/chroma thresholds multiply the chroma
-distance weight by `dark_neutral_chroma_weight_scale`. Lookup generation uses
-the same rule that the custom-host GPU stream consumes through `.ipsmap`.
-Enabled dark-neutral settings are included in the `.ipsmap` hash, so stale
-lookup maps are rejected.
+palette colours, or DirectStreamGame palette-matching versions.
 
 Migration for existing apps:
 
@@ -872,9 +859,7 @@ Migration for existing apps:
 3. Regenerate `.ipsmap` with `ipsc_build_palette_lut` or the Palette Lab.
 4. Change app launch commands from `--palette-config=palette.toml` to
    `--palette-lookup=palette.ipsmap`.
-5. If you add `preserve_dark_neutrals = true`, regenerate the `.ipsmap`; old
-   lookup files intentionally fail the format/hash check.
-6. Redeploy the static lab from `dist/ipsc_lab` if viewers or tools use the
+5. Redeploy the static lab from `dist/ipsc_lab` if viewers or tools use the
    browser Palette Lab.
 
 Combined browser lab:

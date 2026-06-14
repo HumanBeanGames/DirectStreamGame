@@ -399,8 +399,7 @@
       return Math.round(Math.max(0, Math.min(255, srgb * 255)));
     }
 
-    function oklchToLinearSrgb(lightness, chroma, hueDegrees) {
-      const hue = hueDegrees * Math.PI / 180;
+    function oklchToLinearSrgbRadians(lightness, chroma, hue) {
       const a = Math.cos(hue) * chroma;
       const b = Math.sin(hue) * chroma;
       const l_ = lightness + 0.39633778 * a + 0.21580376 * b;
@@ -414,6 +413,10 @@
         -1.268438 * l + 2.6097574 * m - 0.34131938 * s,
         -0.0041960863 * l - 0.7034186 * m + 1.7076147 * s,
       ];
+    }
+
+    function oklchToLinearSrgb(lightness, chroma, hueDegrees) {
+      return oklchToLinearSrgbRadians(lightness, chroma, hueDegrees * Math.PI / 180);
     }
 
     function srgbToLinear(value) {
@@ -455,20 +458,49 @@
     function palettePreviewDistanceSquared(a, b, bias) {
       const dl = a.l - b.l;
       const dc = a.c - b.c;
-      const dh = Math.sin(hueDeltaRadians(a.h, b.h) * 0.5) * 2 * Math.max(a.c, b.c);
+      const dh = Math.sin(hueDeltaRadians(a.h, b.h) * 0.5) * 2 * Math.sqrt(Math.max(0, a.c * b.c));
       return bias.lightness * dl * dl + bias.chroma * dc * dc + bias.hue * dh * dh;
     }
 
     function offsetInputOklch(color, offset) {
-      return {
+      const adjusted = {
         l: Math.max(0, Math.min(1, color.l * (1 + offset.lightnessMultiply) + offset.lightnessAdd)),
         c: Math.max(0, color.c * (1 + offset.chromaMultiply) + offset.chromaAdd),
         h: color.h + offset.hueAdd * Math.PI * 2,
       };
+      if (hasInputOffset(offset)) adjusted.c = clampChromaToSrgbGamut(adjusted);
+      return adjusted;
+    }
+
+    function hasInputOffset(offset) {
+      return Math.abs(offset.lightnessMultiply) > 0.000001
+        || Math.abs(offset.lightnessAdd) > 0.000001
+        || Math.abs(offset.chromaMultiply) > 0.000001
+        || Math.abs(offset.chromaAdd) > 0.000001
+        || Math.abs(offset.hueAdd) > 0.000001;
+    }
+
+    function clampChromaToSrgbGamut(color) {
+      if (color.c <= 0 || !Number.isFinite(color.l) || !Number.isFinite(color.c) || !Number.isFinite(color.h)) return 0;
+      if (oklchInSrgbGamut(color)) return color.c;
+
+      let low = 0;
+      let high = color.c;
+      for (let i = 0; i < 16; i++) {
+        const mid = (low + high) * 0.5;
+        if (oklchInSrgbGamut({ l: color.l, c: mid, h: color.h })) low = mid;
+        else high = mid;
+      }
+      return low;
+    }
+
+    function oklchInSrgbGamut(color) {
+      return inGamut(oklchToLinearSrgbRadians(color.l, color.c, color.h));
     }
 
     function inGamut(rgb) {
-      return rgb.every(value => Number.isFinite(value) && value >= 0 && value <= 1);
+      const epsilon = 0.000001;
+      return rgb.every(value => Number.isFinite(value) && value >= -epsilon && value <= 1 + epsilon);
     }
 
     function oklchColor(lightness, chroma, hueDegrees) {

@@ -57,8 +57,6 @@ pub(crate) struct PaletteMaterial {
     pub(crate) input_offset_a: Vec4,
     #[uniform(7)]
     pub(crate) input_offset_b: Vec4,
-    #[uniform(8)]
-    pub(crate) dark_neutral_params: Vec4,
 }
 
 impl Material2d for PaletteMaterial {
@@ -188,7 +186,6 @@ pub(crate) fn spawn_custom_host_pipeline(
         lookup_texture,
         input_offset_a: palette_input_offset_a(&palette_bias),
         input_offset_b: palette_input_offset_b(&palette_bias),
-        dark_neutral_params: palette_dark_neutral_params(&palette_bias),
     });
 
     let palette_camera = commands
@@ -311,7 +308,6 @@ fn sync_palette_material_bias(
         material.params = palette_material_params(&bias, pipeline.palette_count);
         material.input_offset_a = palette_input_offset_a(&bias);
         material.input_offset_b = palette_input_offset_b(&bias);
-        material.dark_neutral_params = palette_dark_neutral_params(&bias);
     }
 }
 
@@ -467,17 +463,4 @@ fn palette_input_offset_a(bias: &crate::palette::PaletteBias) -> Vec4 {
 
 fn palette_input_offset_b(bias: &crate::palette::PaletteBias) -> Vec4 {
     Vec4::new(bias.hue_add, 0.0, 0.0, 0.0)
-}
-
-fn palette_dark_neutral_params(bias: &crate::palette::PaletteBias) -> Vec4 {
-    Vec4::new(
-        if bias.preserve_dark_neutrals {
-            1.0
-        } else {
-            0.0
-        },
-        bias.dark_neutral_luma_threshold,
-        bias.dark_neutral_chroma_threshold,
-        bias.dark_neutral_chroma_weight_scale,
-    )
 }

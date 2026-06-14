@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MERCANTILE</title>
   <meta name="direct-stream-version" content="0.1.0">
-  <meta name="direct-stream-exported-at-ms" content="1781429768760">
+  <meta name="direct-stream-exported-at-ms" content="1781431975924">
   <style>
     :root { color-scheme: dark; font-family: Arial, sans-serif; background: #111318; color: #eef3f8; --direct-stream-max-player-width: 1280px; }
     body { margin: 0; min-height: 100vh; display: grid; grid-template-rows: auto 1fr; }
@@ -14,7 +14,7 @@
     header button[hidden] { display: none; }
     main { display: grid; place-items: center; padding: 16px; min-height: 0; }
     .stage { --stage-left-column: 0px; --stage-right-column: 0px; --direct-stream-player-size: 240px; width: min(100%, var(--direct-stream-max-player-width)); display: grid; grid-template-columns: minmax(240px, auto); grid-template-areas: "player"; gap: 8px; align-items: start; justify-content: center; min-height: 0; }
-    .stage.app-ui-active { width: min(100%, calc(var(--direct-stream-max-player-width) + 648px)); grid-template-columns: var(--stage-left-column) minmax(240px, auto) var(--stage-right-column); grid-template-areas: "above above above" "left player right" "below below below"; }
+    .stage.app-ui-active { width: min(100%, calc(var(--direct-stream-max-player-width) + 648px)); grid-template-columns: var(--stage-left-column) minmax(240px, max-content) var(--stage-right-column); grid-template-areas: "above above above" "left player right" "below below below"; }
     .stage.app-ui-active.has-left { --stage-left-column: minmax(180px, 320px); }
     .stage.app-ui-active.has-right { --stage-right-column: minmax(220px, 320px); }
     .stage.player-minimized { width: 0; height: 0; gap: 0; overflow: hidden; }
@@ -28,9 +28,9 @@
     .stage.app-ui-active.has-left.has-right .player { width: min(max(240px, calc(100vw - 720px)), calc(100vh - 84px), var(--direct-stream-max-player-width)); }
     canvas { display: block; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; image-rendering: crisp-edges; background: #050608; border: 1px solid #303847; }
     .stream-overlay { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; pointer-events: none; z-index: 3; background: transparent; }
-    .unmute { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; border: 0; background: rgba(5, 6, 8, 0.54); color: #f8fafc; font: 700 clamp(18px, 4vw, 34px) Arial, sans-serif; cursor: pointer; text-shadow: 0 2px 8px #000; }
+    .unmute { appearance: none; position: absolute; inset: -1px; z-index: 4; display: grid; place-items: center; box-sizing: border-box; margin: 0; padding: 0; border: 0; border-radius: 0; background: rgba(5, 6, 8, 0.54); color: #f8fafc; font: 700 clamp(18px, 4vw, 34px) Arial, sans-serif; cursor: pointer; text-shadow: 0 2px 8px #000; }
     .unmute[hidden] { display: none; }
-    .player-controls { position: absolute; z-index: 6; left: 10px; right: 10px; bottom: 10px; display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 5px; background: rgba(5, 6, 8, 0.62); opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
+    .player-controls { position: absolute; z-index: 7; left: 10px; right: 10px; bottom: 10px; display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 5px; background: rgba(5, 6, 8, 0.62); opacity: 0; pointer-events: none; transition: opacity 120ms ease; }
     .player:hover .player-controls, .player-controls:focus-within { opacity: 1; pointer-events: auto; }
     .player-controls[hidden] { display: none; }
     .player-controls button { appearance: none; border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 4px 8px; font: inherit; cursor: pointer; }
@@ -44,10 +44,13 @@
     .chat-input input { flex: 1; min-width: 0; background: #111722; color: #eef3f8; border: 1px solid #3a4353; border-radius: 4px; padding: 7px 8px; }
     .chat-input button { border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 7px 10px; }
     .chat-log p.mentioned-me { color: #fff7d6; background: rgba(247, 197, 72, 0.18); margin-inline: -4px; padding: 2px 4px; border-left: 2px solid #f7c548; }
-    .left-region { grid-area: left; min-width: 0; min-height: 0; display: none; overflow-x: hidden; overflow-y: auto; }
+    .left-region { grid-area: left; min-width: 0; min-height: 0; display: none; grid-auto-rows: minmax(0, 1fr); align-content: stretch; overflow-x: hidden; overflow-y: hidden; }
     .right-region { grid-area: right; min-width: 0; min-height: 0; display: none; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; overflow-x: hidden; }
     .stage.app-ui-active.has-left .left-region,
     .stage.app-ui-active.has-right .right-region { display: grid; height: var(--direct-stream-player-size); max-height: var(--direct-stream-player-size); }
+    .left-region > .panel { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+    .left-region > .panel > pre,
+    .left-region > .panel > .panel-content { flex: 1 1 auto; min-height: 0; }
     .above-region { grid-area: above; display: none; min-width: 0; }
     .below-region { grid-area: below; display: none; min-width: 0; }
     .stage.app-ui-active.has-above .above-region,
@@ -75,9 +78,9 @@
     .panel.panel-pre-wrap pre { white-space: pre-wrap; overflow-wrap: anywhere; }
     .panel.panel-nowrap pre { white-space: pre; overflow-wrap: normal; }
     .panel.panel-nowrap .panel-text { white-space: pre; overflow-wrap: normal; }
-    .panel.panel-wrap-no-scroll { width: auto; max-width: 100%; overflow: visible; }
+    .panel.panel-wrap-no-scroll { width: auto; max-width: 100%; overflow: hidden; }
     .panel.panel-wrap-no-scroll pre,
-    .panel.panel-wrap-no-scroll .panel-content { min-width: 0; overflow: visible; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .panel.panel-wrap-no-scroll .panel-content { min-width: 0; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; }
     .panel.panel-wrap-no-scroll .panel-text,
     .panel.panel-wrap-no-scroll .panel-paged-body { white-space: pre-wrap; overflow-wrap: anywhere; }
     .panel-styled-text { display: inline; }
@@ -203,7 +206,7 @@
       page_title: "MERCANTILE",
       header_title: "MERCANTILE",
       version: "0.1.0",
-      exported_at_ms: 1781429768760,
+      exported_at_ms: 1781431975924,
     };
     const playerMinimizedStorageKey = "directstream_player_minimized";
     let volatileDeviceId = null;

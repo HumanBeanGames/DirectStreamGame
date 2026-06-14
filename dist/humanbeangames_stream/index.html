@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MERCANTILE</title>
   <meta name="direct-stream-version" content="0.1.0">
-  <meta name="direct-stream-exported-at-ms" content="1781438187995">
+  <meta name="direct-stream-exported-at-ms" content="1781439651214">
   <style>
     :root { color-scheme: dark; font-family: Arial, sans-serif; background: #111318; color: #eef3f8; --direct-stream-max-player-width: 640px; }
     * { box-sizing: border-box; }
@@ -206,7 +206,7 @@
       page_title: "MERCANTILE",
       header_title: "MERCANTILE",
       version: "0.1.0",
-      exported_at_ms: 1781438187995,
+      exported_at_ms: 1781439651214,
     };
     const playerMinimizedStorageKey = "directstream_player_minimized";
     let volatileDeviceId = null;
@@ -1817,6 +1817,7 @@
         ["max_height_px", "maxHeight"],
       ];
       for (const [key, styleName] of pairs) {
+        if (hint[key] === null || hint[key] === undefined) continue;
         const value = Number(hint[key]);
         if (Number.isFinite(value) && value >= 0 && value <= 2000) {
           element.style[styleName] = `${value}px`;

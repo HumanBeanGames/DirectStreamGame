@@ -3056,6 +3056,7 @@ fn palette_stream_page_html_with_options(
         ["max_height_px", "maxHeight"],
       ];
       for (const [key, styleName] of pairs) {{
+        if (hint[key] === null || hint[key] === undefined) continue;
         const value = Number(hint[key]);
         if (Number.isFinite(value) && value >= 0 && value <= 2000) {{
           element.style[styleName] = `${{value}}px`;

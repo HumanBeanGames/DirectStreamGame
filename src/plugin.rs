@@ -18,7 +18,8 @@ use crate::{
         handle_direct_stream_start_requests, handle_direct_stream_stop_requests,
         handle_stream_input_box_interactions, handle_stream_key_typing,
         handle_stream_misc_button_interactions, handle_stream_start_interactions,
-        handle_stream_stop_interactions, update_stream_control_ui,
+        handle_stream_stop_interactions, keep_custom_host_alive_when_window_occluded,
+        update_stream_control_ui,
     },
     web::start_local_web_server_from_resources,
 };
@@ -70,6 +71,7 @@ impl Plugin for DirectStreamPlugin {
                     handle_stream_stop_interactions,
                     handle_direct_stream_start_requests,
                     handle_direct_stream_stop_requests,
+                    keep_custom_host_alive_when_window_occluded,
                     handle_stream_misc_button_interactions,
                 ),
             )

@@ -19,7 +19,8 @@ use crate::{
     stats::SharedStats,
     stream_control::{CustomStreamState, StreamControl},
 };
-use bevy::{audio::AudioPlugin, prelude::*};
+use bevy::{audio::AudioPlugin, prelude::*, window::PresentMode, winit::WinitSettings};
+use std::num::NonZeroU32;
 
 pub fn direct_stream_app() -> App {
     let config = AppConfig::from_args();
@@ -89,7 +90,22 @@ pub fn direct_stream_app() -> App {
         start_preview_encoder(preview_receiver, frame_hub.clone(), stats.clone());
     }
 
+    let mut primary_window = Window {
+        title: WINDOW_TITLE.to_owned(),
+        resolution: window_resolution.into(),
+        ..default()
+    };
+    if custom_host {
+        primary_window.present_mode = PresentMode::AutoNoVsync;
+        primary_window.desired_maximum_frame_latency =
+            Some(NonZeroU32::new(1).expect("one is non-zero"));
+    }
+
     let mut app = App::new();
+    if custom_host {
+        app.insert_resource(WinitSettings::continuous());
+    }
+
     app.insert_resource(ClearColor(Color::srgb(0.04, 0.05, 0.07)))
         .insert_resource(frame_hub)
         .insert_resource(palette_frame_hub)
@@ -123,11 +139,7 @@ pub fn direct_stream_app() -> App {
                 .disable::<AudioPlugin>()
                 .set(ImagePlugin::default_nearest())
                 .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        title: WINDOW_TITLE.to_owned(),
-                        resolution: window_resolution.into(),
-                        ..default()
-                    }),
+                    primary_window: Some(primary_window),
                     ..default()
                 }),
         )

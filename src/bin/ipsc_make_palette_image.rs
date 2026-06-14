@@ -1,4 +1,8 @@
-use std::{fs, io::Write, path::Path};
+use std::{
+    env, fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 const HUE_COUNT: usize = 20;
 const GRAYSCALE_COUNT: usize = 16;
@@ -14,21 +18,26 @@ const WIDTH: u16 = (HUE_COUNT * CHROMA_LEVELS + 1) as u16;
 const HEIGHT: u16 = GRAYSCALE_COUNT as u16;
 
 fn main() {
-    let palette = match load_palette("palette.toml") {
+    let mut args = env::args().skip(1);
+    let Some(palette_path) = args.next().map(PathBuf::from) else {
+        eprintln!("Usage: cargo run --bin ipsc_make_palette_image -- <palette.toml> <output.ipsi>");
+        return;
+    };
+    let Some(output_path) = args.next().map(PathBuf::from) else {
+        eprintln!("Usage: cargo run --bin ipsc_make_palette_image -- <palette.toml> <output.ipsi>");
+        return;
+    };
+
+    let palette = match load_palette(&palette_path) {
         Ok(palette) => palette,
         Err(err) => {
-            eprintln!("Could not load palette.toml: {err}");
+            eprintln!("Could not load {}: {err}", palette_path.display());
             return;
         }
     };
 
     if palette.len() != 256 {
         eprintln!("palette.toml must contain exactly 256 colors for the palette image");
-        return;
-    }
-
-    if let Err(err) = fs::create_dir_all("assets") {
-        eprintln!("Could not create assets directory: {err}");
         return;
     }
 
@@ -44,9 +53,9 @@ fn main() {
     let pixels = palette_swatch_pixels();
     image.extend_from_slice(&pixels);
 
-    match fs::File::create("assets/palette.ipsi").and_then(|mut file| file.write_all(&image)) {
-        Ok(()) => eprintln!("Wrote assets/palette.ipsi"),
-        Err(err) => eprintln!("Could not write assets/palette.ipsi: {err}"),
+    match fs::File::create(&output_path).and_then(|mut file| file.write_all(&image)) {
+        Ok(()) => eprintln!("Wrote {}", output_path.display()),
+        Err(err) => eprintln!("Could not write {}: {err}", output_path.display()),
     }
 }
 

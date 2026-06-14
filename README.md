@@ -854,8 +854,8 @@ Migration for existing apps:
 
 1. Update the `DirectStreamGame` dependency to a version that supports input
    offsets and self-contained `IPSMAP2` lookup files.
-2. Keep `palette.toml` as your editable source if useful, but ship
-   `palette.ipsmap` as the runtime artifact.
+2. Keep a palette TOML in your downstream app or asset pipeline if useful, but
+   ship `palette.ipsmap` as the runtime artifact.
 3. Regenerate `.ipsmap` with `ipsc_build_palette_lut` or the Palette Lab.
 4. Change app launch commands from `--palette-config=palette.toml` to
    `--palette-lookup=palette.ipsmap`.
@@ -882,7 +882,9 @@ palette.ipsi
 palette.ipsmap
 ```
 
-The converter tab uses the current Palette Lab palette automatically.
+The converter tab uses the current Palette Lab palette automatically, or a
+palette TOML uploaded by the user. DirectStreamGame does not ship a built-in
+palette file.
 
 Export the static lab:
 
@@ -902,14 +904,14 @@ CLI PNG to IPSI conversion:
 
 ```powershell
 cargo run --bin ipsc_png_to_ipsi -- input.png output.ipsi palette.toml
-cargo run --bin ipsc_png_to_ipsi -- input.png output.ipsi --size 128x128
-cargo run --bin ipsc_png_to_ipsi -- input.png output.ipsi --no-dither
+cargo run --bin ipsc_png_to_ipsi -- input.png output.ipsi --palette palette.toml --size 128x128
+cargo run --bin ipsc_png_to_ipsi -- input.png output.ipsi --palette palette.toml --no-dither
 ```
 
 View IPSI still images:
 
 ```powershell
-cargo run --bin ipsc_image_viewer -- assets\palette.ipsi
+cargo run --bin ipsc_image_viewer -- output.ipsi
 ```
 
 ## Project Structure

@@ -5,8 +5,6 @@ use std::{
 };
 
 pub const LUT_ENTRY_COUNT: usize = 256 * 256 * 256;
-#[cfg(test)]
-const DEFAULT_PALETTE_TOML: &str = include_str!("default_palette/default_palette.toml");
 const LUT_MAGIC_V1: &[u8; 8] = b"IPSMAP1\0";
 const LUT_MAGIC_V2: &[u8; 8] = b"IPSMAP2\0";
 const LUT_V1_HEADER_LEN: usize = 30;
@@ -74,11 +72,6 @@ impl PaletteLookup {
 pub fn load_palette_config(path: impl AsRef<Path>) -> Result<PaletteConfig, String> {
     let contents = fs::read_to_string(path).map_err(|err| err.to_string())?;
     parse_palette_config(&contents)
-}
-
-#[cfg(test)]
-fn default_palette_config() -> Result<PaletteConfig, String> {
-    parse_palette_config(DEFAULT_PALETTE_TOML)
 }
 
 pub fn parse_palette_config(contents: &str) -> Result<PaletteConfig, String> {
@@ -608,8 +601,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_default_palette_config_parses() {
-        let config = default_palette_config().expect("embedded default palette parses");
+    fn palette_config_parses() {
+        let config = parse_palette_config(
+            r##"
+colors = [
+    "#000000",
+    "#ffffff",
+]
+"##,
+        )
+        .expect("palette parses");
 
         assert!(!config.colors.is_empty());
         assert!(config.colors.len() <= 256);

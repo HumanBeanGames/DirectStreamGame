@@ -2,22 +2,15 @@ use direct_stream_game::palette_lut::{
     build_lookup, encode_lookup_with_palette_toml, parse_palette_config,
 };
 use std::{
-    fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     thread,
 };
 
 const ADDR: &str = "127.0.0.1:8092";
-const DEFAULT_PALETTE_PATH: &str = "src/default_palette/default_palette.toml";
 const OKLCH_MAX_CHROMA: f32 = 0.2576833;
 
 fn main() {
-    let default_palette = fs::read_to_string(DEFAULT_PALETTE_PATH).unwrap_or_else(|err| {
-        eprintln!("Could not load {DEFAULT_PALETTE_PATH}: {err}");
-        String::new()
-    });
-
     let listener = match TcpListener::bind(ADDR) {
         Ok(listener) => listener,
         Err(err) => {
@@ -30,15 +23,14 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                let default_palette = default_palette.clone();
-                thread::spawn(move || handle_request(stream, &default_palette));
+                thread::spawn(move || handle_request(stream));
             }
             Err(err) => eprintln!("IPSC lab connection failed: {err}"),
         }
     }
 }
 
-fn handle_request(mut stream: TcpStream, default_palette: &str) {
+fn handle_request(mut stream: TcpStream) {
     let mut request_bytes = Vec::new();
     let mut buffer = [0; 4096];
     let mut header_end = None;
@@ -86,7 +78,6 @@ fn handle_request(mut stream: TcpStream, default_palette: &str) {
         "/" => serve_html(stream, &lab_shell_html()),
         "/palette" => serve_html(stream, &palette_html()),
         "/converter" => serve_html(stream, &converter_html()),
-        "/default_palette.toml" => serve_text(stream, default_palette, "text/plain; charset=utf-8"),
         "/lut" => {
             let body_end = header_end
                 .saturating_add(content_length)

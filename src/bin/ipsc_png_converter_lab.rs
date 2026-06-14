@@ -1,18 +1,11 @@
 use std::{
-    fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
 };
 
 const ADDR: &str = "127.0.0.1:8093";
-const DEFAULT_PALETTE_PATH: &str = "src/default_palette/default_palette.toml";
 
 fn main() {
-    let default_palette = fs::read_to_string(DEFAULT_PALETTE_PATH).unwrap_or_else(|err| {
-        eprintln!("Could not load {DEFAULT_PALETTE_PATH}: {err}");
-        String::new()
-    });
-
     let listener = match TcpListener::bind(ADDR) {
         Ok(listener) => listener,
         Err(err) => {
@@ -24,13 +17,13 @@ fn main() {
     eprintln!("IPSI PNG converter lab: http://{ADDR}");
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => handle_request(stream, &default_palette),
+            Ok(stream) => handle_request(stream),
             Err(err) => eprintln!("IPSI PNG converter lab connection failed: {err}"),
         }
     }
 }
 
-fn handle_request(mut stream: TcpStream, default_palette: &str) {
+fn handle_request(mut stream: TcpStream) {
     let mut request = [0; 1024];
     let bytes_read = stream.read(&mut request).unwrap_or(0);
     let request = String::from_utf8_lossy(&request[..bytes_read]);
@@ -42,7 +35,6 @@ fn handle_request(mut stream: TcpStream, default_palette: &str) {
 
     match path {
         "/" => serve_page(stream),
-        "/default_palette.toml" => serve_text(stream, default_palette, "text/plain; charset=utf-8"),
         _ => serve_not_found(stream),
     }
 }
@@ -51,15 +43,6 @@ fn serve_page(mut stream: TcpStream) {
     let body = converter_html();
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    );
-    let _ = stream.write_all(response.as_bytes());
-}
-
-fn serve_text(mut stream: TcpStream, body: &str, content_type: &str) {
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{}",
         body.len(),
         body
     );
@@ -125,7 +108,7 @@ fn converter_html() -> String {
       <div class="dropzone" id="paletteDrop">
         <strong>Palette TOML</strong>
         <input id="paletteFile" type="file" accept=".toml,text/plain">
-        <div class="fileName" id="paletteName">Using built-in default palette</div>
+        <div class="fileName" id="paletteName">No palette selected</div>
       </div>
     </fieldset>
     <fieldset>
@@ -148,7 +131,7 @@ fn converter_html() -> String {
     <button id="generate">Generate</button>
     <div class="actions">
       <a class="button secondary" id="downloadIpsi" aria-disabled="true">Download IPSI</a>
-      <button class="secondary" id="resetPalette">Default Palette</button>
+      <button class="secondary" id="resetPalette">Clear Palette</button>
     </div>
     <p class="hint">The converter center-crops to the chosen aspect ratio, averages source hue/chroma/value in OKLab, dithers in OKLab, then writes one palette index per pixel.</p>
   </aside>
@@ -184,15 +167,7 @@ fn converter_html() -> String {
     if (storedPalette && parsePalette(storedPalette).length > 0) {
       usePaletteLabPalette(storedPalette, false);
     } else {
-      fetch("/default_palette.toml", { cache: "no-store" })
-        .then(response => response.text())
-        .then(text => {
-          if (customPaletteSelected) return;
-          paletteText = text;
-          paletteSource = "built-in default palette";
-          status.textContent = "Default palette loaded. Select a PNG.";
-        })
-        .catch(error => status.textContent = `Could not load default palette: ${error}`);
+      status.textContent = "Select a PNG and a palette TOML.";
     }
 
     pngFile.addEventListener("change", () => setPngFile(pngFile.files[0] || null));
@@ -204,15 +179,15 @@ fn converter_html() -> String {
       console.error(error);
       status.textContent = error.toString();
     }));
-    resetPalette.addEventListener("click", async () => {
-      const response = await fetch("/default_palette.toml", { cache: "no-store" });
-      paletteText = await response.text();
-      paletteSource = "built-in default palette";
+    resetPalette.addEventListener("click", () => {
+      paletteText = "";
+      paletteSource = "none";
       customPaletteSelected = false;
       localStorage.removeItem("ipscCurrentPaletteToml");
       localStorage.removeItem("ipscCurrentPaletteName");
       paletteFile.value = "";
-      paletteName.textContent = "Using built-in default palette";
+      paletteName.textContent = "No palette selected";
+      status.textContent = "Palette cleared. Select a palette TOML.";
     });
     window.addEventListener("focus", () => refreshPaletteFromLab(false));
     window.addEventListener("pageshow", () => refreshPaletteFromLab(false));

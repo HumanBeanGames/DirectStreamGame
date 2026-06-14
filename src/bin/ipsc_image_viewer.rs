@@ -10,10 +10,11 @@ use std::{
 const ADDR: &str = "127.0.0.1:8091";
 
 fn main() {
-    let path = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("assets/palette.ipsi"));
+    let path = env::args().nth(1).map(PathBuf::from);
+    let Some(path) = path else {
+        eprintln!("Usage: cargo run --bin ipsc_image_viewer -- <image.ipsi>");
+        return;
+    };
 
     let image = match fs::read(&path).and_then(validate_image) {
         Ok(image) => image,

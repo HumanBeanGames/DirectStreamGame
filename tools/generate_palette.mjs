@@ -112,7 +112,7 @@ function generatedColors() {
 
 function paletteToml(header, colors) {
   return `${header}
-# Generated OKLCH default: 16 greyscale entries, 20 compact hue blocks.
+# Generated OKLCH palette: 16 greyscale entries, 20 compact hue blocks.
 # First hue is offset to approximately sRGB pure red in OKLCH.
 # Out-of-gamut OKLCH cells are omitted instead of clipped or remapped.
 colors = [
@@ -122,11 +122,8 @@ ${colors.map((color) => `  ${color},`).join("\n")}
 }
 
 const colors = generatedColors();
-await fs.writeFile("palette.toml", paletteToml("# Direct Stream Game custom-host palette.", colors));
-await fs.writeFile(
-  "palette.example.toml",
-  paletteToml("# Copy this file to palette.toml to customize the custom-host palette.", colors),
-);
+const output = process.argv[2] ?? "generated_palette.toml";
+await fs.writeFile(output, paletteToml("# Generated DirectStreamGame-compatible palette.", colors));
 
 const realColorCount = colors.findLastIndex((color) => color !== '"#000000"') + 1;
-console.error(`Generated ${colors.length} colors (${realColorCount} real, ${256 - realColorCount} reserved).`);
+console.error(`Generated ${output}: ${colors.length} colors (${realColorCount} real, ${256 - realColorCount} reserved).`);

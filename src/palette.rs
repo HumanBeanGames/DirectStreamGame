@@ -882,7 +882,7 @@ pub(crate) fn encode_palette_batch_packets(
 }
 
 #[cfg(test)]
-fn default_palette() -> Vec<[u8; 4]> {
+fn generated_test_palette() -> Vec<[u8; 4]> {
     let mut palette = Vec::with_capacity(256);
     for lightness in OKLCH_LIGHTNESS_LEVELS {
         palette.push(greyscale_color(lightness));
@@ -1584,7 +1584,8 @@ mod tests {
 
     #[test]
     fn encoder_accepts_256_square_frames() {
-        let mut encoder = IndexedPixelEncoder::new(default_palette(), PaletteBias::default(), None);
+        let mut encoder =
+            IndexedPixelEncoder::new(generated_test_palette(), PaletteBias::default(), None);
         let raw = RawFrame {
             bgra: vec![0; 256 * 256 * 4],
             width: 256,
@@ -1605,8 +1606,8 @@ mod tests {
     }
 
     #[test]
-    fn default_palette_has_256_entries() {
-        assert_eq!(default_palette().len(), 256);
+    fn generated_test_palette_has_256_entries() {
+        assert_eq!(generated_test_palette().len(), 256);
     }
 
     #[test]

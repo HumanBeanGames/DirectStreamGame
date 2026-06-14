@@ -5,7 +5,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const DEFAULT_PALETTE_PATH: &str = "src/default_palette/default_palette.toml";
 const DEFAULT_DITHER_STRENGTH: f32 = 0.75;
 const SOLVE_2X2_CANDIDATES: usize = 10;
 const DEFAULT_SIZE: OutputSize = OutputSize {
@@ -19,7 +18,7 @@ fn main() {
         Err(message) => {
             eprintln!("{message}");
             eprintln!(
-                "Usage: cargo run --bin ipsc_png_to_ipsi -- <input.png> <output.ipsi> [palette.toml]"
+                "Usage: cargo run --bin ipsc_png_to_ipsi -- <input.png> <output.ipsi> <palette.toml>"
             );
             eprintln!(
                 "   or: cargo run --bin ipsc_png_to_ipsi -- <input.png> --output output.ipsi --palette palette.toml --size 128x128 --downscale solve2x2-hue --no-dither"
@@ -130,7 +129,7 @@ impl Args {
         Ok(Self {
             input: input.ok_or_else(|| "missing input PNG path".to_owned())?,
             output: output.ok_or_else(|| "missing output IPSI path".to_owned())?,
-            palette: palette.unwrap_or_else(|| PathBuf::from(DEFAULT_PALETTE_PATH)),
+            palette: palette.ok_or_else(|| "missing palette TOML path".to_owned())?,
             size,
             dither_strength,
             downscale_mode,

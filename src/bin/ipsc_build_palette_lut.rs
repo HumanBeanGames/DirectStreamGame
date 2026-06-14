@@ -4,23 +4,30 @@ use direct_stream_game::palette_lut::{
 use std::{env, fs, path::PathBuf, time::Instant};
 
 fn main() {
-    let mut palette_config_path = PathBuf::from("src/default_palette/default_palette.toml");
+    let mut palette_config_path = None;
     let mut output_path = None;
 
     for arg in env::args().skip(1) {
         if let Some(path) = arg.strip_prefix("--palette-config=") {
-            palette_config_path = PathBuf::from(path);
+            palette_config_path = Some(PathBuf::from(path));
         } else if let Some(path) = arg.strip_prefix("--output=") {
             output_path = Some(PathBuf::from(path));
         } else {
             eprintln!("Unknown argument: {arg}");
             eprintln!(
-                "Usage: cargo run --release --bin ipsc_build_palette_lut -- [--palette-config=path/to/palette.toml] [--output=path/to/palette.ipsmap]"
+                "Usage: cargo run --release --bin ipsc_build_palette_lut -- --palette-config=path/to/palette.toml [--output=path/to/palette.ipsmap]"
             );
             std::process::exit(1);
         }
     }
 
+    let Some(palette_config_path) = palette_config_path else {
+        eprintln!("Missing required --palette-config=path/to/palette.toml");
+        eprintln!(
+            "Usage: cargo run --release --bin ipsc_build_palette_lut -- --palette-config=path/to/palette.toml [--output=path/to/palette.ipsmap]"
+        );
+        std::process::exit(1);
+    };
     let output_path = output_path.unwrap_or_else(|| sibling_lut_path(&palette_config_path));
     let start = Instant::now();
 

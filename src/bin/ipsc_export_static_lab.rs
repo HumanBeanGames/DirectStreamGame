@@ -1,7 +1,6 @@
-use std::{fs, path::Path};
+use std::fs;
 
 const OUT_DIR: &str = "dist/ipsc_lab";
-const DEFAULT_PALETTE_PATH: &str = "src/default_palette/default_palette.toml";
 const OKLCH_MAX_CHROMA: f32 = 0.2576833;
 
 fn main() {
@@ -14,17 +13,14 @@ fn main() {
 
 fn export_static_lab() -> Result<(), String> {
     fs::create_dir_all(OUT_DIR).map_err(|err| err.to_string())?;
-    let default_palette =
-        fs::read_to_string(DEFAULT_PALETTE_PATH).map_err(|err| err.to_string())?;
     write("index.html", &lab_shell_html())?;
     write("palette.html", &palette_html())?;
-    write("converter.html", &converter_html(&default_palette))?;
-    let _ = fs::remove_file(Path::new(OUT_DIR).join("default_palette.toml"));
+    write("converter.html", &converter_html())?;
     Ok(())
 }
 
 fn write(name: &str, contents: &str) -> Result<(), String> {
-    fs::write(Path::new(OUT_DIR).join(name), contents).map_err(|err| err.to_string())
+    fs::write(format!("{OUT_DIR}/{name}"), contents).map_err(|err| err.to_string())
 }
 
 fn lab_shell_html() -> String {
@@ -75,42 +71,8 @@ fn palette_html() -> String {
         .replace("__OKLCH_MAX_CHROMA__", &OKLCH_MAX_CHROMA.to_string())
 }
 
-fn converter_html(default_palette: &str) -> String {
-    let default_palette = js_template_literal(default_palette);
+fn converter_html() -> String {
     extract_raw_html(include_str!("ipsc_png_converter_lab.rs"), "r#\"", "\"#")
-        .replace(
-            "    const storedPalette = localStorage.getItem(\"ipscCurrentPaletteToml\");",
-            &format!(
-                "    const embeddedDefaultPalette = `{default_palette}`;\n    const storedPalette = localStorage.getItem(\"ipscCurrentPaletteToml\");"
-            ),
-        )
-        .replace(
-            "fetch(\"/default_palette.toml\", { cache: \"no-store\" })",
-            "Promise.resolve(embeddedDefaultPalette)",
-        )
-        .replace(
-            ".then(response => response.text())",
-            "",
-        )
-        .replace(
-            "const response = await fetch(\"/default_palette.toml\", { cache: \"no-store\" });",
-            "",
-        )
-        .replace(
-            "paletteText = await response.text();",
-            "paletteText = embeddedDefaultPalette;",
-        )
-        .replace(
-            "      const response = await Promise.resolve(embeddedDefaultPalette);\n            paletteText = embeddedDefaultPalette;",
-            "      paletteText = embeddedDefaultPalette;",
-        )
-}
-
-fn js_template_literal(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('`', "\\`")
-        .replace("${", "\\${")
 }
 
 fn extract_raw_html(source: &str, start_marker: &str, end_marker: &str) -> String {

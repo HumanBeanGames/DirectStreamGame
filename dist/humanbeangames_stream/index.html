@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MERCANTILE</title>
   <meta name="direct-stream-version" content="0.1.0">
-  <meta name="direct-stream-exported-at-ms" content="1781437123134">
+  <meta name="direct-stream-exported-at-ms" content="1781437768661">
   <style>
     :root { color-scheme: dark; font-family: Arial, sans-serif; background: #111318; color: #eef3f8; --direct-stream-max-player-width: 1280px; }
     * { box-sizing: border-box; }
@@ -14,7 +14,7 @@
     header button { appearance: none; border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 6px 10px; font: inherit; cursor: pointer; }
     header button[hidden] { display: none; }
     main { display: grid; place-items: center; padding: 16px; min-height: 0; overflow: auto; }
-    .stage { --stage-left-column: 0px; --stage-right-column: 0px; --direct-stream-aspect-ratio: 320 / 240; --direct-stream-player-size: 240px; width: min(100%, var(--direct-stream-max-player-width)); display: grid; grid-template-columns: min(100%, var(--direct-stream-max-player-width)); grid-template-areas: "player"; gap: 8px; align-items: start; justify-content: center; min-height: 0; }
+    .stage { --stage-left-column: 0px; --stage-right-column: 0px; --direct-stream-aspect-ratio: 1 / 1; --direct-stream-player-size: 240px; width: min(100%, var(--direct-stream-max-player-width)); display: grid; grid-template-columns: min(100%, var(--direct-stream-max-player-width)); grid-template-areas: "player"; gap: 8px; align-items: start; justify-content: center; min-height: 0; }
     .stage.app-ui-active { width: max-content; max-width: none; grid-template-columns: var(--stage-left-column) var(--direct-stream-max-player-width) var(--stage-right-column); grid-template-areas: "above above above" "left player right" "below below below"; }
     .stage.app-ui-active.has-left { --stage-left-column: 320px; }
     .stage.app-ui-active.has-right { --stage-right-column: 320px; }
@@ -43,11 +43,12 @@
     .chat-input input { flex: 1; min-width: 0; background: #111722; color: #eef3f8; border: 1px solid #3a4353; border-radius: 4px; padding: 7px 8px; }
     .chat-input button { border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 7px 10px; }
     .chat-log p.mentioned-me { color: #fff7d6; background: rgba(247, 197, 72, 0.18); margin-inline: -4px; padding: 2px 4px; border-left: 2px solid #f7c548; }
-    .left-region { grid-area: left; width: var(--stage-left-column); min-width: 0; min-height: 0; display: none; grid-auto-rows: minmax(0, 1fr); align-content: stretch; overflow-x: hidden; overflow-y: hidden; }
+    .left-region { grid-area: left; width: var(--stage-left-column); min-width: 0; min-height: 0; display: none; flex-direction: column; align-content: stretch; overflow-x: hidden; overflow-y: hidden; }
     .right-region { grid-area: right; width: var(--stage-right-column); min-width: 0; min-height: 0; display: none; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; overflow-x: hidden; }
-    .stage.app-ui-active.has-left .left-region,
+    .stage.app-ui-active.has-left .left-region { display: flex; height: var(--direct-stream-player-size); max-height: var(--direct-stream-player-size); }
     .stage.app-ui-active.has-right .right-region { display: grid; height: var(--direct-stream-player-size); max-height: var(--direct-stream-player-size); }
-    .left-region > .panel { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+    .left-region > .panel { width: 100%; max-width: 100%; min-width: 0; min-height: 0; flex: 0 0 auto; display: flex; flex-direction: column; }
+    .left-region > .panel:last-child { flex: 1 1 auto; }
     .left-region > .panel > pre,
     .left-region > .panel > .panel-content { flex: 1 1 auto; min-height: 0; }
     .above-region { grid-area: above; display: none; min-width: 0; }
@@ -205,7 +206,7 @@
       page_title: "MERCANTILE",
       header_title: "MERCANTILE",
       version: "0.1.0",
-      exported_at_ms: 1781437123134,
+      exported_at_ms: 1781437768661,
     };
     const playerMinimizedStorageKey = "directstream_player_minimized";
     let volatileDeviceId = null;
@@ -343,6 +344,20 @@
       nextPlaybackAt = 0;
     }
 
+    function applyStreamDimensions(streamWidth, streamHeight) {
+      const nextWidth = Number(streamWidth);
+      const nextHeight = Number(streamHeight);
+      if (!Number.isFinite(nextWidth) || !Number.isFinite(nextHeight) || nextWidth <= 0 || nextHeight <= 0) {
+        return;
+      }
+      const aspectRatio = `${nextWidth} / ${nextHeight}`;
+      canvas.style.aspectRatio = aspectRatio;
+      overlayCanvas.style.aspectRatio = aspectRatio;
+      player.style.aspectRatio = aspectRatio;
+      stage.style.setProperty("--direct-stream-aspect-ratio", aspectRatio);
+      updatePlayerSizeVariable();
+    }
+
     function setStreamTiming(fps, bufferSeconds) {
       if (Number.isFinite(fps) && fps > 0) {
         streamFps = Math.min(120, Math.max(1, fps));
@@ -393,9 +408,7 @@
       canvas.height = height;
       overlayCanvas.width = width;
       overlayCanvas.height = height;
-      canvas.style.aspectRatio = `${width} / ${height}`;
-      overlayCanvas.style.aspectRatio = `${width} / ${height}`;
-      player.style.aspectRatio = `${width} / ${height}`;
+      applyStreamDimensions(width, height);
       framebuffer = new Uint8Array(width * height);
       image = ctx.createImageData(width, height);
       tileCache.length = 0;
@@ -891,6 +904,9 @@
           streamOnline = !!status.online;
           setRequestedUiVisible(streamOnline && !!(status.chat_panel && status.chat_panel.requested), status.chat_panel);
           applyRuntimeBranding(status);
+          if (streamOnline) {
+            applyStreamDimensions(status.width, status.height);
+          }
           updateUnmuteOverlay();
         } catch (error) {
           streamOnline = false;
@@ -1390,6 +1406,7 @@
       overlayBottomRightPanels.textContent = "";
       clearPanelRegionClasses();
       namedPanelContainers.clear();
+      updateSideColumnWidths(panels);
       panels
         .slice()
         .sort((a, b) => {
@@ -1426,6 +1443,43 @@
         container.appendChild(section);
       });
       updateStageUiClasses();
+    }
+
+    function updateSideColumnWidths(panels) {
+      stage.style.setProperty("--stage-left-column", `${panelColumnWidth(panels, "LeftOfStream", 320, false)}px`);
+      stage.style.setProperty("--stage-right-column", `${panelColumnWidth(panels, "RightOfStream", 320, !!chatPanel)}px`);
+    }
+
+    function panelColumnWidth(panels, anchorName, fallbackWidth, hasImplicitPanel) {
+      let hasPanel = !!hasImplicitPanel;
+      let width = hasImplicitPanel ? fallbackWidth : 0;
+      for (const panel of Array.isArray(panels) ? panels : []) {
+        if (panelAnchorName(panel) !== anchorName) continue;
+        hasPanel = true;
+        width = Math.max(width || fallbackWidth, panelPreferredWidth(panel.size_hint, fallbackWidth));
+      }
+      return hasPanel ? Math.max(1, Math.round(width || fallbackWidth)) : 0;
+    }
+
+    function panelAnchorName(panel) {
+      return String((panel && (panel.anchor || panel.region)) || "RightOfStream");
+    }
+
+    function panelPreferredWidth(sizeHint, fallbackWidth) {
+      if (!sizeHint || typeof sizeHint !== "object") return fallbackWidth;
+      const minWidth = Number(sizeHint.min_width_px);
+      const maxWidth = Number(sizeHint.max_width_px);
+      let width = fallbackWidth;
+      if (Number.isFinite(minWidth) && minWidth > 0) {
+        width = Math.max(width, minWidth);
+      }
+      if (Number.isFinite(maxWidth) && maxWidth > 0 && (!Number.isFinite(minWidth) || minWidth <= 0)) {
+        width = Math.max(width, Math.min(maxWidth, fallbackWidth));
+      }
+      if (Number.isFinite(maxWidth) && maxWidth > 0) {
+        width = Math.min(width, maxWidth);
+      }
+      return Math.max(1, Math.min(2000, width));
     }
 
     function renderPanelBody(panel) {

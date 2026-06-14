@@ -151,6 +151,7 @@ impl StreamControl {
         frame_hub.clear();
         senders.preview = None;
         senders.custom = Some(custom_sender);
+        self.custom_stream_state.set_dimensions(width, height);
         self.custom_stream_state.set_fps(fps);
         let estimated_latency_ms =
             estimated_video_latency_ms(batch_size, fps, readback.frame_interval);
@@ -237,6 +238,8 @@ impl StreamControl {
 #[derive(Clone, Resource)]
 pub(crate) struct CustomStreamState {
     active: Arc<AtomicBool>,
+    width: Arc<AtomicU32>,
+    height: Arc<AtomicU32>,
     fps: Arc<AtomicU32>,
     audio_delay_ms: Arc<AtomicU32>,
 }
@@ -245,6 +248,8 @@ impl CustomStreamState {
     pub(crate) fn new() -> Self {
         Self {
             active: Arc::new(AtomicBool::new(false)),
+            width: Arc::new(AtomicU32::new(1)),
+            height: Arc::new(AtomicU32::new(1)),
             fps: Arc::new(AtomicU32::new(1)),
             audio_delay_ms: Arc::new(AtomicU32::new(1_000)),
         }
@@ -260,6 +265,19 @@ impl CustomStreamState {
 
     pub(crate) fn fps(&self) -> u32 {
         self.fps.load(Ordering::Relaxed).max(1)
+    }
+
+    pub(crate) fn width(&self) -> u32 {
+        self.width.load(Ordering::Relaxed).max(1)
+    }
+
+    pub(crate) fn height(&self) -> u32 {
+        self.height.load(Ordering::Relaxed).max(1)
+    }
+
+    fn set_dimensions(&self, width: u32, height: u32) {
+        self.width.store(width.max(1), Ordering::Relaxed);
+        self.height.store(height.max(1), Ordering::Relaxed);
     }
 
     fn set_fps(&self, fps: u32) {

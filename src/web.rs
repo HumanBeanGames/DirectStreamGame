@@ -1283,9 +1283,9 @@ fn palette_stream_page_html_with_options(
     .chat-input button {{ border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 7px 10px; }}
     .chat-log p.mentioned-me {{ color: #fff7d6; background: rgba(247, 197, 72, 0.18); margin-inline: -4px; padding: 2px 4px; border-left: 2px solid #f7c548; }}
     .left-region {{ grid-area: left; width: var(--stage-left-column); min-width: 0; min-height: 0; display: none; flex-direction: column; align-content: stretch; overflow-x: hidden; overflow-y: hidden; }}
-    .right-region {{ grid-area: right; width: var(--stage-right-column); min-width: 0; min-height: 0; display: none; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; overflow-x: hidden; }}
+    .right-region {{ grid-area: right; width: var(--stage-right-column); min-width: 0; min-height: 0; display: none; flex-direction: column; gap: 8px; overflow-x: hidden; }}
     .stage.app-ui-active.has-left .left-region {{ display: flex; height: var(--direct-stream-player-size); max-height: var(--direct-stream-player-size); }}
-    .stage.app-ui-active.has-right .right-region {{ display: grid; height: var(--direct-stream-player-size); max-height: var(--direct-stream-player-size); }}
+    .stage.app-ui-active.has-right .right-region {{ display: flex; height: var(--direct-stream-player-size); max-height: var(--direct-stream-player-size); }}
     .left-region > .panel {{ width: 100%; max-width: 100%; min-width: 0; min-height: 0; flex: 0 0 auto; display: flex; flex-direction: column; }}
     .left-region > .panel:last-child {{ flex: 1 1 auto; }}
     .left-region > .panel > pre,
@@ -1300,6 +1300,8 @@ fn palette_stream_page_html_with_options(
     .panel-region:empty {{ display: none; }}
     .right-panels {{ display: grid; gap: 8px; align-content: start; }}
     .right-panels:empty {{ display: none; }}
+    .right-region > .chat {{ flex: 1 1 auto; min-height: 0; height: 100%; }}
+    .right-region > .right-panels {{ flex: 0 0 auto; }}
     .panel {{ border: 1px solid #303847; background: #0b0d12; min-width: 0; max-width: 100%; overflow: hidden; }}
     .panel.panel-headerless {{ width: auto; max-width: min(100%, 720px); }}
     .panel h2 {{ margin: 0; padding: 9px 12px; border-bottom: 1px solid #303847; font-size: 14px; }}

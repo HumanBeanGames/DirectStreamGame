@@ -54,7 +54,7 @@ pub use plugin::DirectStreamPlugin;
 pub use public_types::{
     AudioSyncMode, DirectStreamAudioSyncConfig, DirectStreamControlAction,
     DirectStreamControlResult, DirectStreamMode, DirectStreamSet, DirectStreamStartRequest,
-    DirectStreamState, DirectStreamStopRequest, DirectStreamTarget,
+    DirectStreamState, DirectStreamStopRequest, DirectStreamTarget, DirectStreamWindowLayout,
 };
 pub use web::{
     export_static_palette_stream_page, static_palette_stream_page_html,

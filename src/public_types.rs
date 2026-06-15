@@ -1,5 +1,25 @@
 use bevy::prelude::*;
 
+#[derive(Clone, Debug, Resource)]
+pub struct DirectStreamWindowLayout {
+    pub right_panel_width: f32,
+}
+
+impl Default for DirectStreamWindowLayout {
+    fn default() -> Self {
+        Self {
+            right_panel_width: 0.0,
+        }
+    }
+}
+
+impl DirectStreamWindowLayout {
+    pub fn with_right_panel_width(mut self, width: f32) -> Self {
+        self.right_panel_width = width.max(0.0);
+        self
+    }
+}
+
 #[derive(Clone, Resource)]
 pub struct DirectStreamTarget {
     pub camera: Entity,

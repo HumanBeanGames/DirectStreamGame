@@ -7,7 +7,7 @@ use crate::{
         RawPreviewCopyMaterial, make_stream_source_image, spawn_custom_host_pipeline,
     },
     palette::load_palette_lookup_runtime,
-    public_types::DirectStreamTarget,
+    public_types::{DirectStreamTarget, DirectStreamWindowLayout},
     stats::{SharedStats, StatsText},
     stream_control::{
         CustomFpsInputBox, CustomFpsInputText, CustomHeightInputBox, CustomHeightInputText,
@@ -60,6 +60,7 @@ pub(crate) fn setup_direct_stream_scene(
     mut preview_display_materials: ResMut<Assets<PalettePreviewDisplayMaterial>>,
     mut raw_copy_materials: ResMut<Assets<RawPreviewCopyMaterial>>,
     config: Res<AppConfig>,
+    window_layout: Res<DirectStreamWindowLayout>,
 ) {
     let stream_image = images.add(make_stream_source_image(
         config.stream_width,
@@ -85,7 +86,7 @@ pub(crate) fn setup_direct_stream_scene(
         }
         WindowMode::Stats => {
             commands.spawn(Camera2d);
-            spawn_stats_window(&mut commands, config.custom_host);
+            spawn_stats_window(&mut commands, config.custom_host, &window_layout);
         }
     }
 
@@ -135,6 +136,7 @@ pub(crate) fn setup_direct_stream_scene(
                 &stream_image,
                 &pipeline,
                 batch_size,
+                &window_layout,
                 config.stream_width,
                 config.stream_height,
             );
@@ -180,6 +182,7 @@ fn spawn_preview_comparison(
     stream_image: &Handle<Image>,
     pipeline: &crate::gpu_palette::GpuPalettePipeline,
     batch_size: usize,
+    window_layout: &DirectStreamWindowLayout,
     width: u32,
     height: u32,
 ) -> (
@@ -215,14 +218,19 @@ fn spawn_preview_comparison(
     ));
 
     let x_offset = width as f32 * 0.5;
+    let reserved_panel_offset = window_layout.right_panel_width * 0.5;
     commands.spawn((
         Sprite {
             image: first_raw_output,
             custom_size: Some(Vec2::new(width as f32, height as f32)),
             ..default()
         },
-        Transform::from_xyz(-x_offset * PREVIEW_DISPLAY_SCALE, 0.0, 0.0)
-            .with_scale(Vec3::splat(PREVIEW_DISPLAY_SCALE)),
+        Transform::from_xyz(
+            -x_offset * PREVIEW_DISPLAY_SCALE - reserved_panel_offset,
+            0.0,
+            0.0,
+        )
+        .with_scale(Vec3::splat(PREVIEW_DISPLAY_SCALE)),
         RenderLayers::layer(GPU_PREVIEW_DISPLAY_LAYER),
         PreviewRawDisplay,
     ));
@@ -234,7 +242,12 @@ fn spawn_preview_comparison(
     commands.spawn((
         Mesh2d(meshes.add(Rectangle::default())),
         MeshMaterial2d(display_material.clone()),
-        Transform::from_xyz(x_offset * PREVIEW_DISPLAY_SCALE, 0.0, 0.0).with_scale(Vec3::new(
+        Transform::from_xyz(
+            x_offset * PREVIEW_DISPLAY_SCALE - reserved_panel_offset,
+            0.0,
+            0.0,
+        )
+        .with_scale(Vec3::new(
             width as f32 * PREVIEW_DISPLAY_SCALE,
             height as f32 * PREVIEW_DISPLAY_SCALE,
             1.0,
@@ -255,13 +268,22 @@ fn spawn_readback_entities(commands: &mut Commands, count: usize) -> Vec<Entity>
         .collect()
 }
 
-fn spawn_stats_window(commands: &mut Commands, custom_host: bool) {
+fn spawn_stats_window(
+    commands: &mut Commands,
+    custom_host: bool,
+    window_layout: &DirectStreamWindowLayout,
+) {
     commands
         .spawn((
             Node {
                 width: percent(100),
                 height: percent(100),
-                padding: UiRect::all(px(10)),
+                padding: UiRect {
+                    left: px(10),
+                    right: px(10.0 + window_layout.right_panel_width),
+                    top: px(10),
+                    bottom: px(10),
+                },
                 flex_direction: FlexDirection::Column,
                 row_gap: px(6),
                 justify_content: JustifyContent::FlexStart,

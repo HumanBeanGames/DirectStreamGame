@@ -13,7 +13,9 @@ use crate::{
         PaletteFrameHub, SharedPaletteBias, load_palette_runtime, start_palette_preview_encoder,
     },
     preview::start_preview_encoder,
-    public_types::{DirectStreamAudioSyncConfig, DirectStreamMode, DirectStreamState},
+    public_types::{
+        DirectStreamAudioSyncConfig, DirectStreamMode, DirectStreamState, DirectStreamWindowLayout,
+    },
     stats::SharedStats,
     stream_control::{CustomStreamState, StreamControl},
 };
@@ -63,13 +65,18 @@ pub fn direct_stream_app() -> App {
         custom_host.then_some(custom_sender.clone()),
         custom_stream_state.clone(),
     );
-    let window_resolution = match config.window_mode {
+    let window_layout = DirectStreamWindowLayout::default();
+    let base_window_resolution = match config.window_mode {
         WindowMode::Preview => (
             (config.stream_width as f32 * 2.0 * PREVIEW_DISPLAY_SCALE).round() as u32,
             (config.stream_height as f32 * PREVIEW_DISPLAY_SCALE).round() as u32,
         ),
         WindowMode::Stats => (STATS_WINDOW_WIDTH, STATS_WINDOW_HEIGHT),
     };
+    let window_resolution = (
+        base_window_resolution.0 + window_layout.right_panel_width.round() as u32,
+        base_window_resolution.1,
+    );
 
     if custom_host {
         start_custom_audio_packet_pump(
@@ -128,6 +135,7 @@ pub fn direct_stream_app() -> App {
         .insert_resource(CustomHostBranding::default())
         .insert_resource(CustomHostLayout::default())
         .insert_resource(DirectStreamAudioSyncConfig::default())
+        .insert_resource(window_layout)
         .insert_resource(CustomHostViewerNameRefresh::default())
         .insert_resource(custom_stream_state)
         .insert_resource(palette_bias)

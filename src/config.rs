@@ -62,6 +62,13 @@ impl AppConfig {
             } else if stream_height_set && !stream_width_set {
                 stream_width = stream_height;
             }
+        } else if !stream_width_set && !stream_height_set {
+            stream_width = 128;
+            stream_height = 128;
+        } else if stream_width_set && !stream_height_set {
+            stream_height = stream_width;
+        } else if stream_height_set && !stream_width_set {
+            stream_width = stream_height;
         }
 
         Self {

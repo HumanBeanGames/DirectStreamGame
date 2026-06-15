@@ -1,7 +1,10 @@
 use crate::{
     config::{AppConfig, WindowMode, effective_custom_batch_size},
-    constants::{STREAM_FPS, STREAM_HEIGHT, STREAM_WIDTH, WEB_ADDR},
-    gpu_palette::{PaletteMaterial, make_stream_source_image, spawn_custom_host_pipeline},
+    constants::{PREVIEW_DISPLAY_SCALE, STREAM_FPS, STREAM_HEIGHT, STREAM_WIDTH, WEB_ADDR},
+    gpu_palette::{
+        PaletteMaterial, PalettePreviewDisplayMaterial, PreviewPaletteThrottle,
+        make_stream_source_image, spawn_custom_host_pipeline,
+    },
     palette::load_palette_lookup_runtime,
     public_types::DirectStreamTarget,
     stats::{SharedStats, StatsText},
@@ -53,6 +56,7 @@ pub(crate) fn setup_direct_stream_scene(
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut palette_materials: ResMut<Assets<PaletteMaterial>>,
+    mut preview_display_materials: ResMut<Assets<PalettePreviewDisplayMaterial>>,
     config: Res<AppConfig>,
 ) {
     let stream_image = images.add(make_stream_source_image(
@@ -75,12 +79,7 @@ pub(crate) fn setup_direct_stream_scene(
 
     commands.spawn(Camera2d);
     match config.window_mode {
-        WindowMode::Preview => {
-            commands.spawn((
-                Sprite::from_image(stream_image.clone()),
-                Transform::from_scale(Vec3::ONE),
-            ));
-        }
+        WindowMode::Preview => {}
         WindowMode::Stats => spawn_stats_window(&mut commands, config.custom_host),
     }
 
@@ -96,13 +95,16 @@ pub(crate) fn setup_direct_stream_scene(
         fps: config.stream_fps,
     };
 
-    if config.custom_host {
+    if config.custom_host || config.window_mode == WindowMode::Preview {
         let palette_lookup = load_palette_lookup_runtime(&config.palette_lookup_path);
         let palette_config = palette_lookup.config();
         let palette_colors = palette_config.colors.clone();
         let palette_bias = crate::palette::PaletteBias::from(palette_config.matching);
-        let batch_size =
-            effective_custom_batch_size(config.custom_host_batch_size, config.stream_fps);
+        let batch_size = if config.custom_host {
+            effective_custom_batch_size(config.custom_host_batch_size, config.stream_fps)
+        } else {
+            effective_custom_batch_size(config.custom_host_batch_size, config.stream_fps)
+        };
         let pipeline = spawn_custom_host_pipeline(
             &mut commands,
             &mut images,
@@ -117,27 +119,77 @@ pub(crate) fn setup_direct_stream_scene(
             &mut target,
             batch_size,
         );
+        if config.window_mode == WindowMode::Preview {
+            let display_material = spawn_preview_comparison(
+                &mut commands,
+                &mut meshes,
+                &mut preview_display_materials,
+                &stream_image,
+                &pipeline,
+                config.stream_width,
+                config.stream_height,
+            );
+            commands.insert_resource(PreviewPaletteThrottle::new(
+                config.stream_fps,
+                batch_size,
+                display_material,
+            ));
+        }
         let pipeline_clone = pipeline.clone();
-        let readback_entities =
-            spawn_readback_entities(&mut commands, pipeline_clone.output_images.len());
         commands.insert_resource(pipeline);
-        commands.insert_resource(StreamReadback {
-            images: pipeline_clone.output_images.clone(),
-            readback_entities,
-            next_readback_entity: 0,
-            frame_interval: Duration::from_secs_f64(1.0 / config.stream_fps as f64),
-            frame_accumulator: Duration::ZERO,
-            frame_due: false,
-            pending_requests: HashMap::default(),
-            batch_size,
-            batch_started_at: None,
-            batch_in_progress: false,
-            textures_rendered_in_batch: 0,
-            frame_waiting_for_render: None,
-            rendered_batch_frames: Vec::with_capacity(batch_size),
-        });
+        if config.custom_host {
+            let readback_entities =
+                spawn_readback_entities(&mut commands, pipeline_clone.output_images.len());
+            commands.insert_resource(StreamReadback {
+                images: pipeline_clone.output_images.clone(),
+                readback_entities,
+                next_readback_entity: 0,
+                frame_interval: Duration::from_secs_f64(1.0 / config.stream_fps as f64),
+                frame_accumulator: Duration::ZERO,
+                frame_due: false,
+                pending_requests: HashMap::default(),
+                batch_size,
+                batch_started_at: None,
+                batch_in_progress: false,
+                textures_rendered_in_batch: 0,
+                frame_waiting_for_render: None,
+                rendered_batch_frames: Vec::with_capacity(batch_size),
+            });
+        }
     }
     commands.insert_resource(target);
+}
+
+fn spawn_preview_comparison(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    preview_display_materials: &mut Assets<PalettePreviewDisplayMaterial>,
+    stream_image: &Handle<Image>,
+    pipeline: &crate::gpu_palette::GpuPalettePipeline,
+    width: u32,
+    height: u32,
+) -> Handle<PalettePreviewDisplayMaterial> {
+    let x_offset = width as f32 * 0.5;
+    commands.spawn((
+        Sprite::from_image(stream_image.clone()),
+        Transform::from_xyz(-x_offset * PREVIEW_DISPLAY_SCALE, 0.0, 0.0)
+            .with_scale(Vec3::splat(PREVIEW_DISPLAY_SCALE)),
+    ));
+
+    let display_material = preview_display_materials.add(PalettePreviewDisplayMaterial {
+        index_image: pipeline.output_images[0].clone(),
+        palette_texture: pipeline.palette_texture.clone(),
+    });
+    commands.spawn((
+        Mesh2d(meshes.add(Rectangle::default())),
+        MeshMaterial2d(display_material.clone()),
+        Transform::from_xyz(x_offset * PREVIEW_DISPLAY_SCALE, 0.0, 0.0).with_scale(Vec3::new(
+            width as f32 * PREVIEW_DISPLAY_SCALE,
+            height as f32 * PREVIEW_DISPLAY_SCALE,
+            1.0,
+        )),
+    ));
+    display_material
 }
 
 fn spawn_readback_entities(commands: &mut Commands, count: usize) -> Vec<Entity> {

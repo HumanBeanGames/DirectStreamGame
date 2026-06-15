@@ -1,5 +1,4 @@
 use crate::{
-    constants::{STREAM_FPS, STREAM_HEIGHT, STREAM_WIDTH},
     frames::{EncodedFrameHub, RawFrame},
     stats::SharedStats,
 };
@@ -16,9 +15,12 @@ pub(crate) fn start_preview_encoder(
     receiver: Receiver<RawFrame>,
     frame_hub: EncodedFrameHub,
     stats: SharedStats,
+    width: u32,
+    height: u32,
+    fps: u32,
 ) {
     thread::spawn(move || {
-        let mut encoder = match JpegPreviewEncoder::new(STREAM_WIDTH, STREAM_HEIGHT, STREAM_FPS) {
+        let mut encoder = match JpegPreviewEncoder::new(width, height, fps) {
             Ok(encoder) => encoder,
             Err(err) => {
                 eprintln!("FFmpeg native initialization failed: {err}");

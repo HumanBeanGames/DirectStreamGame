@@ -12,6 +12,7 @@ pub(crate) const STREAM_CLICK_PATH: &str = "/stream-click";
 pub(crate) const STREAM_STATUS_PATH: &str = "/status.json";
 pub(crate) const STREAM_WIDTH: u32 = 320;
 pub(crate) const STREAM_HEIGHT: u32 = 240;
+pub(crate) const PREVIEW_DISPLAY_SCALE: f32 = 3.0;
 pub(crate) const STATS_WINDOW_WIDTH: u32 = 560;
 pub(crate) const STATS_WINDOW_HEIGHT: u32 = 680;
 pub(crate) const STREAM_FPS: u32 = 5;

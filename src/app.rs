@@ -3,9 +3,7 @@ use crate::{
     audio::{CustomAudioPacketHub, DirectStreamAudioTarget, start_custom_audio_packet_pump},
     chat::{CustomHostViewerNameRefresh, LocalChatHub},
     config::{AppConfig, WindowMode, effective_custom_batch_size},
-    constants::{
-        STATS_WINDOW_HEIGHT, STATS_WINDOW_WIDTH, STREAM_HEIGHT, STREAM_WIDTH, WINDOW_TITLE,
-    },
+    constants::{PREVIEW_DISPLAY_SCALE, STATS_WINDOW_HEIGHT, STATS_WINDOW_WIDTH, WINDOW_TITLE},
     custom_host::{
         CustomHostBranding, CustomHostChatPanelHub, CustomHostLayout, CustomHostOverlayHub,
         CustomHostPanelActionHub, CustomHostPanelHub, StreamPointerClickHub,
@@ -66,7 +64,10 @@ pub fn direct_stream_app() -> App {
         custom_stream_state.clone(),
     );
     let window_resolution = match config.window_mode {
-        WindowMode::Preview => (STREAM_WIDTH, STREAM_HEIGHT),
+        WindowMode::Preview => (
+            (config.stream_width as f32 * 2.0 * PREVIEW_DISPLAY_SCALE).round() as u32,
+            (config.stream_height as f32 * PREVIEW_DISPLAY_SCALE).round() as u32,
+        ),
         WindowMode::Stats => (STATS_WINDOW_WIDTH, STATS_WINDOW_HEIGHT),
     };
 
@@ -87,7 +88,14 @@ pub fn direct_stream_app() -> App {
             effective_custom_batch_size(config.custom_host_batch_size, config.stream_fps),
         );
     } else if preview_enabled {
-        start_preview_encoder(preview_receiver, frame_hub.clone(), stats.clone());
+        start_preview_encoder(
+            preview_receiver,
+            frame_hub.clone(),
+            stats.clone(),
+            config.stream_width,
+            config.stream_height,
+            config.stream_fps,
+        );
     }
 
     let mut primary_window = Window {

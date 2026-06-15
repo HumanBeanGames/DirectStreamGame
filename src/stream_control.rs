@@ -261,7 +261,7 @@ impl CustomStreamState {
         self.active.load(Ordering::Relaxed)
     }
 
-    fn set_active(&self, active: bool) {
+    pub(crate) fn set_active(&self, active: bool) {
         self.active.store(active, Ordering::Relaxed);
     }
 
@@ -290,7 +290,7 @@ impl CustomStreamState {
         self.audio_delay_ms.load(Ordering::Relaxed)
     }
 
-    fn set_audio_delay_ms(&self, audio_delay_ms: u32) {
+    pub(crate) fn set_audio_delay_ms(&self, audio_delay_ms: u32) {
         self.audio_delay_ms
             .store(audio_delay_ms.min(10_000), Ordering::Relaxed);
     }

@@ -35,7 +35,11 @@ const CUSTOM_STREAM_PLAYBACK_BUFFER_SECONDS: f64 = 1.0;
 
 #[derive(Clone)]
 pub(crate) enum LocalStreamSource {
-    Mjpeg(EncodedFrameHub),
+    Mjpeg {
+        frames: EncodedFrameHub,
+        audio: CustomAudioPacketHub,
+        active: CustomStreamState,
+    },
     Palette {
         frames: PaletteFrameHub,
         audio: CustomAudioPacketHub,
@@ -84,7 +88,11 @@ pub(crate) fn start_local_web_server_from_resources(
             active: active.clone(),
         }
     } else {
-        LocalStreamSource::Mjpeg(frame_hub.clone())
+        LocalStreamSource::Mjpeg {
+            frames: frame_hub.clone(),
+            audio: audio.clone(),
+            active: active.clone(),
+        }
     };
     start_local_web_server(source, stats.clone(), branding.clone(), layout.clone());
 }
@@ -151,8 +159,8 @@ fn handle_web_request(
     }
 
     if path.starts_with(STREAM_PATH) {
-        if let LocalStreamSource::Mjpeg(frame_hub) = source {
-            stream_mjpeg(stream, frame_hub, stats);
+        if let LocalStreamSource::Mjpeg { frames, .. } = source {
+            stream_mjpeg(stream, frames, stats);
         } else {
             serve_not_found(stream);
         }
@@ -163,10 +171,11 @@ fn handle_web_request(
             serve_not_found(stream);
         }
     } else if path.starts_with(AUDIO_STREAM_PATH) {
-        if let LocalStreamSource::Palette { audio, active, .. } = source {
-            stream_pcm_audio(stream, audio, stats, active);
-        } else {
-            serve_not_found(stream);
+        match source {
+            LocalStreamSource::Mjpeg { audio, active, .. }
+            | LocalStreamSource::Palette { audio, active, .. } => {
+                stream_pcm_audio(stream, audio, stats, active);
+            }
         }
     } else if path.starts_with(LOCAL_CHAT_FEED_PATH) {
         if let LocalStreamSource::Palette { chat, .. } = source {
@@ -287,7 +296,7 @@ fn serve_preview_page(
     layout: &CustomHostLayout,
 ) {
     let body = match source {
-        LocalStreamSource::Mjpeg(_) => mjpeg_stream_page_html(),
+        LocalStreamSource::Mjpeg { .. } => mjpeg_stream_page_html(),
         LocalStreamSource::Palette { .. } => palette_stream_page_html(branding, layout),
     };
     let response = format!(

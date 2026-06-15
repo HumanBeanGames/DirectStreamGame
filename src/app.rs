@@ -54,7 +54,7 @@ pub fn direct_stream_app() -> App {
         } else {
             DirectStreamMode::Preview
         },
-        active: false,
+        active: preview_enabled,
         width: config.stream_width,
         height: config.stream_height,
         fps: config.stream_fps,
@@ -78,13 +78,21 @@ pub fn direct_stream_app() -> App {
         base_window_resolution.1,
     );
 
-    if custom_host {
+    if preview_enabled {
+        custom_stream_state.set_active(true);
+        custom_stream_state.set_audio_delay_ms(0);
+    }
+
+    if custom_host || preview_enabled {
         start_custom_audio_packet_pump(
             audio_target.clone(),
             custom_audio_hub.clone(),
             stats.clone(),
             custom_stream_state.clone(),
         );
+    }
+
+    if custom_host {
         start_palette_preview_encoder(
             custom_receiver,
             palette_frame_hub.clone(),

@@ -190,7 +190,12 @@ fn overlay_color(
         && let Some(gpu_palette) = gpu_palette
     {
         let palette_index = nearest_palette_index(text.color, &gpu_palette.palette_colors);
-        return Color::linear_rgba((palette_index as f32 + 0.5) / 255.0, 0.0, 0.0, 1.0);
+        let index_value = if palette_index == u8::MAX {
+            1.0
+        } else {
+            (palette_index as f32 + 0.5) / 256.0
+        };
+        return Color::linear_rgba(index_value, 0.0, 0.0, 1.0);
     }
 
     Color::srgba(

@@ -32,7 +32,7 @@ var palette_texture: texture_2d<f32>;
 var<uniform> lookup_params: LookupParams;
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(5)
-var lookup_texture: texture_2d<f32>;
+var lookup_texture: texture_2d<u32>;
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(6)
 var<uniform> input_offset_params: InputOffsetParams;
@@ -161,7 +161,7 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
         i32(lookup_index % 4096u),
         i32(lookup_index / 4096u)
     );
-    let palette_index = u32(round(clamp(textureLoad(lookup_texture, lookup_coord, 0).r, 0.0, 1.0) * 255.0));
-    let centered_index_value = (f32(palette_index) + 0.5) / 255.0;
+    let palette_index = textureLoad(lookup_texture, lookup_coord, 0).r;
+    let centered_index_value = select((f32(palette_index) + 0.5) / 256.0, 1.0, palette_index >= 255u);
     return vec4<f32>(centered_index_value, 0.0, 0.0, 1.0);
 }

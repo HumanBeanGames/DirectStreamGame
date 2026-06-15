@@ -78,7 +78,7 @@ pub(crate) struct PaletteMaterial {
     pub(crate) palette_texture: Handle<Image>,
     #[uniform(4)]
     pub(crate) lookup_params: Vec4,
-    #[texture(5)]
+    #[texture(5, sample_type = "u_int")]
     pub(crate) lookup_texture: Handle<Image>,
     #[uniform(6)]
     pub(crate) input_offset_a: Vec4,
@@ -242,7 +242,7 @@ pub(crate) fn make_lookup_texture(lookup: &PaletteLookup) -> Image {
         },
         TextureDimension::D2,
         &data,
-        TextureFormat::R8Unorm,
+        TextureFormat::R8Uint,
         RenderAssetUsages::default(),
     );
     image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;

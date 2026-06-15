@@ -22,6 +22,7 @@ pub struct PaletteMatching {
     pub lightness_add: f32,
     pub chroma_multiply: f32,
     pub chroma_add: f32,
+    pub grey_chroma_threshold: f32,
     pub hue_add: f32,
 }
 
@@ -35,6 +36,7 @@ impl Default for PaletteMatching {
             lightness_add: 0.0,
             chroma_multiply: 0.0,
             chroma_add: 0.0,
+            grey_chroma_threshold: 0.001,
             hue_add: 0.0,
         }
     }
@@ -104,6 +106,10 @@ pub fn parse_palette_config(contents: &str) -> Result<PaletteConfig, String> {
                 "lightness_add" | "value_add" => matching.lightness_add = parse_f32_value(value)?,
                 "chroma_multiply" => matching.chroma_multiply = parse_f32_value(value)?,
                 "chroma_add" => matching.chroma_add = parse_f32_value(value)?,
+                "grey_chroma_threshold"
+                | "gray_chroma_threshold"
+                | "grey_threshold"
+                | "gray_threshold" => matching.grey_chroma_threshold = parse_f32_value(value)?,
                 "hue_add" => matching.hue_add = parse_f32_value(value)?,
                 _ => {}
             }
@@ -152,6 +158,10 @@ pub fn serialize_palette_config(config: &PaletteConfig) -> String {
         config.matching.chroma_multiply
     ));
     output.push_str(&format!("chroma_add = {}\n", config.matching.chroma_add));
+    output.push_str(&format!(
+        "grey_chroma_threshold = {}\n",
+        config.matching.grey_chroma_threshold
+    ));
     output.push_str(&format!("hue_add = {}\n", config.matching.hue_add));
     output
 }
@@ -405,6 +415,7 @@ pub fn palette_hash(config: &PaletteConfig) -> u64 {
             config.matching.lightness_add,
             config.matching.chroma_multiply,
             config.matching.chroma_add,
+            config.matching.grey_chroma_threshold,
             config.matching.hue_add,
         ] {
             for byte in value.to_le_bytes() {
@@ -447,6 +458,8 @@ impl PaletteMatching {
         ]
         .iter()
         .any(|value| value.abs() > 0.000_001)
+            || (self.grey_chroma_threshold - Self::default().grey_chroma_threshold).abs()
+                > 0.000_001
     }
 }
 
@@ -512,9 +525,15 @@ fn nearest_palette_index(color: Oklch, palette: &[Oklch], matching: PaletteMatch
 }
 
 fn apply_input_offset(color: Oklch, matching: PaletteMatching) -> Oklch {
+    let chroma_offset_enabled = color.c > matching.grey_chroma_threshold.clamp(0.0, 1.0);
+    let adjusted_chroma = if chroma_offset_enabled {
+        (color.c * (1.0 + matching.chroma_multiply) + matching.chroma_add).max(0.0)
+    } else {
+        color.c
+    };
     let mut adjusted = Oklch {
         l: (color.l * (1.0 + matching.lightness_multiply) + matching.lightness_add).clamp(0.0, 1.0),
-        c: (color.c * (1.0 + matching.chroma_multiply) + matching.chroma_add).max(0.0),
+        c: adjusted_chroma,
         h: color.h + matching.hue_add * std::f32::consts::TAU,
     };
     if matching.has_input_offset() {
@@ -766,5 +785,61 @@ hue = 0.0
 
         assert!(adjusted.c < unclamped_chroma);
         assert!(oklch_in_srgb_gamut(adjusted));
+    }
+
+    #[test]
+    fn grey_chroma_threshold_blocks_degenerate_chroma_offsets() {
+        let palette = [
+            Oklch {
+                l: 0.5,
+                c: 0.0,
+                h: 0.0,
+            },
+            Oklch {
+                l: 0.5,
+                c: 0.12,
+                h: 0.0,
+            },
+        ];
+        let source = Oklch {
+            l: 0.5,
+            c: 0.000_5,
+            h: 0.0,
+        };
+        let matching = PaletteMatching {
+            lightness: 0.0,
+            chroma: 1.0,
+            hue: 0.0,
+            chroma_add: 0.12,
+            grey_chroma_threshold: 0.001,
+            ..Default::default()
+        };
+        let disabled_threshold = PaletteMatching {
+            grey_chroma_threshold: 0.0,
+            ..matching
+        };
+
+        assert_eq!(nearest_palette_index(source, &palette, matching), 0);
+        assert_eq!(
+            nearest_palette_index(source, &palette, disabled_threshold),
+            1
+        );
+    }
+
+    #[test]
+    fn near_identical_dark_blue_beats_pale_cyan_without_anchoring() {
+        let palette = [
+            Oklch::from(rgb_to_oklab(12, 24, 82)),
+            Oklch::from(rgb_to_oklab(172, 236, 244)),
+        ];
+        let source = Oklch::from(rgb_to_oklab(8, 20, 70));
+        let matching = PaletteMatching {
+            lightness: 0.333,
+            chroma: 0.333,
+            hue: 0.334,
+            ..Default::default()
+        };
+
+        assert_eq!(nearest_palette_index(source, &palette, matching), 0);
     }
 }

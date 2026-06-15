@@ -115,28 +115,36 @@ fn palette_lab_html() -> String {
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      min-height: 100vh;
+      height: 100vh;
+      overflow: hidden;
       display: grid;
-      grid-template-columns: minmax(320px, 390px) 1fr;
+      grid-template-columns: minmax(320px, 390px) minmax(0, 1fr) minmax(320px, 420px);
     }
     aside {
       border-right: 1px solid #2d3441;
       background: #171b23;
       padding: 16px;
       overflow-y: auto;
+      min-height: 0;
     }
     main {
       display: grid;
-      grid-template-rows: auto 1fr;
       min-width: 0;
+      min-height: 0;
     }
-    header {
-      padding: 14px 16px;
-      border-bottom: 1px solid #2d3441;
+    .debug-panel {
+      border-left: 1px solid #2d3441;
+      background: #131720;
+      padding: 16px;
       display: grid;
-      grid-template-columns: max-content minmax(0, 78ch);
-      gap: 16px;
-      align-items: start;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 12px;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .debug-panel strong {
+      font-size: 14px;
+      color: #edf2f7;
     }
     h1 {
       font-size: 18px;
@@ -163,7 +171,7 @@ fn palette_lab_html() -> String {
       font-size: 14px;
     }
     .bias-label {
-      grid-template-columns: 92px 1fr 48px;
+      grid-template-columns: 92px minmax(0, 1fr) 76px;
     }
     input {
       width: 100%;
@@ -176,6 +184,12 @@ fn palette_lab_html() -> String {
     }
     input[type="range"] {
       padding: 0;
+      accent-color: #87bfff;
+    }
+    .range-number {
+      padding: 5px 6px;
+      font-size: 13px;
+      text-align: right;
     }
     button, a.button {
       appearance: none;
@@ -204,12 +218,16 @@ fn palette_lab_html() -> String {
     }
     .actions {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: 86px minmax(120px, 1fr) minmax(0, 1fr);
       gap: 8px;
       margin-top: 12px;
     }
-    .actions .primary {
+    .actions .primary,
+    .actions .download-ipsi {
       grid-column: 1 / -1;
+    }
+    .actions .progress-wrap {
+      min-width: 0;
     }
     .status {
       font-family: Consolas, monospace;
@@ -217,35 +235,33 @@ fn palette_lab_html() -> String {
       color: #cbd5e1;
       line-height: 1.45;
       display: block;
-      width: 78ch;
-      height: 10.15em;
+      min-width: 0;
+      width: 100%;
+      height: 100%;
       overflow: auto;
       scrollbar-gutter: stable;
     }
     .status.ok { color: #b6f5c7; }
     .status.bad { color: #ffb4a8; }
     .progress-wrap {
-      border-bottom: 1px solid #2d3441;
-      padding: 10px 16px 12px;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) max-content;
-      gap: 10px;
+      grid-template-columns: minmax(0, 1fr) 38px;
+      gap: 6px;
       align-items: center;
-      background: #101217;
     }
     .progress-wrap[hidden] {
       display: none;
     }
     progress {
       width: 100%;
-      height: 14px;
-      accent-color: #d7e8ff;
+      height: 8px;
+      accent-color: #87bfff;
     }
     .progress-text {
       color: #cbd5e1;
       font-size: 12px;
       font-variant-numeric: tabular-nums;
-      min-width: 48px;
+      min-width: 38px;
       text-align: right;
     }
     .stage {
@@ -256,6 +272,7 @@ fn palette_lab_html() -> String {
       overflow: auto;
       padding: 18px;
       background: #0b0d12;
+      min-height: 0;
     }
     .preview {
       width: min(100%, 1100px);
@@ -277,8 +294,9 @@ fn palette_lab_html() -> String {
     }
     @media (max-width: 860px) {
       body { grid-template-columns: 1fr; }
-      aside { border-right: 0; border-bottom: 1px solid #2d3441; }
-      header { grid-template-columns: 1fr; }
+      body { overflow: auto; height: auto; }
+      aside { border-right: 0; border-bottom: 1px solid #2d3441; max-height: none; }
+      .debug-panel { border-left: 0; border-top: 1px solid #2d3441; min-height: 280px; }
       .status { width: 100%; }
     }
   </style>
@@ -310,40 +328,39 @@ fn palette_lab_html() -> String {
       </fieldset>
       <fieldset>
         <legend>Nearest Palette Priorities</legend>
-        <label class="bias-label">value <input id="biasLightness" type="range" min="0" max="1" step="0.001" value="0.333"><span id="biasLightnessValue">0.333</span></label>
-        <label class="bias-label">chroma <input id="biasChroma" type="range" min="0" max="1" step="0.001" value="0.333"><span id="biasChromaValue">0.333</span></label>
-        <label class="bias-label">hue <input id="biasHue" type="range" min="0" max="1" step="0.001" value="0.334"><span id="biasHueValue">0.334</span></label>
+        <label class="bias-label">value <input id="biasLightness" type="range" min="0" max="1" step="0.001" value="0.333"><input id="biasLightnessValue" class="range-number" type="number" min="0" max="1" step="0.001" value="0.333"></label>
+        <label class="bias-label">chroma <input id="biasChroma" type="range" min="0" max="1" step="0.001" value="0.333"><input id="biasChromaValue" class="range-number" type="number" min="0" max="1" step="0.001" value="0.333"></label>
+        <label class="bias-label">hue <input id="biasHue" type="range" min="0" max="1" step="0.001" value="0.334"><input id="biasHueValue" class="range-number" type="number" min="0" max="1" step="0.001" value="0.334"></label>
       </fieldset>
       <fieldset>
         <legend>Input Biases Before Matching</legend>
-        <label class="bias-label">value mult <input id="offsetLightnessMultiply" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetLightnessMultiplyValue">0.000</span></label>
-        <label class="bias-label">value add <input id="offsetLightnessAdd" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetLightnessAddValue">0.000</span></label>
-        <label class="bias-label">chroma mult <input id="offsetChromaMultiply" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetChromaMultiplyValue">0.000</span></label>
-        <label class="bias-label">chroma add <input id="offsetChromaAdd" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetChromaAddValue">0.000</span></label>
-        <label class="bias-label">hue add <input id="offsetHueAdd" type="range" min="-1" max="1" step="0.001" value="0"><span id="offsetHueAddValue">0.000</span></label>
+        <label class="bias-label">value mult <input id="offsetLightnessMultiply" type="range" min="-1" max="1" step="0.001" value="0"><input id="offsetLightnessMultiplyValue" class="range-number" type="number" min="-1" max="1" step="0.001" value="0.000"></label>
+        <label class="bias-label">value add <input id="offsetLightnessAdd" type="range" min="-1" max="1" step="0.001" value="0"><input id="offsetLightnessAddValue" class="range-number" type="number" min="-1" max="1" step="0.001" value="0.000"></label>
+        <label class="bias-label">chroma mult <input id="offsetChromaMultiply" type="range" min="-1" max="1" step="0.001" value="0"><input id="offsetChromaMultiplyValue" class="range-number" type="number" min="-1" max="1" step="0.001" value="0.000"></label>
+        <label class="bias-label">chroma add <input id="offsetChromaAdd" type="range" min="-1" max="1" step="0.001" value="0"><input id="offsetChromaAddValue" class="range-number" type="number" min="-1" max="1" step="0.001" value="0.000"></label>
+        <label class="bias-label">hue add <input id="offsetHueAdd" type="range" min="-1" max="1" step="0.001" value="0"><input id="offsetHueAddValue" class="range-number" type="number" min="-1" max="1" step="0.001" value="0.000"></label>
+      </fieldset>
+      <fieldset>
+        <legend>Neutral Protection</legend>
+        <label class="bias-label">grey threshold <input id="greyChromaThreshold" type="range" min="0" max="1" step="0.001" value="0.001"><input id="greyChromaThresholdValue" class="range-number" type="number" min="0" max="1" step="0.001" value="0.001"></label>
       </fieldset>
       <fieldset>
         <legend>Export</legend>
         <label>filename <input id="filenameBase" type="text" value="palette"></label>
       </fieldset>
       <div class="actions">
-        <button class="secondary" id="previewButton" type="button">Preview</button>
         <button class="primary" type="submit">Generate</button>
+        <a class="button download-ipsi" id="downloadIpsi" aria-disabled="true">palette.ipsi</a>
         <button class="secondary" id="bakeButton" type="button" disabled>Bake</button>
-        <a class="button" id="downloadIpsi" aria-disabled="true">palette.ipsi</a>
         <a class="button" id="downloadMap" aria-disabled="true">palette.ipsmap</a>
+        <div id="bakeProgressWrap" class="progress-wrap" hidden>
+          <progress id="bakeProgress" max="100" value="0"></progress>
+          <span id="bakeProgressText" class="progress-text">0%</span>
+        </div>
       </div>
     </form>
   </aside>
   <main>
-    <header>
-      <strong>Palette Preview</strong>
-      <span id="status" class="status">ready</span>
-    </header>
-    <div id="bakeProgressWrap" class="progress-wrap" hidden>
-      <progress id="bakeProgress" max="100" value="0"></progress>
-      <span id="bakeProgressText" class="progress-text">0%</span>
-    </div>
     <section class="stage">
       <div class="preview">
         <h2>OKLCH strict-gamut palette</h2>
@@ -359,6 +376,10 @@ fn palette_lab_html() -> String {
       </div>
     </section>
   </main>
+  <section class="debug-panel">
+    <strong>Palette Preview</strong>
+    <span id="status" class="status">ready</span>
+  </section>
   <script>
     const form = document.getElementById("form");
     const canvas = document.getElementById("canvas");
@@ -371,7 +392,6 @@ fn palette_lab_html() -> String {
     const bakeProgressWrap = document.getElementById("bakeProgressWrap");
     const bakeProgress = document.getElementById("bakeProgress");
     const bakeProgressText = document.getElementById("bakeProgressText");
-    const previewButton = document.getElementById("previewButton");
     const bakeButton = document.getElementById("bakeButton");
     const downloadIpsi = document.getElementById("downloadIpsi");
     const downloadMap = document.getElementById("downloadMap");
@@ -385,7 +405,19 @@ fn palette_lab_html() -> String {
       document.getElementById("offsetLightnessAdd"),
       document.getElementById("offsetChromaMultiply"),
       document.getElementById("offsetChromaAdd"),
+      document.getElementById("greyChromaThreshold"),
       document.getElementById("offsetHueAdd"),
+    ];
+    const sliderPairs = [
+      ["biasLightness", "biasLightnessValue", 0, 1],
+      ["biasChroma", "biasChromaValue", 0, 1],
+      ["biasHue", "biasHueValue", 0, 1],
+      ["offsetLightnessMultiply", "offsetLightnessMultiplyValue", -1, 1],
+      ["offsetLightnessAdd", "offsetLightnessAddValue", -1, 1],
+      ["offsetChromaMultiply", "offsetChromaMultiplyValue", -1, 1],
+      ["offsetChromaAdd", "offsetChromaAddValue", -1, 1],
+      ["greyChromaThreshold", "greyChromaThresholdValue", 0, 1],
+      ["offsetHueAdd", "offsetHueAddValue", -1, 1],
     ];
     const hueOffsetZeroShift = -11;
     ctx.imageSmoothingEnabled = false;
@@ -431,22 +463,24 @@ fn palette_lab_html() -> String {
         lightnessAdd: Number(document.getElementById("offsetLightnessAdd").value),
         chromaMultiply: Number(document.getElementById("offsetChromaMultiply").value),
         chromaAdd: Number(document.getElementById("offsetChromaAdd").value),
+        greyChromaThreshold: Number(document.getElementById("greyChromaThreshold").value),
         hueAdd: Number(document.getElementById("offsetHueAdd").value),
       };
     }
 
     function updateBiasLabels() {
-      document.getElementById("biasLightnessValue").textContent = Number(document.getElementById("biasLightness").value).toFixed(3);
-      document.getElementById("biasChromaValue").textContent = Number(document.getElementById("biasChroma").value).toFixed(3);
-      document.getElementById("biasHueValue").textContent = Number(document.getElementById("biasHue").value).toFixed(3);
+      document.getElementById("biasLightnessValue").value = Number(document.getElementById("biasLightness").value).toFixed(3);
+      document.getElementById("biasChromaValue").value = Number(document.getElementById("biasChroma").value).toFixed(3);
+      document.getElementById("biasHueValue").value = Number(document.getElementById("biasHue").value).toFixed(3);
     }
 
     function updateOffsetLabels() {
-      document.getElementById("offsetLightnessMultiplyValue").textContent = Number(document.getElementById("offsetLightnessMultiply").value).toFixed(3);
-      document.getElementById("offsetLightnessAddValue").textContent = Number(document.getElementById("offsetLightnessAdd").value).toFixed(3);
-      document.getElementById("offsetChromaMultiplyValue").textContent = Number(document.getElementById("offsetChromaMultiply").value).toFixed(3);
-      document.getElementById("offsetChromaAddValue").textContent = Number(document.getElementById("offsetChromaAdd").value).toFixed(3);
-      document.getElementById("offsetHueAddValue").textContent = Number(document.getElementById("offsetHueAdd").value).toFixed(3);
+      document.getElementById("offsetLightnessMultiplyValue").value = Number(document.getElementById("offsetLightnessMultiply").value).toFixed(3);
+      document.getElementById("offsetLightnessAddValue").value = Number(document.getElementById("offsetLightnessAdd").value).toFixed(3);
+      document.getElementById("offsetChromaMultiplyValue").value = Number(document.getElementById("offsetChromaMultiply").value).toFixed(3);
+      document.getElementById("offsetChromaAddValue").value = Number(document.getElementById("offsetChromaAdd").value).toFixed(3);
+      document.getElementById("greyChromaThresholdValue").value = Number(document.getElementById("greyChromaThreshold").value).toFixed(3);
+      document.getElementById("offsetHueAddValue").value = Number(document.getElementById("offsetHueAdd").value).toFixed(3);
     }
 
     function normalizeBias(changedInput) {
@@ -470,6 +504,17 @@ fn palette_lab_html() -> String {
       const correctionTarget = others[others.length - 1] || changedInput;
       correctionTarget.value = Math.max(0, Math.min(1, Number(correctionTarget.value) + correction)).toFixed(3);
       updateBiasLabels();
+    }
+
+    function clampSliderValue(value, min, max) {
+      if (!Number.isFinite(value)) return min;
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function markSettingsChanged() {
+      revokeDownloads();
+      status.className = "status";
+      status.textContent = "settings changed; press Generate";
     }
 
     function integerValue(id) {
@@ -561,9 +606,13 @@ fn palette_lab_html() -> String {
     }
 
     function offsetInputOklch(color, offset) {
+      const chromaOffsetEnabled = color.c > Math.max(0, Math.min(1, offset.greyChromaThreshold));
+      const adjustedChroma = chromaOffsetEnabled
+        ? Math.max(0, color.c * (1 + offset.chromaMultiply) + offset.chromaAdd)
+        : color.c;
       const adjusted = {
         l: Math.max(0, Math.min(1, color.l * (1 + offset.lightnessMultiply) + offset.lightnessAdd)),
-        c: Math.max(0, color.c * (1 + offset.chromaMultiply) + offset.chromaAdd),
+        c: adjustedChroma,
         h: color.h + offset.hueAdd * Math.PI * 2,
       };
       if (hasInputOffset(offset)) adjusted.c = clampChromaToSrgbGamut(adjusted);
@@ -575,6 +624,7 @@ fn palette_lab_html() -> String {
         || Math.abs(offset.lightnessAdd) > 0.000001
         || Math.abs(offset.chromaMultiply) > 0.000001
         || Math.abs(offset.chromaAdd) > 0.000001
+        || Math.abs(offset.greyChromaThreshold - 0.001) > 0.000001
         || Math.abs(offset.hueAdd) > 0.000001;
     }
 
@@ -932,6 +982,7 @@ fn palette_lab_html() -> String {
         `lightness_add = ${settings.offset.lightnessAdd.toFixed(6)}`,
         `chroma_multiply = ${settings.offset.chromaMultiply.toFixed(6)}`,
         `chroma_add = ${settings.offset.chromaAdd.toFixed(6)}`,
+        `grey_chroma_threshold = ${settings.offset.greyChromaThreshold.toFixed(6)}`,
         `hue_add = ${settings.offset.hueAdd.toFixed(6)}`,
         "",
         "colors = [",
@@ -1092,7 +1143,7 @@ fn palette_lab_html() -> String {
       localStorage.setItem("ipscCurrentPaletteName", `${filenameBase()}.ipsmap`);
       status.className = "status ok";
       const ratio = srgbRequired === 0 ? "n/a" : (palette.colors.length / srgbRequired).toFixed(3);
-      const baseStatus = `fits\nOKLCH colors: ${palette.colors.length}\nreserved: ${reserved}\nsRGB colors: ${srgbRequired}\ncolour space compression ratio: ${ratio}\nimage: ${rendered.width}x${rendered.height}\nsRGB image: ${srgbRendered.width}x${srgbRendered.height}\nrounded sRGB image: ${roundedSrgbRendered.width}x${roundedSrgbRendered.height}\npriority L/C/H: ${settings.bias.lightness.toFixed(3)} / ${settings.bias.chroma.toFixed(3)} / ${settings.bias.hue.toFixed(3)}\noffset Vx/V+/Cx/C+/H+: ${settings.offset.lightnessMultiply.toFixed(3)} / ${settings.offset.lightnessAdd.toFixed(3)} / ${settings.offset.chromaMultiply.toFixed(3)} / ${settings.offset.chromaAdd.toFixed(3)} / ${settings.offset.hueAdd.toFixed(3)}`;
+      const baseStatus = `fits\nOKLCH colors: ${palette.colors.length}\nreserved: ${reserved}\nsRGB colors: ${srgbRequired}\ncolour space compression ratio: ${ratio}\nimage: ${rendered.width}x${rendered.height}\nsRGB image: ${srgbRendered.width}x${srgbRendered.height}\nrounded sRGB image: ${roundedSrgbRendered.width}x${roundedSrgbRendered.height}\npriority L/C/H: ${settings.bias.lightness.toFixed(3)} / ${settings.bias.chroma.toFixed(3)} / ${settings.bias.hue.toFixed(3)}\noffset Vx/V+/Cx/C+/G/H+: ${settings.offset.lightnessMultiply.toFixed(3)} / ${settings.offset.lightnessAdd.toFixed(3)} / ${settings.offset.chromaMultiply.toFixed(3)} / ${settings.offset.chromaAdd.toFixed(3)} / ${settings.offset.greyChromaThreshold.toFixed(3)} / ${settings.offset.hueAdd.toFixed(3)}`;
       status.textContent = `${baseStatus}\npreview only; press Generate to build files`;
       return { settings, palette, rendered, baseStatus };
     }
@@ -1114,30 +1165,45 @@ fn palette_lab_html() -> String {
     for (const input of biasInputs) {
       input.addEventListener("input", () => {
         normalizeBias(input);
-        revokeDownloads();
-        status.className = "status";
-        status.textContent = "settings changed; press Generate";
+        markSettingsChanged();
       });
     }
 
     for (const input of offsetInputs) {
       input.addEventListener("input", () => {
         updateOffsetLabels();
-        revokeDownloads();
-        status.className = "status";
-        status.textContent = "settings changed; press Generate";
+        markSettingsChanged();
       });
     }
 
-    previewButton.addEventListener("click", () => {
-      try {
-        previewOnly();
-      } catch (error) {
-        revokeDownloads();
-        status.className = "status bad";
-        status.textContent = error.toString();
-      }
-    });
+    for (const [rangeId, numberId, min, max] of sliderPairs) {
+      const range = document.getElementById(rangeId);
+      const number = document.getElementById(numberId);
+      const commitNumber = () => {
+        range.value = clampSliderValue(Number(number.value), min, max).toFixed(3);
+        if (biasInputs.includes(range)) {
+          normalizeBias(range);
+        } else {
+          updateOffsetLabels();
+        }
+        markSettingsChanged();
+      };
+      number.addEventListener("change", commitNumber);
+      number.addEventListener("keydown", event => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          commitNumber();
+          number.blur();
+        } else if (event.key === "Escape") {
+          if (biasInputs.includes(range)) {
+            updateBiasLabels();
+          } else {
+            updateOffsetLabels();
+          }
+          number.blur();
+        }
+      });
+    }
 
     bakeButton.addEventListener("click", async () => {
       if (!currentPaletteArtifact) return;
@@ -1172,9 +1238,11 @@ fn palette_lab_html() -> String {
 
     updateBiasLabels();
     updateOffsetLabels();
-    revokeDownloads();
-    status.className = "status";
-    status.textContent = "ready; press Generate";
+    generate().catch(error => {
+      revokeDownloads();
+      status.className = "status bad";
+      status.textContent = error.toString();
+    });
   </script>
 </body>
 </html>"##

@@ -43,6 +43,7 @@ pub(crate) struct PaletteBias {
     pub(crate) lightness_add: f32,
     pub(crate) chroma_multiply: f32,
     pub(crate) chroma_add: f32,
+    pub(crate) grey_chroma_threshold: f32,
     pub(crate) hue_add: f32,
 }
 
@@ -56,6 +57,7 @@ impl Default for PaletteBias {
             lightness_add: 0.0,
             chroma_multiply: 0.0,
             chroma_add: 0.0,
+            grey_chroma_threshold: 0.001,
             hue_add: 0.0,
         }
     }
@@ -89,6 +91,7 @@ impl From<PaletteMatching> for PaletteBias {
             lightness_add: matching.lightness_add,
             chroma_multiply: matching.chroma_multiply,
             chroma_add: matching.chroma_add,
+            grey_chroma_threshold: matching.grey_chroma_threshold,
             hue_add: matching.hue_add,
         }
     }
@@ -104,6 +107,7 @@ impl From<PaletteBias> for PaletteMatching {
             lightness_add: bias.lightness_add,
             chroma_multiply: bias.chroma_multiply,
             chroma_add: bias.chroma_add,
+            grey_chroma_threshold: bias.grey_chroma_threshold,
             hue_add: bias.hue_add,
         }
     }
@@ -778,6 +782,8 @@ impl IndexedPixelEncoder {
             && (bias.lightness_add - self.lookup_matching.lightness_add).abs() <= 0.000_5
             && (bias.chroma_multiply - self.lookup_matching.chroma_multiply).abs() <= 0.000_5
             && (bias.chroma_add - self.lookup_matching.chroma_add).abs() <= 0.000_5
+            && (bias.grey_chroma_threshold - self.lookup_matching.grey_chroma_threshold).abs()
+                <= 0.000_5
             && (bias.hue_add - self.lookup_matching.hue_add).abs() <= 0.000_5
     }
 
@@ -951,9 +957,15 @@ impl From<Oklab> for Oklch {
 #[cfg(any(test, feature = "cpu-palette-encoder"))]
 impl Oklch {
     fn with_input_offset(self, bias: PaletteBias) -> Self {
+        let chroma_offset_enabled = self.c > bias.grey_chroma_threshold.clamp(0.0, 1.0);
+        let adjusted_chroma = if chroma_offset_enabled {
+            (self.c * (1.0 + bias.chroma_multiply) + bias.chroma_add).max(0.0)
+        } else {
+            self.c
+        };
         let mut adjusted = Self {
             l: (self.l * (1.0 + bias.lightness_multiply) + bias.lightness_add).clamp(0.0, 1.0),
-            c: (self.c * (1.0 + bias.chroma_multiply) + bias.chroma_add).max(0.0),
+            c: adjusted_chroma,
             h: self.h + bias.hue_add * std::f32::consts::TAU,
         };
         if PaletteMatching::from(bias).has_input_offset() {

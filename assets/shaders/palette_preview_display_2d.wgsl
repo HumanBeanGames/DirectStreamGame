@@ -11,7 +11,10 @@ var palette_texture: texture_2d<f32>;
 
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
-    let index_value = textureSample(index_image, index_sampler, mesh.uv).r;
+    let index_size = textureDimensions(index_image);
+    let index_uv = clamp(mesh.uv, vec2<f32>(0.0), vec2<f32>(0.999999));
+    let index_coord = vec2<i32>(floor(index_uv * vec2<f32>(index_size)));
+    let index_value = textureLoad(index_image, index_coord, 0).r;
     let palette_width = textureDimensions(palette_texture).x;
     let palette_index = min(u32(round(clamp(index_value, 0.0, 1.0) * 255.0)), palette_width - 1u);
     return textureLoad(palette_texture, vec2<i32>(i32(palette_index), 0), 0);

@@ -800,16 +800,15 @@ Custom-host mode requires a self-contained `.ipsmap` palette lookup file. Pass
 current working directory. Missing, invalid, or stale lookup files fail startup
 immediately.
 
-`--palette-config=path/to/palette.toml` is accepted as a compatibility alias,
-but custom-host runtime still loads `path/to/palette.ipsmap`; it does not read
-the TOML file. Palette TOML remains the editable source format used by the
-palette tools and lab.
+The `.ipsmap` file is a direct sRGB-to-palette lookup table plus the binary
+palette colours needed to build stream headers. New maps use the `IPSMAP4`
+format. IPSMAP4 does not store palette TOML or matching/bias settings: those
+authoring controls are cooked into the 16,777,216 lookup entries when the map is
+baked. The file hash validates the embedded palette colours and cooked entries
+themselves.
 
-The `.ipsmap` file is a direct sRGB-to-palette lookup table plus an embedded
-copy of the palette TOML/config data needed to build stream headers and verify
-the map hash. New maps use the `IPSMAP2` format.
-
-Palette matching has two stages:
+Palette TOML remains the editable source format used by the palette tools and
+lab. Palette matching during baking has two stages:
 
 1. Convert the input sRGB colour to OKLCH, then apply the optional input
    biases from `[matching]`.
@@ -844,21 +843,20 @@ the reachable sRGB gamut by reducing chroma at the same lightness and hue. This
 keeps creative chroma boosts from asking the matcher to chase impossible dark,
 high-chroma colours.
 
-Old palettes without these offset fields still work; the missing values default
-to zero. If any offset is non-zero, rebake the sibling `.ipsmap`, because the
-lookup payload must contain the nearest palette result for the offset-adjusted
-input colour. Do not reuse an old `.ipsmap` after changing weights, offsets, or
-palette colours, or DirectStreamGame palette-matching versions.
+Old source TOML files without these offset fields still work in the tools; the
+missing values default to zero. The runtime no longer reads those settings from
+the `.ipsmap`, so always rebake after changing weights, offsets, palette
+colours, or DirectStreamGame palette-matching versions.
 
 Migration for existing apps:
 
-1. Update the `DirectStreamGame` dependency to a version that supports input
-   offsets and self-contained `IPSMAP2` lookup files.
+1. Update the `DirectStreamGame` dependency to a version that supports cooked
+   self-contained `IPSMAP4` lookup files.
 2. Keep a palette TOML in your downstream app or asset pipeline if useful, but
    ship `palette.ipsmap` as the runtime artifact.
 3. Regenerate `.ipsmap` with `ipsc_build_palette_lut` or the Palette Lab.
-4. Change app launch commands from `--palette-config=palette.toml` to
-   `--palette-lookup=palette.ipsmap`.
+4. Launch with `--palette-lookup=palette.ipsmap`, or leave the default
+   `palette.ipsmap` in the process working directory.
 5. Redeploy the static lab from `dist/ipsc_lab` if viewers or tools use the
    browser Palette Lab.
 

@@ -909,20 +909,12 @@
         paletteBytes[dst + 2] = color[2];
         paletteBytes[dst + 3] = color[3] ?? 255;
       }
-      const header = new Uint8Array(56);
-      header.set([0x49, 0x50, 0x53, 0x4d, 0x41, 0x50, 0x33, 0x00], 0);
-      writeU64(header, 8, paletteHash(artifact.colors, matching, offset));
+      const header = new Uint8Array(24);
+      header.set([0x49, 0x50, 0x53, 0x4d, 0x41, 0x50, 0x34, 0x00], 0);
+      writeU64(header, 8, lookupHash(artifact.colors, entries));
       writeU16(header, 16, artifact.colors.length);
       writeU16(header, 18, 0);
-      writeF32(header, 20, matching.lightness);
-      writeF32(header, 24, matching.chroma);
-      writeF32(header, 28, matching.hue);
-      writeF32(header, 32, offset.lightnessMultiply);
-      writeF32(header, 36, offset.lightnessAdd);
-      writeF32(header, 40, offset.chromaMultiply);
-      writeF32(header, 44, offset.chromaAdd);
-      writeF32(header, 48, offset.hueAdd);
-      writeU32(header, 52, entries.length);
+      writeU32(header, 20, entries.length);
       return new Blob([header, paletteBytes, entries], { type: "application/octet-stream" });
     }
 
@@ -940,7 +932,7 @@
       return bestIndex;
     }
 
-    function paletteHash(colors, matching, offset) {
+    function lookupHash(colors, entries) {
       let hash = 0xcbf29ce484222325n;
       const prime = 0x100000001b3n;
       const feed = byte => {
@@ -951,29 +943,8 @@
       for (const color of colors) {
         for (const byte of color) feed(byte);
       }
-      const bytes = new Uint8Array(4);
-      for (const value of [matching.lightness, matching.chroma, matching.hue]) {
-        new DataView(bytes.buffer).setFloat32(0, value, true);
-        for (const byte of bytes) feed(byte);
-      }
-      const hasOffset = [
-        offset.lightnessMultiply,
-        offset.lightnessAdd,
-        offset.chromaMultiply,
-        offset.chromaAdd,
-        offset.hueAdd,
-      ].some(value => Math.abs(value) > 0.000001);
-      if (hasOffset) {
-        for (const value of [
-          offset.lightnessMultiply,
-          offset.lightnessAdd,
-          offset.chromaMultiply,
-          offset.chromaAdd,
-          offset.hueAdd,
-        ]) {
-          new DataView(bytes.buffer).setFloat32(0, value, true);
-          for (const byte of bytes) feed(byte);
-        }
+      for (const byte of entries) {
+        feed(byte);
       }
       return hash;
     }
@@ -988,10 +959,6 @@
       bytes[offset + 1] = (value >> 8) & 0xff;
       bytes[offset + 2] = (value >> 16) & 0xff;
       bytes[offset + 3] = (value >> 24) & 0xff;
-    }
-
-    function writeF32(bytes, offset, value) {
-      new DataView(bytes.buffer).setFloat32(offset, value, true);
     }
 
     function writeU64(bytes, offset, value) {

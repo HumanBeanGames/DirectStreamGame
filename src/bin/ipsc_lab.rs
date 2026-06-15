@@ -1,6 +1,3 @@
-use direct_stream_game::palette_lut::{
-    build_lookup, encode_lookup_with_palette_toml, parse_palette_config,
-};
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -78,12 +75,6 @@ fn handle_request(mut stream: TcpStream) {
         "/" => serve_html(stream, &lab_shell_html()),
         "/palette" => serve_html(stream, &palette_html()),
         "/converter" => serve_html(stream, &converter_html()),
-        "/lut" => {
-            let body_end = header_end
-                .saturating_add(content_length)
-                .min(request_bytes.len());
-            serve_lut(stream, &request_bytes[header_end..body_end]);
-        }
         _ => serve_not_found(stream),
     }
 }
@@ -101,15 +92,6 @@ fn serve_text(mut stream: TcpStream, body: &str, content_type: &str) {
     let _ = stream.write_all(response.as_bytes());
 }
 
-fn serve_binary(mut stream: TcpStream, body: &[u8]) {
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    let _ = stream.write_all(response.as_bytes());
-    let _ = stream.write_all(body);
-}
-
 fn serve_not_found(mut stream: TcpStream) {
     let body = "not found";
     let response = format!(
@@ -118,43 +100,6 @@ fn serve_not_found(mut stream: TcpStream) {
         body
     );
     let _ = stream.write_all(response.as_bytes());
-}
-
-fn serve_bad_request(mut stream: TcpStream, message: &str) {
-    let response = format!(
-        "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        message.len(),
-        message
-    );
-    let _ = stream.write_all(response.as_bytes());
-}
-
-fn serve_lut(stream: TcpStream, body: &[u8]) {
-    let toml = match std::str::from_utf8(body) {
-        Ok(toml) => toml,
-        Err(err) => {
-            serve_bad_request(stream, &format!("palette TOML was not UTF-8: {err}"));
-            return;
-        }
-    };
-    let config = match parse_palette_config(toml) {
-        Ok(config) => config,
-        Err(err) => {
-            serve_bad_request(
-                stream,
-                &format!(
-                    "could not parse palette TOML: {err}; received {} bytes",
-                    body.len()
-                ),
-            );
-            return;
-        }
-    };
-    let entries = build_lookup(&config);
-    match encode_lookup_with_palette_toml(&config, toml, &entries) {
-        Ok(bytes) => serve_binary(stream, &bytes),
-        Err(err) => serve_bad_request(stream, &err),
-    }
 }
 
 fn lab_shell_html() -> String {

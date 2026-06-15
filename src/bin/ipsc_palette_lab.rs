@@ -1,6 +1,3 @@
-use direct_stream_game::palette_lut::{
-    build_lookup, encode_lookup_with_palette_toml, parse_palette_config,
-};
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -76,11 +73,6 @@ fn handle_request(mut stream: TcpStream) {
 
     if path == "/" {
         serve_page(stream);
-    } else if path == "/lut" {
-        let body_end = header_end
-            .saturating_add(content_length)
-            .min(request_bytes.len());
-        serve_lut(stream, &request_bytes[header_end..body_end]);
     } else {
         serve_not_found(stream);
     }
@@ -102,55 +94,6 @@ fn serve_not_found(mut stream: TcpStream) {
         "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
         body
-    );
-    let _ = stream.write_all(response.as_bytes());
-}
-
-fn serve_lut(mut stream: TcpStream, body: &[u8]) {
-    let toml = match std::str::from_utf8(body) {
-        Ok(toml) => toml,
-        Err(err) => {
-            serve_bad_request(stream, &format!("palette TOML was not UTF-8: {err}"));
-            return;
-        }
-    };
-
-    let config = match parse_palette_config(toml) {
-        Ok(config) => config,
-        Err(err) => {
-            serve_bad_request(
-                stream,
-                &format!(
-                    "could not parse palette TOML: {err}; received {} bytes",
-                    body.len()
-                ),
-            );
-            return;
-        }
-    };
-
-    let entries = build_lookup(&config);
-    let bytes = match encode_lookup_with_palette_toml(&config, toml, &entries) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            serve_bad_request(stream, &err);
-            return;
-        }
-    };
-
-    let response_header = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
-        bytes.len()
-    );
-    let _ = stream.write_all(response_header.as_bytes());
-    let _ = stream.write_all(&bytes);
-}
-
-fn serve_bad_request(mut stream: TcpStream, message: &str) {
-    let response = format!(
-        "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        message.len(),
-        message
     );
     let _ = stream.write_all(response.as_bytes());
 }
@@ -387,7 +330,6 @@ fn palette_lab_html() -> String {
         <button class="secondary" id="previewButton" type="button">Preview</button>
         <button class="primary" type="submit">Generate</button>
         <button class="secondary" id="bakeButton" type="button" disabled>Bake</button>
-        <a class="button" id="downloadToml" aria-disabled="true">palette.toml</a>
         <a class="button" id="downloadIpsi" aria-disabled="true">palette.ipsi</a>
         <a class="button" id="downloadMap" aria-disabled="true">palette.ipsmap</a>
       </div>
@@ -431,7 +373,6 @@ fn palette_lab_html() -> String {
     const bakeProgressText = document.getElementById("bakeProgressText");
     const previewButton = document.getElementById("previewButton");
     const bakeButton = document.getElementById("bakeButton");
-    const downloadToml = document.getElementById("downloadToml");
     const downloadIpsi = document.getElementById("downloadIpsi");
     const downloadMap = document.getElementById("downloadMap");
     const biasInputs = [
@@ -451,7 +392,6 @@ fn palette_lab_html() -> String {
     srgbCtx.imageSmoothingEnabled = false;
     roundedSrgbCtx.imageSmoothingEnabled = false;
 
-    let tomlUrl = null;
     let ipsiUrl = null;
     let mapUrl = null;
     let currentPaletteArtifact = null;
@@ -1003,17 +943,13 @@ fn palette_lab_html() -> String {
     }
 
     function revokeDownloads() {
-      if (tomlUrl) URL.revokeObjectURL(tomlUrl);
       if (ipsiUrl) URL.revokeObjectURL(ipsiUrl);
       if (mapUrl) URL.revokeObjectURL(mapUrl);
-      tomlUrl = null;
       ipsiUrl = null;
       mapUrl = null;
       currentPaletteArtifact = null;
-      downloadToml.removeAttribute("href");
       downloadIpsi.removeAttribute("href");
       downloadMap.removeAttribute("href");
-      downloadToml.setAttribute("aria-disabled", "true");
       downloadIpsi.setAttribute("aria-disabled", "true");
       downloadMap.setAttribute("aria-disabled", "true");
       bakeButton.disabled = true;
@@ -1042,13 +978,6 @@ fn palette_lab_html() -> String {
       return url;
     }
 
-    function makeTextBlob(text, label) {
-      if (typeof text !== "string" || text.length === 0 || text === "null") {
-        throw new Error(`${label} export was not valid text`);
-      }
-      return new Blob([text], { type: "text/plain;charset=utf-8" });
-    }
-
     async function bakeMapBlob(artifact) {
       const entries = new Uint8Array(256 * 256 * 256);
       const paletteOklch = artifact.colors.map(color => oklabToOklch(rgbToOklab(color[0], color[1], color[2])));
@@ -1072,13 +1001,30 @@ fn palette_lab_html() -> String {
       }
       setBakeProgress(100);
 
-      const tomlBytes = new TextEncoder().encode(artifact.tomlText);
-      const header = new Uint8Array(24);
-      header.set([0x49, 0x50, 0x53, 0x4d, 0x41, 0x50, 0x32, 0x00], 0);
+      const paletteBytes = new Uint8Array(artifact.colors.length * 4);
+      for (let i = 0; i < artifact.colors.length; i++) {
+        const color = artifact.colors[i];
+        const dst = i * 4;
+        paletteBytes[dst] = color[0];
+        paletteBytes[dst + 1] = color[1];
+        paletteBytes[dst + 2] = color[2];
+        paletteBytes[dst + 3] = color[3] ?? 255;
+      }
+      const header = new Uint8Array(56);
+      header.set([0x49, 0x50, 0x53, 0x4d, 0x41, 0x50, 0x33, 0x00], 0);
       writeU64(header, 8, paletteHash(artifact.colors, matching, offset));
-      writeU32(header, 16, tomlBytes.length);
-      writeU32(header, 20, entries.length);
-      return new Blob([header, tomlBytes, entries], { type: "application/octet-stream" });
+      writeU16(header, 16, artifact.colors.length);
+      writeU16(header, 18, 0);
+      writeF32(header, 20, matching.lightness);
+      writeF32(header, 24, matching.chroma);
+      writeF32(header, 28, matching.hue);
+      writeF32(header, 32, offset.lightnessMultiply);
+      writeF32(header, 36, offset.lightnessAdd);
+      writeF32(header, 40, offset.chromaMultiply);
+      writeF32(header, 44, offset.chromaAdd);
+      writeF32(header, 48, offset.hueAdd);
+      writeU32(header, 52, entries.length);
+      return new Blob([header, paletteBytes, entries], { type: "application/octet-stream" });
     }
 
     function nearestPaletteIndexForMap(oklab, paletteOklch, matching, offset) {
@@ -1102,6 +1048,7 @@ fn palette_lab_html() -> String {
         hash ^= BigInt(byte);
         hash = BigInt.asUintN(64, hash * prime);
       };
+      for (const byte of new TextEncoder().encode("oklch-gamut-clamped-v1")) feed(byte);
       for (const color of colors) {
         for (const byte of color) feed(byte);
       }
@@ -1132,11 +1079,20 @@ fn palette_lab_html() -> String {
       return hash;
     }
 
+    function writeU16(bytes, offset, value) {
+      bytes[offset] = value & 0xff;
+      bytes[offset + 1] = (value >> 8) & 0xff;
+    }
+
     function writeU32(bytes, offset, value) {
       bytes[offset] = value & 0xff;
       bytes[offset + 1] = (value >> 8) & 0xff;
       bytes[offset + 2] = (value >> 16) & 0xff;
       bytes[offset + 3] = (value >> 24) & 0xff;
+    }
+
+    function writeF32(bytes, offset, value) {
+      new DataView(bytes.buffer).setFloat32(offset, value, true);
     }
 
     function writeU64(bytes, offset, value) {
@@ -1165,9 +1121,8 @@ fn palette_lab_html() -> String {
       const srgbRendered = drawSrgbComparison(settings);
       const roundedSrgbRendered = drawRoundedSrgbComparison(srgbRendered, palette, settings.bias, settings.offset);
       const reserved = 256 - palette.colors.length;
-      const tomlText = makeTomlText(settings, palette.colors);
-      localStorage.setItem("ipscCurrentPaletteToml", tomlText);
-      localStorage.setItem("ipscCurrentPaletteName", `${filenameBase()}.toml`);
+      localStorage.removeItem("ipscCurrentPaletteToml");
+      localStorage.setItem("ipscCurrentPaletteName", `${filenameBase()}.ipsmap`);
       status.className = "status ok";
       const ratio = srgbRequired === 0 ? "n/a" : (palette.colors.length / srgbRequired).toFixed(3);
       const baseStatus = `fits\nOKLCH colors: ${palette.colors.length}\nreserved: ${reserved}\nsRGB colors: ${srgbRequired}\ncolour space compression ratio: ${ratio}\nimage: ${rendered.width}x${rendered.height}\nsRGB image: ${srgbRendered.width}x${srgbRendered.height}\nrounded sRGB image: ${roundedSrgbRendered.width}x${roundedSrgbRendered.height}\npriority L/C/H: ${settings.bias.lightness.toFixed(3)} / ${settings.bias.chroma.toFixed(3)} / ${settings.bias.hue.toFixed(3)}\noffset Vx/V+/Cx/C+/H+: ${settings.offset.lightnessMultiply.toFixed(3)} / ${settings.offset.lightnessAdd.toFixed(3)} / ${settings.offset.chromaMultiply.toFixed(3)} / ${settings.offset.chromaAdd.toFixed(3)} / ${settings.offset.hueAdd.toFixed(3)}`;
@@ -1182,11 +1137,9 @@ fn palette_lab_html() -> String {
       }
 
       const { settings, palette, rendered, baseStatus } = preview;
-      const tomlText = makeTomlText(settings, palette.colors);
       const base = filenameBase();
-      tomlUrl = setDownload(downloadToml, makeTextBlob(tomlText, "TOML"), `${base}.toml`);
       ipsiUrl = setDownload(downloadIpsi, makeIpsi(rendered.width, rendered.height, palette.colors, rendered.pixels), `${base}.ipsi`);
-      currentPaletteArtifact = { base, settings, colors: palette.colors.filter(isColor), tomlText, baseStatus };
+      currentPaletteArtifact = { base, settings, colors: palette.colors.filter(isColor), baseStatus };
       bakeButton.disabled = false;
       status.textContent = `${baseStatus}\nfiles ready; press Bake for ${base}.ipsmap`;
     }

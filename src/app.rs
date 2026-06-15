@@ -3,7 +3,7 @@ use crate::{
     audio::{CustomAudioPacketHub, DirectStreamAudioTarget, start_custom_audio_packet_pump},
     chat::{CustomHostViewerNameRefresh, LocalChatHub},
     config::{AppConfig, WindowMode, effective_custom_batch_size},
-    constants::{PREVIEW_DISPLAY_SCALE, STATS_WINDOW_HEIGHT, STATS_WINDOW_WIDTH, WINDOW_TITLE},
+    constants::{STATS_WINDOW_HEIGHT, STATS_WINDOW_WIDTH, WINDOW_TITLE, preview_display_scale},
     custom_host::{
         CustomHostBranding, CustomHostChatPanelHub, CustomHostLayout, CustomHostOverlayHub,
         CustomHostPanelActionHub, CustomHostPanelHub, StreamPointerClickHub,
@@ -67,10 +67,13 @@ pub fn direct_stream_app() -> App {
     );
     let window_layout = DirectStreamWindowLayout::default();
     let base_window_resolution = match config.window_mode {
-        WindowMode::Preview => (
-            (config.stream_width as f32 * 2.0 * PREVIEW_DISPLAY_SCALE).round() as u32,
-            (config.stream_height as f32 * PREVIEW_DISPLAY_SCALE).round() as u32,
-        ),
+        WindowMode::Preview => {
+            let scale = preview_display_scale(config.stream_width, config.stream_height);
+            (
+                (config.stream_width as f32 * 2.0 * scale).round() as u32,
+                (config.stream_height as f32 * scale).round() as u32,
+            )
+        }
         WindowMode::Stats => (STATS_WINDOW_WIDTH, STATS_WINDOW_HEIGHT),
     };
     let window_resolution = (

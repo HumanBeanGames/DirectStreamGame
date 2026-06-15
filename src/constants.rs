@@ -10,9 +10,9 @@ pub(crate) const CUSTOM_PANEL_ACTION_PATH: &str = "/custom-panel-action";
 pub(crate) const CUSTOM_OVERLAYS_PATH: &str = "/custom-overlays";
 pub(crate) const STREAM_CLICK_PATH: &str = "/stream-click";
 pub(crate) const STREAM_STATUS_PATH: &str = "/status.json";
-pub(crate) const STREAM_WIDTH: u32 = 320;
-pub(crate) const STREAM_HEIGHT: u32 = 240;
-pub(crate) const PREVIEW_DISPLAY_SCALE: f32 = 6.0;
+pub(crate) const STREAM_WIDTH: u32 = 256;
+pub(crate) const STREAM_HEIGHT: u32 = 256;
+pub(crate) const PREVIEW_DISPLAY_PIXELS: f32 = 768.0;
 pub(crate) const STATS_WINDOW_WIDTH: u32 = 560;
 pub(crate) const STATS_WINDOW_HEIGHT: u32 = 680;
 pub(crate) const STREAM_FPS: u32 = 5;
@@ -32,3 +32,7 @@ pub const DIRECT_STREAM_HEIGHT: u32 = STREAM_HEIGHT;
 pub const DIRECT_STREAM_FPS: u32 = STREAM_FPS;
 pub const DIRECT_STREAM_AUDIO_SAMPLE_RATE: u32 = STREAM_AUDIO_SAMPLE_RATE;
 pub const DIRECT_STREAM_AUDIO_CHANNELS: usize = STREAM_AUDIO_CHANNELS;
+
+pub(crate) fn preview_display_scale(width: u32, height: u32) -> f32 {
+    PREVIEW_DISPLAY_PIXELS / width.max(height).max(1) as f32
+}

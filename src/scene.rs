@@ -1,6 +1,6 @@
 use crate::{
     config::{AppConfig, WindowMode, effective_custom_batch_size},
-    constants::{PREVIEW_DISPLAY_SCALE, STREAM_FPS, STREAM_HEIGHT, STREAM_WIDTH, WEB_ADDR},
+    constants::{STREAM_FPS, STREAM_HEIGHT, STREAM_WIDTH, WEB_ADDR, preview_display_scale},
     gpu_palette::{
         GPU_PREVIEW_DISPLAY_LAYER, GPU_PREVIEW_RAW_CAPTURE_LAYER, PaletteMaterial,
         PalettePreviewDisplayMaterial, PreviewPaletteThrottle, PreviewRawDisplay,
@@ -218,6 +218,7 @@ fn spawn_preview_comparison(
     ));
 
     let x_offset = width as f32 * 0.5;
+    let display_scale = preview_display_scale(width, height);
     let reserved_panel_offset = window_layout.right_panel_width * 0.5;
     commands.spawn((
         Sprite {
@@ -225,12 +226,8 @@ fn spawn_preview_comparison(
             custom_size: Some(Vec2::new(width as f32, height as f32)),
             ..default()
         },
-        Transform::from_xyz(
-            -x_offset * PREVIEW_DISPLAY_SCALE - reserved_panel_offset,
-            0.0,
-            0.0,
-        )
-        .with_scale(Vec3::splat(PREVIEW_DISPLAY_SCALE)),
+        Transform::from_xyz(-x_offset * display_scale - reserved_panel_offset, 0.0, 0.0)
+            .with_scale(Vec3::splat(display_scale)),
         RenderLayers::layer(GPU_PREVIEW_DISPLAY_LAYER),
         PreviewRawDisplay,
     ));
@@ -242,16 +239,13 @@ fn spawn_preview_comparison(
     commands.spawn((
         Mesh2d(meshes.add(Rectangle::default())),
         MeshMaterial2d(display_material.clone()),
-        Transform::from_xyz(
-            x_offset * PREVIEW_DISPLAY_SCALE - reserved_panel_offset,
-            0.0,
-            0.0,
-        )
-        .with_scale(Vec3::new(
-            width as f32 * PREVIEW_DISPLAY_SCALE,
-            height as f32 * PREVIEW_DISPLAY_SCALE,
-            1.0,
-        )),
+        Transform::from_xyz(x_offset * display_scale - reserved_panel_offset, 0.0, 0.0).with_scale(
+            Vec3::new(
+                width as f32 * display_scale,
+                height as f32 * display_scale,
+                1.0,
+            ),
+        ),
         RenderLayers::layer(GPU_PREVIEW_DISPLAY_LAYER),
     ));
     (display_material, raw_camera, raw_output_images)

@@ -63,6 +63,7 @@ pub(crate) struct PreviewPixelDebugText;
 
 #[derive(Component)]
 struct PreviewPixelDebugReadback {
+    pair_id: u64,
     source: PreviewPixelSource,
     x: u32,
     y: u32,
@@ -85,6 +86,33 @@ pub(crate) struct PreviewPixelDebugState {
     quantized_center: Vec2,
     display_size: Vec2,
     output: String,
+    next_pair_id: u64,
+    pending_pairs: HashMap<u64, PreviewPixelDebugPair>,
+}
+
+#[derive(Default)]
+struct PreviewPixelDebugPair {
+    raw: Option<RawPixelDebug>,
+    quantized: Option<QuantizedPixelDebug>,
+}
+
+struct RawPixelDebug {
+    x: u32,
+    y: u32,
+    b: u8,
+    g: u8,
+    r: u8,
+    a: u8,
+    lookup_key: usize,
+    expected_index: Option<u8>,
+    expected_color: [u8; 4],
+}
+
+struct QuantizedPixelDebug {
+    x: u32,
+    y: u32,
+    palette_index: u8,
+    color: [u8; 4],
 }
 
 pub(crate) fn setup_direct_stream_scene(
@@ -305,7 +333,11 @@ fn spawn_preview_comparison(
             raw_center,
             quantized_center,
             display_size,
-            output: "Pixel debug: click raw preview or quantized preview".to_owned(),
+            output:
+                "Pixel debug: click either preview to compare the paired raw and quantized pixels"
+                    .to_owned(),
+            next_pair_id: 0,
+            pending_pairs: HashMap::default(),
         },
     )
 }
@@ -323,7 +355,9 @@ fn spawn_preview_pixel_debug_ui(commands: &mut Commands) {
         BackgroundColor(Color::srgba(0.02, 0.025, 0.035, 0.86)),
         BorderColor::all(Color::srgb(0.22, 0.30, 0.42)),
         children![(
-            Text::new("Pixel debug: click raw preview or quantized preview"),
+            Text::new(
+                "Pixel debug: click either preview to compare the paired raw and quantized pixels"
+            ),
             TextFont {
                 font_size: 11.0,
                 ..default()
@@ -350,13 +384,13 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<PreviewDisplayCamera>>,
-    debug_state: Option<Res<PreviewPixelDebugState>>,
+    debug_state: Option<ResMut<PreviewPixelDebugState>>,
     mut commands: Commands,
 ) {
     if config.window_mode != WindowMode::Preview || !buttons.just_pressed(MouseButton::Left) {
         return;
     }
-    let Some(debug_state) = debug_state else {
+    let Some(mut debug_state) = debug_state else {
         return;
     };
     let Ok(window) = windows.single() else {
@@ -372,7 +406,7 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
         return;
     };
 
-    let Some((source, x, y)) = preview_sample_from_world(
+    let Some((_source, x, y)) = preview_sample_from_world(
         world_position,
         &debug_state,
         config.stream_width,
@@ -380,20 +414,26 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
     ) else {
         return;
     };
-    let image = match source {
-        PreviewPixelSource::Raw => debug_state.raw_image.clone(),
-        PreviewPixelSource::Quantized => debug_state.quantized_image.clone(),
-    };
+    let pair_id = debug_state.next_pair_id;
+    debug_state.next_pair_id = debug_state.next_pair_id.wrapping_add(1);
+    let raw_image = debug_state.raw_image.clone();
+    let quantized_image = debug_state.quantized_image.clone();
 
-    commands
-        .spawn(PreviewPixelDebugReadback {
-            source,
-            x,
-            y,
-            width: config.stream_width,
-        })
-        .observe(handle_preview_pixel_debug_readback)
-        .insert(Readback::texture(image));
+    for (source, image) in [
+        (PreviewPixelSource::Raw, raw_image),
+        (PreviewPixelSource::Quantized, quantized_image),
+    ] {
+        commands
+            .spawn(PreviewPixelDebugReadback {
+                pair_id,
+                source,
+                x,
+                y,
+                width: config.stream_width,
+            })
+            .observe(handle_preview_pixel_debug_readback)
+            .insert(Readback::texture(image));
+    }
 }
 
 fn preview_sample_from_world(
@@ -464,39 +504,54 @@ fn handle_preview_pixel_debug_readback(
         return;
     };
 
-    let text = match readback.source {
-        PreviewPixelSource::Raw => preview_raw_pixel_text(
-            readback,
-            &event.data,
-            &debug_state.lookup_entries,
-            &debug_state.palette_colors,
-        ),
-        PreviewPixelSource::Quantized => {
-            preview_quantized_pixel_text(readback, &event.data, &debug_state.palette_colors)
+    let pair = debug_state
+        .pending_pairs
+        .entry(readback.pair_id)
+        .or_default();
+    match readback.source {
+        PreviewPixelSource::Raw => {
+            pair.raw = Some(preview_raw_pixel_debug(
+                readback,
+                &event.data,
+                &debug_state.lookup_entries,
+                &debug_state.palette_colors,
+            ));
         }
-    };
-    debug_state.output = text;
+        PreviewPixelSource::Quantized => {
+            pair.quantized = Some(preview_quantized_pixel_debug(
+                readback,
+                &event.data,
+                &debug_state.palette_colors,
+            ));
+        }
+    }
+    if let Some(pair) = debug_state.pending_pairs.remove(&readback.pair_id) {
+        match (pair.raw, pair.quantized) {
+            (Some(raw), Some(quantized)) => {
+                debug_state.output = preview_pixel_pair_text(&raw, &quantized);
+            }
+            (raw, quantized) => {
+                debug_state
+                    .pending_pairs
+                    .insert(readback.pair_id, PreviewPixelDebugPair { raw, quantized });
+            }
+        }
+    }
     commands.entity(event.entity).despawn();
 }
 
-fn preview_raw_pixel_text(
+fn preview_raw_pixel_debug(
     readback: &PreviewPixelDebugReadback,
     data: &[u8],
     lookup_entries: &[u8],
     palette_colors: &[[u8; 4]],
-) -> String {
+) -> RawPixelDebug {
     let row_bytes = readback.width as usize * 4;
     let aligned_row_bytes =
         bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(row_bytes);
     let offset = readback.y as usize * aligned_row_bytes + readback.x as usize * 4;
     if offset + 3 >= data.len() {
-        return format!(
-            "raw ({}, {})\nreadback out of range: offset {} / len {}",
-            readback.x,
-            readback.y,
-            offset,
-            data.len()
-        );
+        return RawPixelDebug::out_of_range(readback.x, readback.y);
     }
     let b = data[offset];
     let g = data[offset + 1];
@@ -507,54 +562,99 @@ fn preview_raw_pixel_text(
     let expected_color = expected_index
         .and_then(|index| palette_colors.get(index as usize).copied())
         .unwrap_or([0, 0, 0, 255]);
-    format!(
-        "raw preview ({}, {})\nBGRA bytes: {}, {}, {}, {}\ninterpreted RGB: #{:02X}{:02X}{:02X}\nlookup RGB key: {}\nexpected index: {}\nexpected RGBA: #{:02X}{:02X}{:02X}{:02X}",
-        readback.x,
-        readback.y,
+    RawPixelDebug {
+        x: readback.x,
+        y: readback.y,
         b,
         g,
         r,
         a,
-        r,
-        g,
-        b,
         lookup_key,
-        expected_index
-            .map(|index| index.to_string())
-            .unwrap_or_else(|| "out of range".to_owned()),
-        expected_color[0],
-        expected_color[1],
-        expected_color[2],
-        expected_color[3],
-    )
+        expected_index,
+        expected_color,
+    }
 }
 
-fn preview_quantized_pixel_text(
+impl RawPixelDebug {
+    fn out_of_range(x: u32, y: u32) -> Self {
+        Self {
+            x,
+            y,
+            b: 0,
+            g: 0,
+            r: 0,
+            a: 0,
+            lookup_key: 0,
+            expected_index: None,
+            expected_color: [0, 0, 0, 255],
+        }
+    }
+}
+
+fn preview_quantized_pixel_debug(
     readback: &PreviewPixelDebugReadback,
     data: &[u8],
     palette_colors: &[[u8; 4]],
-) -> String {
+) -> QuantizedPixelDebug {
     let row_bytes = readback.width as usize;
     let aligned_row_bytes =
         bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(row_bytes);
     let offset = readback.y as usize * aligned_row_bytes + readback.x as usize;
     if offset >= data.len() {
-        return format!(
-            "quantized ({}, {})\nreadback out of range: offset {} / len {}",
-            readback.x,
-            readback.y,
-            offset,
-            data.len()
-        );
+        return QuantizedPixelDebug {
+            x: readback.x,
+            y: readback.y,
+            palette_index: 0,
+            color: [0, 0, 0, 255],
+        };
     }
     let palette_index = data[offset];
     let color = palette_colors
         .get(palette_index as usize)
         .copied()
         .unwrap_or([0, 0, 0, 255]);
+    QuantizedPixelDebug {
+        x: readback.x,
+        y: readback.y,
+        palette_index,
+        color,
+    }
+}
+
+fn preview_pixel_pair_text(raw: &RawPixelDebug, quantized: &QuantizedPixelDebug) -> String {
+    let expected_index = raw
+        .expected_index
+        .map(|index| index.to_string())
+        .unwrap_or_else(|| "out of range".to_owned());
+    let match_text = if raw.expected_index == Some(quantized.palette_index) {
+        "MATCH"
+    } else {
+        "MISMATCH"
+    };
     format!(
-        "quantized preview ({}, {})\npalette index: {}\npalette RGBA: #{:02X}{:02X}{:02X}{:02X}",
-        readback.x, readback.y, palette_index, color[0], color[1], color[2], color[3]
+        "paired preview ({}, {}) -> ({}, {}) [{match_text}]\nraw BGRA: {}, {}, {}, {}\nraw RGB: #{:02X}{:02X}{:02X}\nlookup RGB key: {}\nexpected index: {}\nexpected RGBA: #{:02X}{:02X}{:02X}{:02X}\nactual index: {}\nactual RGBA: #{:02X}{:02X}{:02X}{:02X}",
+        raw.x,
+        raw.y,
+        quantized.x,
+        quantized.y,
+        raw.b,
+        raw.g,
+        raw.r,
+        raw.a,
+        raw.r,
+        raw.g,
+        raw.b,
+        raw.lookup_key,
+        expected_index,
+        raw.expected_color[0],
+        raw.expected_color[1],
+        raw.expected_color[2],
+        raw.expected_color[3],
+        quantized.palette_index,
+        quantized.color[0],
+        quantized.color[1],
+        quantized.color[2],
+        quantized.color[3],
     )
 }
 

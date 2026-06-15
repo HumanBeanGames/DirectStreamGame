@@ -25,6 +25,7 @@ use std::{
 
 pub(crate) const GPU_PALETTE_LAYER: usize = 1;
 pub(crate) const GPU_DIRECT_TEXT_LAYER: usize = 2;
+pub(crate) const GPU_PREVIEW_DISPLAY_LAYER: usize = 3;
 const PALETTE_SHADER_HANDLE: Handle<Shader> = uuid_handle!("b69538c2-4fa1-4a12-89a5-32986e423f4d");
 const PALETTE_PREVIEW_DISPLAY_SHADER_HANDLE: Handle<Shader> =
     uuid_handle!("8ac093df-eddb-44f3-96c7-435d6c7e00a9");

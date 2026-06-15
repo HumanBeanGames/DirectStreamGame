@@ -2,8 +2,8 @@ use crate::{
     config::{AppConfig, WindowMode, effective_custom_batch_size},
     constants::{PREVIEW_DISPLAY_SCALE, STREAM_FPS, STREAM_HEIGHT, STREAM_WIDTH, WEB_ADDR},
     gpu_palette::{
-        PaletteMaterial, PalettePreviewDisplayMaterial, PreviewPaletteThrottle,
-        make_stream_source_image, spawn_custom_host_pipeline,
+        GPU_PREVIEW_DISPLAY_LAYER, PaletteMaterial, PalettePreviewDisplayMaterial,
+        PreviewPaletteThrottle, make_stream_source_image, spawn_custom_host_pipeline,
     },
     palette::load_palette_lookup_runtime,
     public_types::DirectStreamTarget,
@@ -77,10 +77,14 @@ pub(crate) fn setup_direct_stream_scene(
         ))
         .id();
 
-    commands.spawn(Camera2d);
     match config.window_mode {
-        WindowMode::Preview => {}
-        WindowMode::Stats => spawn_stats_window(&mut commands, config.custom_host),
+        WindowMode::Preview => {
+            commands.spawn((Camera2d, RenderLayers::layer(GPU_PREVIEW_DISPLAY_LAYER)));
+        }
+        WindowMode::Stats => {
+            commands.spawn(Camera2d);
+            spawn_stats_window(&mut commands, config.custom_host);
+        }
     }
 
     let mut target = DirectStreamTarget {
@@ -178,6 +182,7 @@ fn spawn_preview_comparison(
         },
         Transform::from_xyz(-x_offset * PREVIEW_DISPLAY_SCALE, 0.0, 0.0)
             .with_scale(Vec3::splat(PREVIEW_DISPLAY_SCALE)),
+        RenderLayers::layer(GPU_PREVIEW_DISPLAY_LAYER),
     ));
 
     let display_material = preview_display_materials.add(PalettePreviewDisplayMaterial {
@@ -192,6 +197,7 @@ fn spawn_preview_comparison(
             height as f32 * PREVIEW_DISPLAY_SCALE,
             1.0,
         )),
+        RenderLayers::layer(GPU_PREVIEW_DISPLAY_LAYER),
     ));
     display_material
 }

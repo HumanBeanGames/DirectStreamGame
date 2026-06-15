@@ -1,7 +1,5 @@
-#[cfg(any(test, feature = "cpu-palette-encoder"))]
-use crate::frames::RawFrame;
 use crate::{
-    frames::IndexedFrame,
+    frames::RawFrame,
     palette_lut::{PaletteLookup, PaletteMatching, load_lookup_bundle},
     stats::SharedStats,
     stream_control::CustomStreamState,
@@ -384,7 +382,7 @@ fn prune_encoded_palette_history(history: &mut VecDeque<EncodedPaletteBatchEntry
 }
 
 pub(crate) fn start_palette_preview_encoder(
-    receiver: Receiver<IndexedFrame>,
+    receiver: Receiver<RawFrame>,
     frame_hub: PaletteFrameHub,
     stats: SharedStats,
     palette_bias: SharedPaletteBias,
@@ -400,7 +398,8 @@ pub(crate) fn start_palette_preview_encoder(
     palette_bias.set(palette_matching);
 
     thread::spawn(move || {
-        let mut publisher = IndexedFramePublisher::new(palette_colors);
+        let mut publisher =
+            IndexedPixelEncoder::new(palette_colors, palette_matching, Some(palette_lookup));
         let mut pending_batch = Vec::with_capacity(batch_size.max(1));
         let mut previous_framebuffer = None;
         let mut sequence = 0u64;
@@ -428,7 +427,7 @@ pub(crate) fn start_palette_preview_encoder(
             let pipeline_started = Instant::now();
             stats.with_mut(|stats| stats.frames_read += 1);
             let encode_started = Instant::now();
-            match publisher.publishable_frame(raw_frame) {
+            match publisher.encode(&raw_frame, palette_bias.get()) {
                 Ok(encoded) => {
                     let encode_ms = encode_started.elapsed().as_secs_f64() * 1000.0;
                     let stream_header = encoded.stream_header.clone();
@@ -518,7 +517,6 @@ pub(crate) fn start_palette_preview_encoder(
     });
 }
 
-#[cfg(any(test, feature = "cpu-palette-encoder"))]
 struct IndexedPixelEncoder {
     palette: Vec<[u8; 4]>,
     palette_oklab: Vec<Oklab>,
@@ -539,14 +537,6 @@ struct EncodedFrame {
     frame_index: u32,
 }
 
-struct IndexedFramePublisher {
-    palette: Vec<[u8; 4]>,
-    frame_index: u32,
-    header: Option<Vec<u8>>,
-    header_width: u32,
-    header_height: u32,
-}
-
 #[derive(Clone, Copy, Default)]
 pub(crate) struct TileModeCounts {
     pub(crate) raw: u64,
@@ -564,79 +554,6 @@ struct TileCache {
     lookup: HashMap<[u8; 64], u16>,
 }
 
-impl IndexedFramePublisher {
-    fn new(palette: Vec<[u8; 4]>) -> Self {
-        Self {
-            palette,
-            frame_index: 0,
-            header: None,
-            header_width: 0,
-            header_height: 0,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.frame_index = 0;
-        self.header = None;
-        self.header_width = 0;
-        self.header_height = 0;
-    }
-
-    fn publishable_frame(&mut self, indexed: IndexedFrame) -> Result<EncodedFrame, String> {
-        let pixel_count = indexed.width as usize * indexed.height as usize;
-        if indexed.indices.len() < pixel_count {
-            return Err("indexed frame is shorter than expected".to_owned());
-        }
-
-        if indexed.width != indexed.height
-            || indexed.width == 0
-            || indexed.width > u8::MAX as u32 + 1
-            || indexed.width as usize % TILE_SIZE != 0
-            || indexed.height as usize % TILE_SIZE != 0
-        {
-            return Err(
-                "IPSC frames must be square, 8-aligned, and no larger than 256x256".to_owned(),
-            );
-        }
-
-        if self.palette.is_empty() || self.palette.len() > 256 {
-            return Err("IPSC palette must contain 1-256 colors".to_owned());
-        }
-
-        if self.header_width != indexed.width || self.header_height != indexed.height {
-            self.frame_index = 0;
-            self.header = Some(stream_header(
-                indexed.width as u16,
-                indexed.height as u16,
-                &self.palette,
-            ));
-            self.header_width = indexed.width;
-            self.header_height = indexed.height;
-        }
-
-        let current = Framebuffer {
-            pixels: indexed.indices,
-            width: indexed.width as usize,
-            height: indexed.height as usize,
-        };
-        let is_keyframe = self.frame_index % KEYFRAME_INTERVAL == 0;
-        let frame_index = self.frame_index;
-        self.frame_index = self.frame_index.wrapping_add(1);
-
-        Ok(EncodedFrame {
-            stream_header: self
-                .header
-                .as_ref()
-                .expect("header initialized for current resolution")
-                .clone(),
-            framebuffer: current,
-            is_keyframe,
-            frame_index,
-        })
-    }
-}
-
-#[cfg(any(test, feature = "cpu-palette-encoder"))]
 #[allow(dead_code)]
 impl IndexedPixelEncoder {
     fn new(
@@ -668,23 +585,17 @@ impl IndexedPixelEncoder {
         }
     }
 
+    fn reset(&mut self) {
+        self.previous = None;
+        self.frame_index = 0;
+        self.header = None;
+        self.header_width = 0;
+        self.header_height = 0;
+    }
+
     fn encode(&mut self, raw: &RawFrame, bias: PaletteBias) -> Result<EncodedFrame, String> {
         let current = self.quantize(raw, bias)?;
         self.encode_framebuffer(raw.width, raw.height, current)
-    }
-
-    fn encode_indexed(&mut self, indexed: IndexedFrame) -> Result<EncodedFrame, String> {
-        let pixel_count = indexed.width as usize * indexed.height as usize;
-        if indexed.indices.len() < pixel_count {
-            return Err("indexed frame is shorter than expected".to_owned());
-        }
-
-        let current = Framebuffer {
-            pixels: indexed.indices,
-            width: indexed.width as usize,
-            height: indexed.height as usize,
-        };
-        self.encode_framebuffer(indexed.width, indexed.height, current)
     }
 
     fn encode_framebuffer(
@@ -925,7 +836,6 @@ fn greyscale_color(lightness: f32) -> [u8; 4] {
     }
 }
 
-#[cfg(any(test, feature = "cpu-palette-encoder"))]
 #[derive(Clone, Copy)]
 struct Oklab {
     l: f32,
@@ -933,7 +843,6 @@ struct Oklab {
     b: f32,
 }
 
-#[cfg(any(test, feature = "cpu-palette-encoder"))]
 #[derive(Clone, Copy)]
 struct Oklch {
     l: f32,
@@ -941,7 +850,6 @@ struct Oklch {
     h: f32,
 }
 
-#[cfg(any(test, feature = "cpu-palette-encoder"))]
 impl From<Oklab> for Oklch {
     fn from(color: Oklab) -> Self {
         let c = color.a.hypot(color.b);
@@ -954,7 +862,6 @@ impl From<Oklab> for Oklch {
     }
 }
 
-#[cfg(any(test, feature = "cpu-palette-encoder"))]
 impl Oklch {
     fn with_input_offset(self, bias: PaletteBias) -> Self {
         let chroma_offset_enabled = self.c > bias.grey_chroma_threshold.clamp(0.0, 1.0);
@@ -982,7 +889,6 @@ impl Oklch {
     }
 }
 
-#[cfg(any(test, feature = "cpu-palette-encoder"))]
 fn clamp_chroma_to_srgb_gamut(color: Oklch) -> f32 {
     if color.c <= 0.0 || !color.l.is_finite() || !color.c.is_finite() || !color.h.is_finite() {
         return 0.0;
@@ -1006,13 +912,11 @@ fn clamp_chroma_to_srgb_gamut(color: Oklch) -> f32 {
     low
 }
 
-#[cfg(any(test, feature = "cpu-palette-encoder"))]
 fn oklch_in_srgb_gamut(color: Oklch) -> bool {
     let (r, g, b) = oklch_to_linear_srgb_radians(color.l, color.c, color.h);
     in_srgb_gamut(r, g, b)
 }
 
-#[cfg(any(test, feature = "cpu-palette-encoder"))]
 fn hue_delta(a: f32, b: f32) -> f32 {
     let delta = (a - b).abs() % std::f32::consts::TAU;
     if delta > std::f32::consts::PI {
@@ -1022,7 +926,6 @@ fn hue_delta(a: f32, b: f32) -> f32 {
     }
 }
 
-#[cfg(any(test, feature = "cpu-palette-encoder"))]
 fn rgb_to_oklab(r: u8, g: u8, b: u8) -> Oklab {
     let r = srgb_to_linear(r as f32 / 255.0);
     let g = srgb_to_linear(g as f32 / 255.0);
@@ -1065,7 +968,6 @@ fn oklch_to_linear_srgb(lightness: f32, chroma: f32, hue_degrees: f32) -> (f32, 
     oklch_to_linear_srgb_radians(lightness, chroma, hue_degrees.to_radians())
 }
 
-#[cfg(any(test, feature = "cpu-palette-encoder"))]
 fn oklch_to_linear_srgb_radians(lightness: f32, chroma: f32, hue_radians: f32) -> (f32, f32, f32) {
     let a = hue_radians.cos() * chroma;
     let b = hue_radians.sin() * chroma;
@@ -1085,7 +987,6 @@ fn oklch_to_linear_srgb_radians(lightness: f32, chroma: f32, hue_radians: f32) -
     )
 }
 
-#[cfg(any(test, feature = "cpu-palette-encoder"))]
 fn srgb_to_linear(value: f32) -> f32 {
     if value <= 0.04045 {
         value / 12.92
@@ -1104,7 +1005,6 @@ fn linear_to_u8(value: f32) -> u8 {
     (srgb * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
-#[cfg(any(test, feature = "cpu-palette-encoder"))]
 fn in_srgb_gamut(r: f32, g: f32, b: f32) -> bool {
     const EPSILON: f32 = 0.000_001;
     r.is_finite()
@@ -1602,6 +1502,7 @@ mod tests {
             bgra: vec![0; 256 * 256 * 4],
             width: 256,
             height: 256,
+            captured_at: Instant::now(),
         };
 
         let encoded = encoder.encode(&raw, PaletteBias::default()).unwrap();
@@ -1628,6 +1529,7 @@ mod tests {
             bgra: [0, 0, 255, 255].repeat(8 * 8),
             width: 8,
             height: 8,
+            captured_at: Instant::now(),
         };
 
         let encoded = encoder.encode(&raw, PaletteBias::default()).unwrap();

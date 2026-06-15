@@ -1,7 +1,5 @@
 use crate::{
-    frames::{
-        DirectStreamFrame, DirectStreamFrameProcessors, IndexedFrame, RawFrame, RawFrameSenders,
-    },
+    frames::{DirectStreamFrame, DirectStreamFrameProcessors, RawFrame, RawFrameSenders},
     public_types::DirectStreamTarget,
     scene::StreamReadback,
     stream_control::StreamControl,
@@ -62,55 +60,6 @@ pub(crate) fn queue_readback_frame(
         return;
     }
 
-    if target.output_is_indexed {
-        senders.stats.with_mut(|stats| {
-            stats.record_custom_readback_wait(
-                callback_started
-                    .duration_since(pending.requested_at)
-                    .as_secs_f64()
-                    * 1000.0,
-            );
-        });
-
-        let row_bytes = target.width as usize;
-        let aligned_row_bytes =
-            bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(row_bytes);
-        let indices = if row_bytes == aligned_row_bytes {
-            event.data.clone()
-        } else {
-            event
-                .data
-                .chunks(aligned_row_bytes)
-                .take(target.height as usize)
-                .flat_map(|row| row[..row_bytes.min(row.len())].iter().copied())
-                .collect()
-        };
-
-        senders.stats.with_mut(|stats| stats.frames_captured += 1);
-
-        if let Some(custom) = &senders.custom
-            && custom
-                .try_send(IndexedFrame {
-                    indices,
-                    width: target.width,
-                    height: target.height,
-                    captured_at,
-                })
-                .is_err()
-        {
-            senders.stats.with_mut(|stats| {
-                stats.frames_dropped += 1;
-                stats.custom_frames_dropped += 1;
-                stats.custom_queue_full_drops += 1;
-            });
-        }
-        senders.stats.with_mut(|stats| {
-            stats.record_custom_readback_cpu(callback_started.elapsed().as_secs_f64() * 1000.0);
-        });
-        finish_readback_batch_if_complete(&mut readback, &senders);
-        return;
-    }
-
     let row_bytes = target.width as usize * 4;
     let aligned_row_bytes =
         bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(row_bytes);
@@ -141,6 +90,7 @@ pub(crate) fn queue_readback_frame(
                 bgra: bgra.clone(),
                 width: target.width,
                 height: target.height,
+                captured_at,
             })
             .is_err()
     {
@@ -149,6 +99,28 @@ pub(crate) fn queue_readback_frame(
             stats.preview_frames_dropped += 1;
         });
     }
+
+    if let Some(custom) = &senders.custom
+        && custom
+            .try_send(RawFrame {
+                bgra,
+                width: target.width,
+                height: target.height,
+                captured_at,
+            })
+            .is_err()
+    {
+        senders.stats.with_mut(|stats| {
+            stats.frames_dropped += 1;
+            stats.custom_frames_dropped += 1;
+            stats.custom_queue_full_drops += 1;
+        });
+    }
+
+    senders.stats.with_mut(|stats| {
+        stats.record_custom_readback_cpu(callback_started.elapsed().as_secs_f64() * 1000.0);
+    });
+    finish_readback_batch_if_complete(&mut readback, &senders);
 }
 
 fn finish_readback_batch_if_complete(readback: &mut StreamReadback, senders: &RawFrameSenders) {

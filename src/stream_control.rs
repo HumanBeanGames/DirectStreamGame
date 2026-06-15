@@ -2,9 +2,9 @@ use crate::{
     audio::DirectStreamAudioTarget,
     chat::LocalChatHub,
     config::{AppConfig, effective_custom_batch_size},
-    frames::{IndexedFrame, RawFrame, RawFrameSenders},
+    frames::{RawFrame, RawFrameSenders},
     gpu_palette::{
-        GpuPalettePipeline, PaletteMaterial, make_stream_source_image,
+        GpuPalettePipeline, PaletteMaterial, RawPreviewCopyMaterial, make_stream_source_image,
         retarget_custom_host_pipeline,
     },
     palette::PaletteFrameHub,
@@ -18,7 +18,8 @@ use crate::{
     stats::SharedStats,
 };
 use bevy::{
-    camera::RenderTarget, input::keyboard::KeyboardInput, prelude::*, window::WindowOccluded,
+    camera::RenderTarget, ecs::system::SystemParam, input::keyboard::KeyboardInput, prelude::*,
+    window::WindowOccluded,
 };
 use crossbeam_channel::Sender;
 use std::sync::{
@@ -34,15 +35,22 @@ pub(crate) struct StreamControl {
     pub(crate) focused_input: Option<StreamControlInput>,
     pub(crate) status: String,
     preview_sender: Option<Sender<RawFrame>>,
-    custom_sender: Option<Sender<IndexedFrame>>,
+    custom_sender: Option<Sender<RawFrame>>,
     custom_stream_state: CustomStreamState,
+}
+
+#[derive(SystemParam)]
+pub(crate) struct StreamControlAssets<'w> {
+    images: ResMut<'w, Assets<Image>>,
+    palette_materials: ResMut<'w, Assets<PaletteMaterial>>,
+    raw_copy_materials: ResMut<'w, Assets<RawPreviewCopyMaterial>>,
 }
 
 impl StreamControl {
     pub(crate) fn new(
         config: &AppConfig,
         preview_sender: Option<Sender<RawFrame>>,
-        custom_sender: Option<Sender<IndexedFrame>>,
+        custom_sender: Option<Sender<RawFrame>>,
         custom_stream_state: CustomStreamState,
     ) -> Self {
         Self {
@@ -70,6 +78,7 @@ impl StreamControl {
         stats: &SharedStats,
         images: &mut Assets<Image>,
         palette_materials: &mut Assets<PaletteMaterial>,
+        raw_copy_materials: &mut Assets<RawPreviewCopyMaterial>,
         target: &mut DirectStreamTarget,
         direct_stream_state: &mut DirectStreamState,
         readback: &mut StreamReadback,
@@ -113,6 +122,7 @@ impl StreamControl {
             gpu_palette,
             images,
             palette_materials,
+            raw_copy_materials,
             camera_targets,
             quad_transforms,
             width,
@@ -136,7 +146,7 @@ impl StreamControl {
         direct_stream_state.width = width;
         direct_stream_state.height = height;
         direct_stream_state.fps = fps;
-        readback.images = gpu_palette.output_images.clone();
+        readback.images = gpu_palette.source_images.clone();
         readback.batch_size = batch_size;
         readback.next_readback_entity = 0;
         readback.batch_started_at = None;
@@ -491,8 +501,7 @@ pub(crate) fn handle_direct_stream_start_requests(
     mut senders: ResMut<RawFrameSenders>,
     stats: Res<SharedStats>,
     mut readback: Option<ResMut<StreamReadback>>,
-    mut images: ResMut<Assets<Image>>,
-    mut palette_materials: ResMut<Assets<PaletteMaterial>>,
+    mut assets: StreamControlAssets,
     mut target: ResMut<DirectStreamTarget>,
     mut direct_stream_state: ResMut<DirectStreamState>,
     mut gpu_palette: Option<ResMut<GpuPalettePipeline>>,
@@ -513,8 +522,9 @@ pub(crate) fn handle_direct_stream_start_requests(
                         request.fps,
                         &mut senders,
                         &stats,
-                        &mut images,
-                        &mut palette_materials,
+                        &mut assets.images,
+                        &mut assets.palette_materials,
+                        &mut assets.raw_copy_materials,
                         &mut target,
                         &mut direct_stream_state,
                         readback,

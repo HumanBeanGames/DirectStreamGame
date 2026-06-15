@@ -8,7 +8,7 @@ use crate::{
         CustomHostBranding, CustomHostChatPanelHub, CustomHostLayout, CustomHostOverlayHub,
         CustomHostPanelActionHub, CustomHostPanelHub, StreamPointerClickHub,
     },
-    frames::{DirectStreamFrameProcessors, EncodedFrameHub, IndexedFrame, RawFrameSenders},
+    frames::{DirectStreamFrameProcessors, EncodedFrameHub, RawFrame, RawFrameSenders},
     palette::{
         PaletteFrameHub, SharedPaletteBias, load_palette_runtime, start_palette_preview_encoder,
     },
@@ -45,7 +45,7 @@ pub fn direct_stream_app() -> App {
     let custom_frame_capacity = (config.stream_fps as usize * 30)
         .max(effective_custom_batch_size(config.custom_host_batch_size, config.stream_fps) * 8);
     let (custom_sender, custom_receiver) =
-        crossbeam_channel::bounded::<IndexedFrame>(custom_frame_capacity);
+        crossbeam_channel::bounded::<RawFrame>(custom_frame_capacity);
     let preview_enabled = config.window_mode == WindowMode::Preview;
     let custom_host = config.custom_host;
     let direct_stream_state = DirectStreamState {

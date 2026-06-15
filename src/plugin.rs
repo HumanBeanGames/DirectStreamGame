@@ -14,8 +14,8 @@ use crate::{
     direct_world_sprite::DirectWorldSpritePlugin,
     gpu_palette::GpuPalettePlugin,
     scene::{
-        handle_preview_pixel_debug_clicks, setup_direct_stream_scene,
-        update_preview_pixel_debug_text, update_stats_window,
+        handle_preview_pixel_debug_clicks, request_preview_palette_validation,
+        setup_direct_stream_scene, update_preview_pixel_debug_text, update_stats_window,
     },
     stream_control::{
         handle_direct_stream_start_requests, handle_direct_stream_stop_requests,
@@ -83,6 +83,7 @@ impl Plugin for DirectStreamPlugin {
                 (
                     update_stream_control_ui,
                     update_stats_window,
+                    request_preview_palette_validation,
                     handle_preview_pixel_debug_clicks,
                     update_preview_pixel_debug_text,
                 ),

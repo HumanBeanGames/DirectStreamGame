@@ -2,9 +2,9 @@ use crate::{
     config::{AppConfig, WindowMode, effective_custom_batch_size},
     constants::{STREAM_FPS, STREAM_HEIGHT, STREAM_WIDTH, WEB_ADDR, preview_display_scale},
     gpu_palette::{
-        GPU_PREVIEW_DISPLAY_LAYER, GPU_PREVIEW_RAW_CAPTURE_LAYER, PaletteMaterial,
-        PalettePreviewDisplayMaterial, PreviewPaletteThrottle, PreviewRawDisplay,
-        RawPreviewCopyMaterial, make_stream_source_image, spawn_custom_host_pipeline,
+        GPU_PREVIEW_DISPLAY_LAYER, PaletteMaterial, PalettePreviewDisplayMaterial,
+        PreviewPaletteThrottle, PreviewRawDisplay, RawPreviewCopyMaterial,
+        make_stream_source_image, spawn_custom_host_pipeline,
     },
     palette::load_palette_lookup_runtime,
     public_types::{DirectStreamTarget, DirectStreamWindowLayout},
@@ -28,7 +28,6 @@ use std::{
 };
 
 pub(crate) struct PendingReadback {
-    pub(crate) requested_at: Instant,
     pub(crate) captured_at: Instant,
     pub(crate) output_index: usize,
 }
@@ -63,14 +62,20 @@ pub(crate) struct PreviewPixelDebugText;
 
 #[derive(Component)]
 struct PreviewPixelDebugReadback {
-    pair_id: u64,
     source: PreviewPixelSource,
     x: u32,
     y: u32,
     width: u32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Component)]
+struct PreviewPaletteValidationReadback {
+    source: PreviewPixelSource,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum PreviewPixelSource {
     Raw,
     Quantized,
@@ -79,21 +84,15 @@ enum PreviewPixelSource {
 #[derive(Resource)]
 pub(crate) struct PreviewPixelDebugState {
     pub(crate) raw_image: Handle<Image>,
-    pub(crate) quantized_image: Handle<Image>,
     pub(crate) palette_colors: Vec<[u8; 4]>,
     pub(crate) lookup_entries: Arc<[u8]>,
     raw_center: Vec2,
     quantized_center: Vec2,
     display_size: Vec2,
     output: String,
-    next_pair_id: u64,
-    pending_pairs: HashMap<u64, PreviewPixelDebugPair>,
-}
-
-#[derive(Default)]
-struct PreviewPixelDebugPair {
-    raw: Option<RawPixelDebug>,
-    quantized: Option<QuantizedPixelDebug>,
+    validation_pending: bool,
+    validation_warmup_updates: u32,
+    validation_frames_checked: u32,
 }
 
 struct RawPixelDebug {
@@ -184,6 +183,7 @@ pub(crate) fn setup_direct_stream_scene(
             &mut images,
             &mut meshes,
             &mut palette_materials,
+            &mut raw_copy_materials,
             config.stream_width,
             config.stream_height,
             stream_image.clone(),
@@ -192,30 +192,28 @@ pub(crate) fn setup_direct_stream_scene(
             &palette_lookup,
             &mut target,
             batch_size,
+            config.window_mode != WindowMode::Preview,
         );
         if config.window_mode == WindowMode::Preview {
-            let (display_material, raw_camera, raw_output_images, debug_state) =
-                spawn_preview_comparison(
-                    &mut commands,
-                    &mut images,
-                    &mut meshes,
-                    &mut preview_display_materials,
-                    &mut raw_copy_materials,
-                    &stream_image,
-                    &pipeline,
-                    Arc::<[u8]>::from(palette_lookup.entries().to_vec()),
-                    batch_size,
-                    &window_layout,
-                    config.stream_width,
-                    config.stream_height,
-                );
+            let (display_material, debug_state) = spawn_preview_comparison(
+                &mut commands,
+                &mut images,
+                &mut meshes,
+                &mut preview_display_materials,
+                &mut raw_copy_materials,
+                &stream_image,
+                &pipeline,
+                Arc::<[u8]>::from(palette_lookup.entries().to_vec()),
+                batch_size,
+                &window_layout,
+                config.stream_width,
+                config.stream_height,
+            );
             commands.insert_resource(debug_state);
             commands.insert_resource(PreviewPaletteThrottle::new(
                 config.stream_fps,
                 batch_size,
                 display_material,
-                raw_camera,
-                raw_output_images,
             ));
         }
         let pipeline_clone = pipeline.clone();
@@ -245,49 +243,23 @@ pub(crate) fn setup_direct_stream_scene(
 
 fn spawn_preview_comparison(
     commands: &mut Commands,
-    images: &mut Assets<Image>,
+    _images: &mut Assets<Image>,
     meshes: &mut Assets<Mesh>,
     preview_display_materials: &mut Assets<PalettePreviewDisplayMaterial>,
-    raw_copy_materials: &mut Assets<RawPreviewCopyMaterial>,
-    stream_image: &Handle<Image>,
+    _raw_copy_materials: &mut Assets<RawPreviewCopyMaterial>,
+    _stream_image: &Handle<Image>,
     pipeline: &crate::gpu_palette::GpuPalettePipeline,
     lookup_entries: Arc<[u8]>,
-    batch_size: usize,
+    _batch_size: usize,
     window_layout: &DirectStreamWindowLayout,
     width: u32,
     height: u32,
 ) -> (
     Handle<PalettePreviewDisplayMaterial>,
-    Entity,
-    Vec<Handle<Image>>,
     PreviewPixelDebugState,
 ) {
-    let preview_output_count = batch_size.max(1) * 2;
-    let raw_output_images: Vec<Handle<Image>> = (0..preview_output_count)
-        .map(|_| images.add(make_stream_source_image(width, height)))
-        .collect();
+    let raw_output_images = pipeline.source_images.clone();
     let first_raw_output = raw_output_images[0].clone();
-    let raw_copy_material = raw_copy_materials.add(RawPreviewCopyMaterial {
-        source_image: stream_image.clone(),
-    });
-    let raw_camera = commands
-        .spawn((
-            Camera2d,
-            Camera {
-                order: 0,
-                clear_color: ClearColorConfig::Custom(Color::BLACK),
-                ..default()
-            },
-            RenderTarget::Image(first_raw_output.clone().into()),
-            RenderLayers::layer(GPU_PREVIEW_RAW_CAPTURE_LAYER),
-        ))
-        .id();
-    commands.spawn((
-        Mesh2d(meshes.add(Rectangle::default())),
-        MeshMaterial2d(raw_copy_material),
-        Transform::from_scale(Vec3::new(width as f32, height as f32, 1.0)),
-        RenderLayers::layer(GPU_PREVIEW_RAW_CAPTURE_LAYER),
-    ));
 
     let x_offset = width as f32 * 0.5;
     let display_scale = preview_display_scale(width, height);
@@ -307,8 +279,9 @@ fn spawn_preview_comparison(
     ));
 
     let display_material = preview_display_materials.add(PalettePreviewDisplayMaterial {
-        index_image: pipeline.output_images[0].clone(),
+        source_image: pipeline.source_images[0].clone(),
         palette_texture: pipeline.palette_texture.clone(),
+        lookup_texture: pipeline.lookup_texture.clone(),
     });
     commands.spawn((
         Mesh2d(meshes.add(Rectangle::default())),
@@ -323,11 +296,8 @@ fn spawn_preview_comparison(
     spawn_preview_pixel_debug_ui(commands);
     (
         display_material,
-        raw_camera,
-        raw_output_images.clone(),
         PreviewPixelDebugState {
             raw_image: raw_output_images[0].clone(),
-            quantized_image: pipeline.output_images[0].clone(),
             palette_colors: pipeline.palette_colors.clone(),
             lookup_entries,
             raw_center,
@@ -336,8 +306,9 @@ fn spawn_preview_comparison(
             output:
                 "Pixel debug: click either preview to compare the paired raw and quantized pixels"
                     .to_owned(),
-            next_pair_id: 0,
-            pending_pairs: HashMap::default(),
+            validation_pending: false,
+            validation_warmup_updates: 0,
+            validation_frames_checked: 0,
         },
     )
 }
@@ -390,7 +361,7 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
     if config.window_mode != WindowMode::Preview || !buttons.just_pressed(MouseButton::Left) {
         return;
     }
-    let Some(mut debug_state) = debug_state else {
+    let Some(debug_state) = debug_state else {
         return;
     };
     let Ok(window) = windows.single() else {
@@ -414,26 +385,17 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
     ) else {
         return;
     };
-    let pair_id = debug_state.next_pair_id;
-    debug_state.next_pair_id = debug_state.next_pair_id.wrapping_add(1);
     let raw_image = debug_state.raw_image.clone();
-    let quantized_image = debug_state.quantized_image.clone();
 
-    for (source, image) in [
-        (PreviewPixelSource::Raw, raw_image),
-        (PreviewPixelSource::Quantized, quantized_image),
-    ] {
-        commands
-            .spawn(PreviewPixelDebugReadback {
-                pair_id,
-                source,
-                x,
-                y,
-                width: config.stream_width,
-            })
-            .observe(handle_preview_pixel_debug_readback)
-            .insert(Readback::texture(image));
-    }
+    commands
+        .spawn(PreviewPixelDebugReadback {
+            source: PreviewPixelSource::Raw,
+            x,
+            y,
+            width: config.stream_width,
+        })
+        .observe(handle_preview_pixel_debug_readback)
+        .insert(Readback::texture(raw_image));
 }
 
 fn preview_sample_from_world(
@@ -504,40 +466,126 @@ fn handle_preview_pixel_debug_readback(
         return;
     };
 
-    let pair = debug_state
-        .pending_pairs
-        .entry(readback.pair_id)
-        .or_default();
-    match readback.source {
-        PreviewPixelSource::Raw => {
-            pair.raw = Some(preview_raw_pixel_debug(
-                readback,
-                &event.data,
-                &debug_state.lookup_entries,
-                &debug_state.palette_colors,
-            ));
-        }
-        PreviewPixelSource::Quantized => {
-            pair.quantized = Some(preview_quantized_pixel_debug(
-                readback,
-                &event.data,
-                &debug_state.palette_colors,
-            ));
-        }
+    if readback.source == PreviewPixelSource::Raw {
+        let raw = preview_raw_pixel_debug(
+            readback,
+            &event.data,
+            &debug_state.lookup_entries,
+            &debug_state.palette_colors,
+        );
+        let quantized = preview_quantized_pixel_debug_from_raw(&raw);
+        debug_state.output = preview_pixel_pair_text(&raw, &quantized);
     }
-    if let Some(pair) = debug_state.pending_pairs.remove(&readback.pair_id) {
-        match (pair.raw, pair.quantized) {
-            (Some(raw), Some(quantized)) => {
-                debug_state.output = preview_pixel_pair_text(&raw, &quantized);
-            }
-            (raw, quantized) => {
-                debug_state
-                    .pending_pairs
-                    .insert(readback.pair_id, PreviewPixelDebugPair { raw, quantized });
-            }
+    commands.entity(event.entity).despawn();
+}
+
+pub(crate) fn request_preview_palette_validation(
+    config: Res<AppConfig>,
+    debug_state: Option<ResMut<PreviewPixelDebugState>>,
+    mut commands: Commands,
+) {
+    if config.window_mode != WindowMode::Preview {
+        return;
+    }
+    let Some(mut debug_state) = debug_state else {
+        return;
+    };
+    if debug_state.validation_pending || debug_state.validation_frames_checked >= 120 {
+        return;
+    }
+    if debug_state.validation_warmup_updates < 60 {
+        debug_state.validation_warmup_updates += 1;
+        return;
+    }
+
+    debug_state.validation_pending = true;
+    let raw_image = debug_state.raw_image.clone();
+    commands
+        .spawn(PreviewPaletteValidationReadback {
+            source: PreviewPixelSource::Raw,
+            width: config.stream_width,
+            height: config.stream_height,
+        })
+        .observe(handle_preview_palette_validation_readback)
+        .insert(Readback::texture(raw_image));
+}
+
+fn handle_preview_palette_validation_readback(
+    event: On<ReadbackComplete>,
+    mut commands: Commands,
+    readbacks: Query<&PreviewPaletteValidationReadback>,
+    mut debug_state: Option<ResMut<PreviewPixelDebugState>>,
+) {
+    let Ok(readback) = readbacks.get(event.entity) else {
+        commands.entity(event.entity).despawn();
+        return;
+    };
+    let Some(debug_state) = debug_state.as_deref_mut() else {
+        commands.entity(event.entity).despawn();
+        return;
+    };
+
+    if readback.source == PreviewPixelSource::Raw {
+        debug_state.validation_pending = false;
+        debug_state.validation_frames_checked =
+            debug_state.validation_frames_checked.saturating_add(1);
+        let report = validate_preview_palette_frame(
+            &event.data,
+            readback.width,
+            readback.height,
+            &debug_state.lookup_entries,
+            &debug_state.palette_colors,
+            debug_state.validation_frames_checked,
+        );
+        if let Some(report) = report {
+            eprintln!("{report}");
+            debug_state.output = report;
+            debug_state.validation_frames_checked = 120;
+        } else if debug_state.validation_frames_checked == 120 {
+            let report = "automatic preview palette validation: 120 full frames matched".to_owned();
+            eprintln!("{report}");
+            debug_state.output = report;
         }
     }
     commands.entity(event.entity).despawn();
+}
+
+fn validate_preview_palette_frame(
+    raw: &[u8],
+    width: u32,
+    height: u32,
+    lookup_entries: &[u8],
+    palette_colors: &[[u8; 4]],
+    frame_number: u32,
+) -> Option<String> {
+    let raw_row_bytes = width as usize * 4;
+    let raw_aligned_row_bytes =
+        bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(raw_row_bytes);
+
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let raw_offset = y * raw_aligned_row_bytes + x * 4;
+            if raw_offset + 3 >= raw.len() {
+                return Some(format!(
+                    "automatic preview palette validation frame {frame_number}\nreadback out of range at ({x}, {y})"
+                ));
+            }
+
+            let b = raw[raw_offset];
+            let g = raw[raw_offset + 1];
+            let r = raw[raw_offset + 2];
+            let a = raw[raw_offset + 3];
+            let lookup_key = (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b);
+            let expected_index = lookup_entries.get(lookup_key).copied().unwrap_or(0);
+            if palette_colors.get(expected_index as usize).is_none() {
+                return Some(format!(
+                    "automatic preview palette validation frame {frame_number} [MISMATCH]\nraw preview ({x}, {y})\nraw BGRA: {b}, {g}, {r}, {a}\nraw RGB: #{r:02X}{g:02X}{b:02X}\nlookup RGB key: {lookup_key}\nlookup index {expected_index} is outside the loaded palette"
+                ));
+            }
+        }
+    }
+
+    None
 }
 
 fn preview_raw_pixel_debug(
@@ -591,33 +639,13 @@ impl RawPixelDebug {
     }
 }
 
-fn preview_quantized_pixel_debug(
-    readback: &PreviewPixelDebugReadback,
-    data: &[u8],
-    palette_colors: &[[u8; 4]],
-) -> QuantizedPixelDebug {
-    let row_bytes = readback.width as usize;
-    let aligned_row_bytes =
-        bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(row_bytes);
-    let offset = readback.y as usize * aligned_row_bytes + readback.x as usize;
-    if offset >= data.len() {
-        return QuantizedPixelDebug {
-            x: readback.x,
-            y: readback.y,
-            palette_index: 0,
-            color: [0, 0, 0, 255],
-        };
-    }
-    let palette_index = data[offset];
-    let color = palette_colors
-        .get(palette_index as usize)
-        .copied()
-        .unwrap_or([0, 0, 0, 255]);
+fn preview_quantized_pixel_debug_from_raw(raw: &RawPixelDebug) -> QuantizedPixelDebug {
+    let palette_index = raw.expected_index.unwrap_or(0);
     QuantizedPixelDebug {
-        x: readback.x,
-        y: readback.y,
+        x: raw.x,
+        y: raw.y,
         palette_index,
-        color,
+        color: raw.expected_color,
     }
 }
 

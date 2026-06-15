@@ -88,14 +88,6 @@ impl StreamStats {
         }
     }
 
-    pub(crate) fn record_custom_readback_wait(&mut self, sample_ms: f64) {
-        Self::update_timing(
-            &mut self.custom_readback_wait_avg_ms,
-            &mut self.custom_readback_wait_last_ms,
-            sample_ms,
-        );
-    }
-
     pub(crate) fn record_custom_readback_cpu(&mut self, sample_ms: f64) {
         Self::update_timing(
             &mut self.custom_readback_cpu_avg_ms,

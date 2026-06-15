@@ -50,20 +50,13 @@ impl EncodedFrameHub {
 #[derive(Clone, Resource)]
 pub(crate) struct RawFrameSenders {
     pub(crate) preview: Option<Sender<RawFrame>>,
-    pub(crate) custom: Option<Sender<IndexedFrame>>,
+    pub(crate) custom: Option<Sender<RawFrame>>,
     pub(crate) stats: SharedStats,
 }
 
 #[derive(Clone)]
 pub(crate) struct RawFrame {
     pub(crate) bgra: Vec<u8>,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-}
-
-#[derive(Clone)]
-pub(crate) struct IndexedFrame {
-    pub(crate) indices: Vec<u8>,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) captured_at: Instant,

@@ -283,7 +283,7 @@ pub(crate) fn spawn_custom_host_pipeline(
     palette_lookup: &PaletteLookup,
     target: &mut DirectStreamTarget,
     batch_size: usize,
-    _overlay_enabled: bool,
+    overlay_enabled: bool,
 ) -> GpuPalettePipeline {
     let output_images: Vec<Handle<Image>> = (0..output_image_count(batch_size))
         .map(|_| images.add(make_stream_output_image(width, height)))
@@ -325,7 +325,7 @@ pub(crate) fn spawn_custom_host_pipeline(
         .spawn((
             Camera2d,
             Camera {
-                order: 1,
+                order: 2,
                 clear_color: ClearColorConfig::Custom(Color::BLACK),
                 ..default()
             },
@@ -338,12 +338,12 @@ pub(crate) fn spawn_custom_host_pipeline(
         .spawn((
             Camera2d,
             Camera {
-                order: 2,
+                order: 1,
                 clear_color: ClearColorConfig::None,
-                is_active: false,
+                is_active: overlay_enabled,
                 ..default()
             },
-            RenderTarget::Image(first_output.clone().into()),
+            RenderTarget::Image(first_source.clone().into()),
             RenderLayers::layer(GPU_DIRECT_TEXT_LAYER),
         ))
         .id();
@@ -366,8 +366,8 @@ pub(crate) fn spawn_custom_host_pipeline(
         ))
         .id();
 
-    target.output_image = first_output.clone();
-    target.output_is_indexed = true;
+    target.output_image = first_source.clone();
+    target.output_is_indexed = false;
     target.overlay_camera = overlay_camera;
     target.overlay_layer = GPU_DIRECT_TEXT_LAYER;
 
@@ -425,7 +425,7 @@ pub(crate) fn retarget_custom_host_pipeline(
     }
 
     if let Ok(mut camera_target) = camera_targets.get_mut(pipeline.overlay_camera) {
-        *camera_target = RenderTarget::Image(first_output.clone().into());
+        *camera_target = RenderTarget::Image(first_source.clone().into());
     } else {
         return Err(());
     }
@@ -437,7 +437,7 @@ pub(crate) fn retarget_custom_host_pipeline(
     }
 
     if let Some(material) = materials.get_mut(&pipeline.material) {
-        material.source_image = first_source;
+        material.source_image = first_source.clone();
         let lookup_texture = images.add(make_lookup_texture(palette_lookup));
         material.lookup_texture = lookup_texture.clone();
         material.lookup_params = palette_lookup_params();
@@ -461,8 +461,8 @@ pub(crate) fn retarget_custom_host_pipeline(
     pipeline.source_images = source_images;
     pipeline.output_images = output_images;
     pipeline.current_output_index = 0;
-    target.output_image = first_output;
-    target.output_is_indexed = true;
+    target.output_image = first_source;
+    target.output_is_indexed = false;
     target.overlay_camera = pipeline.overlay_camera;
     target.overlay_layer = GPU_DIRECT_TEXT_LAYER;
 
@@ -532,13 +532,13 @@ fn throttle_preview_palette_cameras(
         let output_image = pipeline.output_images[output_index].clone();
         let source_image = pipeline.source_images[output_index].clone();
         if let Ok(mut raw_target) = camera_targets.get_mut(pipeline.source_copy_camera) {
-            *raw_target = RenderTarget::Image(source_image.into());
+            *raw_target = RenderTarget::Image(source_image.clone().into());
         }
         if let Ok(mut palette_target) = camera_targets.get_mut(pipeline.palette_camera) {
             *palette_target = RenderTarget::Image(output_image.clone().into());
         }
         if let Ok(mut overlay_target) = camera_targets.get_mut(pipeline.overlay_camera) {
-            *overlay_target = RenderTarget::Image(output_image.into());
+            *overlay_target = RenderTarget::Image(source_image.clone().into());
         }
 
         throttle.queued_output_indices.push_back(output_index);
@@ -633,7 +633,7 @@ pub(crate) fn cycle_camera_render_targets(
     let current_source = pipeline.source_images[current_output_index].clone();
 
     if let Ok(mut source_target) = camera_targets.get_mut(pipeline.source_copy_camera) {
-        *source_target = RenderTarget::Image(current_source.into());
+        *source_target = RenderTarget::Image(current_source.clone().into());
     }
 
     if let Ok(mut palette_target) = camera_targets.get_mut(pipeline.palette_camera) {
@@ -641,7 +641,7 @@ pub(crate) fn cycle_camera_render_targets(
     }
 
     if let Ok(mut overlay_target) = camera_targets.get_mut(pipeline.overlay_camera) {
-        *overlay_target = RenderTarget::Image(current_texture.clone().into());
+        *overlay_target = RenderTarget::Image(current_source.clone().into());
     }
 
     pipeline.current_output_index =

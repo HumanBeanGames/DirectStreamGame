@@ -647,7 +647,7 @@ impl IndexedPixelEncoder {
         let mut exact_palette_indices = vec![u16::MAX; 1 << 24].into_boxed_slice();
         for (index, [r, g, b, _]) in palette.iter().enumerate() {
             exact_palette_indices
-                [((usize::from(*b)) << 16) | ((usize::from(*g)) << 8) | usize::from(*r)] =
+                [((usize::from(*r)) << 16) | ((usize::from(*g)) << 8) | usize::from(*b)] =
                 index as u16;
         }
         let palette_oklab = palette
@@ -747,7 +747,7 @@ impl IndexedPixelEncoder {
             let g = pixel[1];
             let r = pixel[2];
             let exact_index = self.exact_palette_indices
-                [((usize::from(b)) << 16) | ((usize::from(g)) << 8) | usize::from(r)];
+                [((usize::from(r)) << 16) | ((usize::from(g)) << 8) | usize::from(b)];
             pixels.push(if exact_index != u16::MAX {
                 exact_index as u8
             } else {
@@ -1615,6 +1615,24 @@ mod tests {
         };
         let batch = encode_palette_batch_packets(None, &[packet]);
         assert_eq!(batch.packets[0].len(), 1 + 4 + 4 + 256 * 256);
+    }
+
+    #[test]
+    fn exact_palette_fast_path_uses_rgb_not_bgr_indexing() {
+        let mut encoder = IndexedPixelEncoder::new(
+            vec![[255, 0, 0, 255], [0, 0, 255, 255]],
+            PaletteBias::default(),
+            None,
+        );
+        let raw = RawFrame {
+            bgra: [0, 0, 255, 255].repeat(8 * 8),
+            width: 8,
+            height: 8,
+        };
+
+        let encoded = encoder.encode(&raw, PaletteBias::default()).unwrap();
+
+        assert!(encoded.framebuffer.pixels.iter().all(|index| *index == 0));
     }
 
     #[test]

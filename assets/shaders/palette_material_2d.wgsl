@@ -150,8 +150,10 @@ fn linear_to_srgb(rgb: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
-    let source_linear = textureSample(source_image, source_sampler, mesh.uv).rgb;
-    let source = linear_to_srgb(source_linear);
+    let source_size = textureDimensions(source_image);
+    let source_uv = clamp(mesh.uv, vec2<f32>(0.0), vec2<f32>(0.999999));
+    let source_coord = vec2<i32>(floor(source_uv * vec2<f32>(source_size)));
+    let source = clamp(textureLoad(source_image, source_coord, 0).rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     let source_u8 = vec3<u32>(round(source * 255.0));
     let lookup_index = source_u8.r * 65536u + source_u8.g * 256u + source_u8.b;
     let lookup_coord = vec2<i32>(

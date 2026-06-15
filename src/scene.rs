@@ -171,7 +171,11 @@ fn spawn_preview_comparison(
 ) -> Handle<PalettePreviewDisplayMaterial> {
     let x_offset = width as f32 * 0.5;
     commands.spawn((
-        Sprite::from_image(stream_image.clone()),
+        Sprite {
+            image: stream_image.clone(),
+            custom_size: Some(Vec2::new(width as f32, height as f32)),
+            ..default()
+        },
         Transform::from_xyz(-x_offset * PREVIEW_DISPLAY_SCALE, 0.0, 0.0)
             .with_scale(Vec3::splat(PREVIEW_DISPLAY_SCALE)),
     ));

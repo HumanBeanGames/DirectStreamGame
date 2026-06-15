@@ -13,7 +13,10 @@ use crate::{
     direct_text::DirectTextPlugin,
     direct_world_sprite::DirectWorldSpritePlugin,
     gpu_palette::GpuPalettePlugin,
-    scene::{setup_direct_stream_scene, update_stats_window},
+    scene::{
+        handle_preview_pixel_debug_clicks, setup_direct_stream_scene,
+        update_preview_pixel_debug_text, update_stats_window,
+    },
     stream_control::{
         handle_direct_stream_start_requests, handle_direct_stream_stop_requests,
         handle_stream_input_box_interactions, handle_stream_key_typing,
@@ -75,6 +78,14 @@ impl Plugin for DirectStreamPlugin {
                     handle_stream_misc_button_interactions,
                 ),
             )
-            .add_systems(Update, (update_stream_control_ui, update_stats_window));
+            .add_systems(
+                Update,
+                (
+                    update_stream_control_ui,
+                    update_stats_window,
+                    handle_preview_pixel_debug_clicks,
+                    update_preview_pixel_debug_text,
+                ),
+            );
     }
 }

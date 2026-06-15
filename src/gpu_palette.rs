@@ -3,7 +3,7 @@ use crate::{
     palette::SharedPaletteBias,
     palette_lut::PaletteLookup,
     public_types::DirectStreamTarget,
-    scene::{PendingReadback, RenderedBatchFrame, StreamReadback},
+    scene::{PendingReadback, PreviewPixelDebugState, RenderedBatchFrame, StreamReadback},
     stream_control::StreamControl,
 };
 use bevy::{
@@ -409,6 +409,7 @@ fn throttle_preview_palette_cameras(
     pipeline: Option<ResMut<GpuPalettePipeline>>,
     throttle: Option<ResMut<PreviewPaletteThrottle>>,
     mut display_materials: ResMut<Assets<PalettePreviewDisplayMaterial>>,
+    mut debug_state: Option<ResMut<PreviewPixelDebugState>>,
     mut camera_targets: Query<&mut RenderTarget>,
     mut cameras: Query<&mut Camera>,
     mut raw_display: Query<&mut Sprite, With<PreviewRawDisplay>>,
@@ -439,6 +440,10 @@ fn throttle_preview_palette_cameras(
             display_material.index_image = pipeline.output_images[display_index].clone();
             for mut sprite in &mut raw_display {
                 sprite.image = throttle.raw_output_images[display_index].clone();
+            }
+            if let Some(debug_state) = debug_state.as_deref_mut() {
+                debug_state.quantized_image = pipeline.output_images[display_index].clone();
+                debug_state.raw_image = throttle.raw_output_images[display_index].clone();
             }
         }
 

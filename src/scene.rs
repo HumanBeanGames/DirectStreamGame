@@ -18,6 +18,8 @@ use crate::{
 use bevy::{
     camera::{RenderTarget, visibility::RenderLayers},
     prelude::*,
+    render::gpu_readback::{Readback, ReadbackComplete},
+    window::PrimaryWindow,
 };
 use std::{
     collections::HashMap,
@@ -52,6 +54,37 @@ pub(crate) struct StreamReadback {
     pub(crate) rendered_batch_frames: Vec<RenderedBatchFrame>,
 }
 
+#[derive(Component)]
+pub(crate) struct PreviewDisplayCamera;
+
+#[derive(Component)]
+pub(crate) struct PreviewPixelDebugText;
+
+#[derive(Component)]
+struct PreviewPixelDebugReadback {
+    source: PreviewPixelSource,
+    x: u32,
+    y: u32,
+    width: u32,
+}
+
+#[derive(Clone, Copy)]
+enum PreviewPixelSource {
+    Raw,
+    Quantized,
+}
+
+#[derive(Resource)]
+pub(crate) struct PreviewPixelDebugState {
+    pub(crate) raw_image: Handle<Image>,
+    pub(crate) quantized_image: Handle<Image>,
+    pub(crate) palette_colors: Vec<[u8; 4]>,
+    raw_center: Vec2,
+    quantized_center: Vec2,
+    display_size: Vec2,
+    output: String,
+}
+
 pub(crate) fn setup_direct_stream_scene(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
@@ -82,7 +115,11 @@ pub(crate) fn setup_direct_stream_scene(
 
     match config.window_mode {
         WindowMode::Preview => {
-            commands.spawn((Camera2d, RenderLayers::layer(GPU_PREVIEW_DISPLAY_LAYER)));
+            commands.spawn((
+                Camera2d,
+                RenderLayers::layer(GPU_PREVIEW_DISPLAY_LAYER),
+                PreviewDisplayCamera,
+            ));
         }
         WindowMode::Stats => {
             commands.spawn(Camera2d);
@@ -127,19 +164,21 @@ pub(crate) fn setup_direct_stream_scene(
             batch_size,
         );
         if config.window_mode == WindowMode::Preview {
-            let (display_material, raw_camera, raw_output_images) = spawn_preview_comparison(
-                &mut commands,
-                &mut images,
-                &mut meshes,
-                &mut preview_display_materials,
-                &mut raw_copy_materials,
-                &stream_image,
-                &pipeline,
-                batch_size,
-                &window_layout,
-                config.stream_width,
-                config.stream_height,
-            );
+            let (display_material, raw_camera, raw_output_images, debug_state) =
+                spawn_preview_comparison(
+                    &mut commands,
+                    &mut images,
+                    &mut meshes,
+                    &mut preview_display_materials,
+                    &mut raw_copy_materials,
+                    &stream_image,
+                    &pipeline,
+                    batch_size,
+                    &window_layout,
+                    config.stream_width,
+                    config.stream_height,
+                );
+            commands.insert_resource(debug_state);
             commands.insert_resource(PreviewPaletteThrottle::new(
                 config.stream_fps,
                 batch_size,
@@ -189,6 +228,7 @@ fn spawn_preview_comparison(
     Handle<PalettePreviewDisplayMaterial>,
     Entity,
     Vec<Handle<Image>>,
+    PreviewPixelDebugState,
 ) {
     let preview_output_count = batch_size.max(1) * 2;
     let raw_output_images: Vec<Handle<Image>> = (0..preview_output_count)
@@ -220,14 +260,16 @@ fn spawn_preview_comparison(
     let x_offset = width as f32 * 0.5;
     let display_scale = preview_display_scale(width, height);
     let reserved_panel_offset = window_layout.right_panel_width * 0.5;
+    let raw_center = Vec2::new(-x_offset * display_scale - reserved_panel_offset, 0.0);
+    let quantized_center = Vec2::new(x_offset * display_scale - reserved_panel_offset, 0.0);
+    let display_size = Vec2::new(width as f32 * display_scale, height as f32 * display_scale);
     commands.spawn((
         Sprite {
             image: first_raw_output,
             custom_size: Some(Vec2::new(width as f32, height as f32)),
             ..default()
         },
-        Transform::from_xyz(-x_offset * display_scale - reserved_panel_offset, 0.0, 0.0)
-            .with_scale(Vec3::splat(display_scale)),
+        Transform::from_xyz(raw_center.x, raw_center.y, 0.0).with_scale(Vec3::splat(display_scale)),
         RenderLayers::layer(GPU_PREVIEW_DISPLAY_LAYER),
         PreviewRawDisplay,
     ));
@@ -239,16 +281,52 @@ fn spawn_preview_comparison(
     commands.spawn((
         Mesh2d(meshes.add(Rectangle::default())),
         MeshMaterial2d(display_material.clone()),
-        Transform::from_xyz(x_offset * display_scale - reserved_panel_offset, 0.0, 0.0).with_scale(
-            Vec3::new(
-                width as f32 * display_scale,
-                height as f32 * display_scale,
-                1.0,
-            ),
-        ),
+        Transform::from_xyz(quantized_center.x, quantized_center.y, 0.0).with_scale(Vec3::new(
+            display_size.x,
+            display_size.y,
+            1.0,
+        )),
         RenderLayers::layer(GPU_PREVIEW_DISPLAY_LAYER),
     ));
-    (display_material, raw_camera, raw_output_images)
+    spawn_preview_pixel_debug_ui(commands);
+    (
+        display_material,
+        raw_camera,
+        raw_output_images.clone(),
+        PreviewPixelDebugState {
+            raw_image: raw_output_images[0].clone(),
+            quantized_image: pipeline.output_images[0].clone(),
+            palette_colors: pipeline.palette_colors.clone(),
+            raw_center,
+            quantized_center,
+            display_size,
+            output: "Pixel debug: click raw preview or quantized preview".to_owned(),
+        },
+    )
+}
+
+fn spawn_preview_pixel_debug_ui(commands: &mut Commands) {
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(10),
+            bottom: px(10),
+            max_width: px(640),
+            padding: UiRect::all(px(8)),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.02, 0.025, 0.035, 0.86)),
+        BorderColor::all(Color::srgb(0.22, 0.30, 0.42)),
+        children![(
+            Text::new("Pixel debug: click raw preview or quantized preview"),
+            TextFont {
+                font_size: 11.0,
+                ..default()
+            },
+            TextColor(Color::srgb(0.86, 0.92, 0.98)),
+            PreviewPixelDebugText,
+        )],
+    ));
 }
 
 fn spawn_readback_entities(commands: &mut Commands, count: usize) -> Vec<Entity> {
@@ -260,6 +338,212 @@ fn spawn_readback_entities(commands: &mut Commands, count: usize) -> Vec<Entity>
                 .id()
         })
         .collect()
+}
+
+pub(crate) fn handle_preview_pixel_debug_clicks(
+    config: Res<AppConfig>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<PreviewDisplayCamera>>,
+    debug_state: Option<Res<PreviewPixelDebugState>>,
+    mut commands: Commands,
+) {
+    if config.window_mode != WindowMode::Preview || !buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Some(debug_state) = debug_state else {
+        return;
+    };
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor_position) = window.cursor_position() else {
+        return;
+    };
+    let Ok((camera, camera_transform)) = camera_query.single() else {
+        return;
+    };
+    let Ok(world_position) = camera.viewport_to_world_2d(camera_transform, cursor_position) else {
+        return;
+    };
+
+    let Some((source, x, y)) = preview_sample_from_world(
+        world_position,
+        &debug_state,
+        config.stream_width,
+        config.stream_height,
+    ) else {
+        return;
+    };
+    let image = match source {
+        PreviewPixelSource::Raw => debug_state.raw_image.clone(),
+        PreviewPixelSource::Quantized => debug_state.quantized_image.clone(),
+    };
+
+    commands
+        .spawn(PreviewPixelDebugReadback {
+            source,
+            x,
+            y,
+            width: config.stream_width,
+        })
+        .observe(handle_preview_pixel_debug_readback)
+        .insert(Readback::texture(image));
+}
+
+fn preview_sample_from_world(
+    world_position: Vec2,
+    debug_state: &PreviewPixelDebugState,
+    width: u32,
+    height: u32,
+) -> Option<(PreviewPixelSource, u32, u32)> {
+    preview_sample_from_rect(
+        world_position,
+        debug_state.raw_center,
+        debug_state.display_size,
+        PreviewPixelSource::Raw,
+        width,
+        height,
+    )
+    .or_else(|| {
+        preview_sample_from_rect(
+            world_position,
+            debug_state.quantized_center,
+            debug_state.display_size,
+            PreviewPixelSource::Quantized,
+            width,
+            height,
+        )
+    })
+}
+
+fn preview_sample_from_rect(
+    world_position: Vec2,
+    center: Vec2,
+    size: Vec2,
+    source: PreviewPixelSource,
+    width: u32,
+    height: u32,
+) -> Option<(PreviewPixelSource, u32, u32)> {
+    let left = center.x - size.x * 0.5;
+    let right = center.x + size.x * 0.5;
+    let bottom = center.y - size.y * 0.5;
+    let top = center.y + size.y * 0.5;
+    if world_position.x < left
+        || world_position.x >= right
+        || world_position.y < bottom
+        || world_position.y >= top
+    {
+        return None;
+    }
+
+    let u = ((world_position.x - left) / size.x).clamp(0.0, 0.999_999);
+    let v = ((top - world_position.y) / size.y).clamp(0.0, 0.999_999);
+    let x = (u * width as f32).floor() as u32;
+    let y = (v * height as f32).floor() as u32;
+    Some((source, x, y))
+}
+
+fn handle_preview_pixel_debug_readback(
+    event: On<ReadbackComplete>,
+    mut commands: Commands,
+    readbacks: Query<&PreviewPixelDebugReadback>,
+    mut debug_state: Option<ResMut<PreviewPixelDebugState>>,
+) {
+    let Ok(readback) = readbacks.get(event.entity) else {
+        commands.entity(event.entity).despawn();
+        return;
+    };
+    let Some(debug_state) = debug_state.as_deref_mut() else {
+        commands.entity(event.entity).despawn();
+        return;
+    };
+
+    let text = match readback.source {
+        PreviewPixelSource::Raw => preview_raw_pixel_text(readback, &event.data),
+        PreviewPixelSource::Quantized => {
+            preview_quantized_pixel_text(readback, &event.data, &debug_state.palette_colors)
+        }
+    };
+    debug_state.output = text;
+    commands.entity(event.entity).despawn();
+}
+
+fn preview_raw_pixel_text(readback: &PreviewPixelDebugReadback, data: &[u8]) -> String {
+    let row_bytes = readback.width as usize * 4;
+    let aligned_row_bytes =
+        bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(row_bytes);
+    let offset = readback.y as usize * aligned_row_bytes + readback.x as usize * 4;
+    if offset + 3 >= data.len() {
+        return format!(
+            "raw ({}, {})\nreadback out of range: offset {} / len {}",
+            readback.x,
+            readback.y,
+            offset,
+            data.len()
+        );
+    }
+    let b = data[offset];
+    let g = data[offset + 1];
+    let r = data[offset + 2];
+    let a = data[offset + 3];
+    format!(
+        "raw preview ({}, {})\nBGRA bytes: {}, {}, {}, {}\ninterpreted RGB: #{:02X}{:02X}{:02X}\nlookup RGB key: {}",
+        readback.x,
+        readback.y,
+        b,
+        g,
+        r,
+        a,
+        r,
+        g,
+        b,
+        (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b)
+    )
+}
+
+fn preview_quantized_pixel_text(
+    readback: &PreviewPixelDebugReadback,
+    data: &[u8],
+    palette_colors: &[[u8; 4]],
+) -> String {
+    let row_bytes = readback.width as usize;
+    let aligned_row_bytes =
+        bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(row_bytes);
+    let offset = readback.y as usize * aligned_row_bytes + readback.x as usize;
+    if offset >= data.len() {
+        return format!(
+            "quantized ({}, {})\nreadback out of range: offset {} / len {}",
+            readback.x,
+            readback.y,
+            offset,
+            data.len()
+        );
+    }
+    let palette_index = data[offset];
+    let color = palette_colors
+        .get(palette_index as usize)
+        .copied()
+        .unwrap_or([0, 0, 0, 255]);
+    format!(
+        "quantized preview ({}, {})\npalette index: {}\npalette RGBA: #{:02X}{:02X}{:02X}{:02X}",
+        readback.x, readback.y, palette_index, color[0], color[1], color[2], color[3]
+    )
+}
+
+pub(crate) fn update_preview_pixel_debug_text(
+    debug_state: Option<Res<PreviewPixelDebugState>>,
+    mut text_query: Query<&mut Text, With<PreviewPixelDebugText>>,
+) {
+    let Some(debug_state) = debug_state else {
+        return;
+    };
+    let Ok(mut text) = text_query.single_mut() else {
+        return;
+    };
+    if debug_state.is_changed() {
+        text.0.clone_from(&debug_state.output);
+    }
 }
 
 fn spawn_stats_window(

@@ -161,6 +161,7 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
         i32(lookup_index % 4096u),
         i32(lookup_index / 4096u)
     );
-    let palette_index = textureLoad(lookup_texture, lookup_coord, 0).r;
-    return vec4<f32>(palette_index, 0.0, 0.0, 1.0);
+    let palette_index = u32(round(clamp(textureLoad(lookup_texture, lookup_coord, 0).r, 0.0, 1.0) * 255.0));
+    let centered_index_value = (f32(palette_index) + 0.5) / 255.0;
+    return vec4<f32>(centered_index_value, 0.0, 0.0, 1.0);
 }

@@ -2,8 +2,9 @@ use crate::{
     config::{AppConfig, WindowMode, effective_custom_batch_size},
     constants::{PREVIEW_DISPLAY_SCALE, STREAM_FPS, STREAM_HEIGHT, STREAM_WIDTH, WEB_ADDR},
     gpu_palette::{
-        GPU_PREVIEW_DISPLAY_LAYER, PaletteMaterial, PalettePreviewDisplayMaterial,
-        PreviewPaletteThrottle, make_stream_source_image, spawn_custom_host_pipeline,
+        GPU_PREVIEW_DISPLAY_LAYER, GPU_PREVIEW_RAW_CAPTURE_LAYER, PaletteMaterial,
+        PalettePreviewDisplayMaterial, PreviewPaletteThrottle, PreviewRawDisplay,
+        RawPreviewCopyMaterial, make_stream_source_image, spawn_custom_host_pipeline,
     },
     palette::load_palette_lookup_runtime,
     public_types::DirectStreamTarget,
@@ -57,6 +58,7 @@ pub(crate) fn setup_direct_stream_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut palette_materials: ResMut<Assets<PaletteMaterial>>,
     mut preview_display_materials: ResMut<Assets<PalettePreviewDisplayMaterial>>,
+    mut raw_copy_materials: ResMut<Assets<RawPreviewCopyMaterial>>,
     config: Res<AppConfig>,
 ) {
     let stream_image = images.add(make_stream_source_image(
@@ -124,12 +126,15 @@ pub(crate) fn setup_direct_stream_scene(
             batch_size,
         );
         if config.window_mode == WindowMode::Preview {
-            let display_material = spawn_preview_comparison(
+            let (display_material, raw_camera, raw_output_images) = spawn_preview_comparison(
                 &mut commands,
+                &mut images,
                 &mut meshes,
                 &mut preview_display_materials,
+                &mut raw_copy_materials,
                 &stream_image,
                 &pipeline,
+                batch_size,
                 config.stream_width,
                 config.stream_height,
             );
@@ -137,6 +142,8 @@ pub(crate) fn setup_direct_stream_scene(
                 config.stream_fps,
                 batch_size,
                 display_material,
+                raw_camera,
+                raw_output_images,
             ));
         }
         let pipeline_clone = pipeline.clone();
@@ -166,23 +173,58 @@ pub(crate) fn setup_direct_stream_scene(
 
 fn spawn_preview_comparison(
     commands: &mut Commands,
+    images: &mut Assets<Image>,
     meshes: &mut Assets<Mesh>,
     preview_display_materials: &mut Assets<PalettePreviewDisplayMaterial>,
+    raw_copy_materials: &mut Assets<RawPreviewCopyMaterial>,
     stream_image: &Handle<Image>,
     pipeline: &crate::gpu_palette::GpuPalettePipeline,
+    batch_size: usize,
     width: u32,
     height: u32,
-) -> Handle<PalettePreviewDisplayMaterial> {
+) -> (
+    Handle<PalettePreviewDisplayMaterial>,
+    Entity,
+    Vec<Handle<Image>>,
+) {
+    let preview_output_count = batch_size.max(1) * 2;
+    let raw_output_images: Vec<Handle<Image>> = (0..preview_output_count)
+        .map(|_| images.add(make_stream_source_image(width, height)))
+        .collect();
+    let first_raw_output = raw_output_images[0].clone();
+    let raw_copy_material = raw_copy_materials.add(RawPreviewCopyMaterial {
+        source_image: stream_image.clone(),
+    });
+    let raw_camera = commands
+        .spawn((
+            Camera2d,
+            Camera {
+                order: 0,
+                clear_color: ClearColorConfig::Custom(Color::BLACK),
+                ..default()
+            },
+            RenderTarget::Image(first_raw_output.clone().into()),
+            RenderLayers::layer(GPU_PREVIEW_RAW_CAPTURE_LAYER),
+        ))
+        .id();
+    commands.spawn((
+        Mesh2d(meshes.add(Rectangle::default())),
+        MeshMaterial2d(raw_copy_material),
+        Transform::from_scale(Vec3::new(width as f32, height as f32, 1.0)),
+        RenderLayers::layer(GPU_PREVIEW_RAW_CAPTURE_LAYER),
+    ));
+
     let x_offset = width as f32 * 0.5;
     commands.spawn((
         Sprite {
-            image: stream_image.clone(),
+            image: first_raw_output,
             custom_size: Some(Vec2::new(width as f32, height as f32)),
             ..default()
         },
         Transform::from_xyz(-x_offset * PREVIEW_DISPLAY_SCALE, 0.0, 0.0)
             .with_scale(Vec3::splat(PREVIEW_DISPLAY_SCALE)),
         RenderLayers::layer(GPU_PREVIEW_DISPLAY_LAYER),
+        PreviewRawDisplay,
     ));
 
     let display_material = preview_display_materials.add(PalettePreviewDisplayMaterial {
@@ -199,7 +241,7 @@ fn spawn_preview_comparison(
         )),
         RenderLayers::layer(GPU_PREVIEW_DISPLAY_LAYER),
     ));
-    display_material
+    (display_material, raw_camera, raw_output_images)
 }
 
 fn spawn_readback_entities(commands: &mut Commands, count: usize) -> Vec<Entity> {

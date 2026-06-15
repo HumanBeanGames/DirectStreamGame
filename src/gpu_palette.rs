@@ -26,9 +26,12 @@ use std::{
 pub(crate) const GPU_PALETTE_LAYER: usize = 1;
 pub(crate) const GPU_DIRECT_TEXT_LAYER: usize = 2;
 pub(crate) const GPU_PREVIEW_DISPLAY_LAYER: usize = 3;
+pub(crate) const GPU_PREVIEW_RAW_CAPTURE_LAYER: usize = 4;
 const PALETTE_SHADER_HANDLE: Handle<Shader> = uuid_handle!("b69538c2-4fa1-4a12-89a5-32986e423f4d");
 const PALETTE_PREVIEW_DISPLAY_SHADER_HANDLE: Handle<Shader> =
     uuid_handle!("8ac093df-eddb-44f3-96c7-435d6c7e00a9");
+const RAW_PREVIEW_COPY_SHADER_HANDLE: Handle<Shader> =
+    uuid_handle!("2fe46520-bd33-4420-8c37-3961ce605e77");
 
 pub(crate) struct GpuPalettePlugin;
 
@@ -46,10 +49,17 @@ impl Plugin for GpuPalettePlugin {
             "../assets/shaders/palette_preview_display_2d.wgsl",
             Shader::from_wgsl
         );
+        load_internal_asset!(
+            app,
+            RAW_PREVIEW_COPY_SHADER_HANDLE,
+            "../assets/shaders/raw_preview_copy_2d.wgsl",
+            Shader::from_wgsl
+        );
 
         app.add_plugins((
             Material2dPlugin::<PaletteMaterial>::default(),
             Material2dPlugin::<PalettePreviewDisplayMaterial>::default(),
+            Material2dPlugin::<RawPreviewCopyMaterial>::default(),
         ))
         .add_systems(Update, sync_palette_material_bias)
         .add_systems(Update, throttle_preview_palette_cameras)
@@ -97,6 +107,22 @@ impl Material2d for PalettePreviewDisplayMaterial {
     }
 }
 
+#[derive(AsBindGroup, Debug, Clone, Asset, TypePath)]
+pub(crate) struct RawPreviewCopyMaterial {
+    #[texture(0)]
+    #[sampler(1)]
+    pub(crate) source_image: Handle<Image>,
+}
+
+impl Material2d for RawPreviewCopyMaterial {
+    fn fragment_shader() -> ShaderRef {
+        ShaderRef::Handle(RAW_PREVIEW_COPY_SHADER_HANDLE)
+    }
+}
+
+#[derive(Component)]
+pub(crate) struct PreviewRawDisplay;
+
 #[derive(Resource, Clone)]
 pub(crate) struct GpuPalettePipeline {
     pub(crate) material: Handle<PaletteMaterial>,
@@ -117,6 +143,8 @@ pub(crate) struct PreviewPaletteThrottle {
     batch_size: usize,
     queued_output_indices: VecDeque<usize>,
     display_material: Handle<PalettePreviewDisplayMaterial>,
+    raw_camera: Entity,
+    raw_output_images: Vec<Handle<Image>>,
 }
 
 impl PreviewPaletteThrottle {
@@ -124,6 +152,8 @@ impl PreviewPaletteThrottle {
         fps: u32,
         batch_size: usize,
         display_material: Handle<PalettePreviewDisplayMaterial>,
+        raw_camera: Entity,
+        raw_output_images: Vec<Handle<Image>>,
     ) -> Self {
         let frame_interval = Duration::from_secs_f64(1.0 / fps.max(1) as f64);
         Self {
@@ -132,6 +162,8 @@ impl PreviewPaletteThrottle {
             batch_size: batch_size.max(1),
             queued_output_indices: VecDeque::with_capacity(batch_size.max(1)),
             display_material,
+            raw_camera,
+            raw_output_images,
         }
     }
 }
@@ -379,6 +411,7 @@ fn throttle_preview_palette_cameras(
     mut display_materials: ResMut<Assets<PalettePreviewDisplayMaterial>>,
     mut camera_targets: Query<&mut RenderTarget>,
     mut cameras: Query<&mut Camera>,
+    mut raw_display: Query<&mut Sprite, With<PreviewRawDisplay>>,
 ) {
     if config.window_mode != WindowMode::Preview {
         return;
@@ -397,16 +430,24 @@ fn throttle_preview_palette_cameras(
         }
     }
 
-    if should_render && !pipeline.output_images.is_empty() {
+    if should_render && !pipeline.output_images.is_empty() && !throttle.raw_output_images.is_empty()
+    {
         if throttle.queued_output_indices.len() >= throttle.batch_size
             && let Some(display_index) = throttle.queued_output_indices.pop_front()
             && let Some(display_material) = display_materials.get_mut(&throttle.display_material)
         {
             display_material.index_image = pipeline.output_images[display_index].clone();
+            for mut sprite in &mut raw_display {
+                sprite.image = throttle.raw_output_images[display_index].clone();
+            }
         }
 
         let output_index = pipeline.current_output_index;
         let output_image = pipeline.output_images[output_index].clone();
+        let raw_output_image = throttle.raw_output_images[output_index].clone();
+        if let Ok(mut raw_target) = camera_targets.get_mut(throttle.raw_camera) {
+            *raw_target = RenderTarget::Image(raw_output_image.into());
+        }
         if let Ok(mut palette_target) = camera_targets.get_mut(pipeline.palette_camera) {
             *palette_target = RenderTarget::Image(output_image.clone().into());
         }
@@ -419,7 +460,11 @@ fn throttle_preview_palette_cameras(
             (pipeline.current_output_index + 1) % pipeline.output_images.len();
     }
 
-    for entity in [pipeline.palette_camera, pipeline.overlay_camera] {
+    for entity in [
+        throttle.raw_camera,
+        pipeline.palette_camera,
+        pipeline.overlay_camera,
+    ] {
         if let Ok(mut camera) = cameras.get_mut(entity) {
             camera.is_active = should_render;
         }

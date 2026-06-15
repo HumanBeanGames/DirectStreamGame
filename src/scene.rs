@@ -23,6 +23,7 @@ use bevy::{
 };
 use std::{
     collections::HashMap,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -79,6 +80,7 @@ pub(crate) struct PreviewPixelDebugState {
     pub(crate) raw_image: Handle<Image>,
     pub(crate) quantized_image: Handle<Image>,
     pub(crate) palette_colors: Vec<[u8; 4]>,
+    pub(crate) lookup_entries: Arc<[u8]>,
     raw_center: Vec2,
     quantized_center: Vec2,
     display_size: Vec2,
@@ -173,6 +175,7 @@ pub(crate) fn setup_direct_stream_scene(
                     &mut raw_copy_materials,
                     &stream_image,
                     &pipeline,
+                    Arc::<[u8]>::from(palette_lookup.entries().to_vec()),
                     batch_size,
                     &window_layout,
                     config.stream_width,
@@ -220,6 +223,7 @@ fn spawn_preview_comparison(
     raw_copy_materials: &mut Assets<RawPreviewCopyMaterial>,
     stream_image: &Handle<Image>,
     pipeline: &crate::gpu_palette::GpuPalettePipeline,
+    lookup_entries: Arc<[u8]>,
     batch_size: usize,
     window_layout: &DirectStreamWindowLayout,
     width: u32,
@@ -297,6 +301,7 @@ fn spawn_preview_comparison(
             raw_image: raw_output_images[0].clone(),
             quantized_image: pipeline.output_images[0].clone(),
             palette_colors: pipeline.palette_colors.clone(),
+            lookup_entries,
             raw_center,
             quantized_center,
             display_size,
@@ -460,7 +465,12 @@ fn handle_preview_pixel_debug_readback(
     };
 
     let text = match readback.source {
-        PreviewPixelSource::Raw => preview_raw_pixel_text(readback, &event.data),
+        PreviewPixelSource::Raw => preview_raw_pixel_text(
+            readback,
+            &event.data,
+            &debug_state.lookup_entries,
+            &debug_state.palette_colors,
+        ),
         PreviewPixelSource::Quantized => {
             preview_quantized_pixel_text(readback, &event.data, &debug_state.palette_colors)
         }
@@ -469,7 +479,12 @@ fn handle_preview_pixel_debug_readback(
     commands.entity(event.entity).despawn();
 }
 
-fn preview_raw_pixel_text(readback: &PreviewPixelDebugReadback, data: &[u8]) -> String {
+fn preview_raw_pixel_text(
+    readback: &PreviewPixelDebugReadback,
+    data: &[u8],
+    lookup_entries: &[u8],
+    palette_colors: &[[u8; 4]],
+) -> String {
     let row_bytes = readback.width as usize * 4;
     let aligned_row_bytes =
         bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(row_bytes);
@@ -487,8 +502,13 @@ fn preview_raw_pixel_text(readback: &PreviewPixelDebugReadback, data: &[u8]) -> 
     let g = data[offset + 1];
     let r = data[offset + 2];
     let a = data[offset + 3];
+    let lookup_key = (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b);
+    let expected_index = lookup_entries.get(lookup_key).copied();
+    let expected_color = expected_index
+        .and_then(|index| palette_colors.get(index as usize).copied())
+        .unwrap_or([0, 0, 0, 255]);
     format!(
-        "raw preview ({}, {})\nBGRA bytes: {}, {}, {}, {}\ninterpreted RGB: #{:02X}{:02X}{:02X}\nlookup RGB key: {}",
+        "raw preview ({}, {})\nBGRA bytes: {}, {}, {}, {}\ninterpreted RGB: #{:02X}{:02X}{:02X}\nlookup RGB key: {}\nexpected index: {}\nexpected RGBA: #{:02X}{:02X}{:02X}{:02X}",
         readback.x,
         readback.y,
         b,
@@ -498,7 +518,14 @@ fn preview_raw_pixel_text(readback: &PreviewPixelDebugReadback, data: &[u8]) -> 
         r,
         g,
         b,
-        (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b)
+        lookup_key,
+        expected_index
+            .map(|index| index.to_string())
+            .unwrap_or_else(|| "out of range".to_owned()),
+        expected_color[0],
+        expected_color[1],
+        expected_color[2],
+        expected_color[3],
     )
 }
 

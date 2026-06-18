@@ -112,9 +112,35 @@ fn linear_to_srgb(rgb: vec3<f32>) -> vec3<f32> {
     );
 }
 
-fn hash21(cell: vec2<f32>, salt: f32) -> f32 {
-    let value = dot(cell, vec2<f32>(127.1 + salt * 17.0, 311.7 + salt * 29.0));
-    return fract(sin(value) * 43758.5453123);
+fn bayer2_index(x: u32, y: u32) -> u32 {
+    if x == 0u && y == 0u {
+        return 0u;
+    }
+    if x == 1u && y == 0u {
+        return 2u;
+    }
+    if x == 0u && y == 1u {
+        return 3u;
+    }
+    return 1u;
+}
+
+fn bayer8(cell: vec2<u32>) -> f32 {
+    var index = 0u;
+    for (var bit = 0u; bit < 3u; bit = bit + 1u) {
+        let x_bit = (cell.x >> bit) & 1u;
+        let y_bit = (cell.y >> bit) & 1u;
+        index = index + (bayer2_index(x_bit, y_bit) << (bit * 2u));
+    }
+    return (f32(index) + 0.5) / 64.0;
+}
+
+fn ordered_dither(cell: vec2<i32>, offset: vec2<i32>) -> f32 {
+    let shifted = vec2<u32>(
+        u32((cell.x + offset.x) & 7),
+        u32((cell.y + offset.y) & 7)
+    );
+    return bayer8(shifted) * 2.0 - 1.0;
 }
 
 fn apply_dither(source: vec3<f32>, source_coord: vec2<i32>) -> vec3<f32> {
@@ -124,10 +150,10 @@ fn apply_dither(source: vec3<f32>, source_coord: vec2<i32>) -> vec3<f32> {
         return source;
     }
 
-    let cell = floor((vec2<f32>(f32(source_coord.x), f32(source_coord.y)) + vec2<f32>(0.5)) / scale);
-    let value_noise = hash21(cell, 0.0) * 2.0 - 1.0;
-    let chroma_noise = hash21(cell, 1.0) * 2.0 - 1.0;
-    let hue_noise = hash21(cell, 2.0) * 2.0 - 1.0;
+    let cell = vec2<i32>(floor((vec2<f32>(f32(source_coord.x), f32(source_coord.y)) + vec2<f32>(0.5)) / scale));
+    let value_noise = ordered_dither(cell, vec2<i32>(0, 0));
+    let chroma_noise = ordered_dither(cell, vec2<i32>(3, 5));
+    let hue_noise = ordered_dither(cell, vec2<i32>(6, 2));
     var oklch = oklab_to_oklch(rgb_to_oklab(srgb_to_linear(source)));
     oklch.x = clamp(oklch.x + value_noise * dither_params_a.values.z * intensity, 0.0, 1.0);
     oklch.y = max(oklch.y + chroma_noise * dither_params_a.values.w * intensity, 0.0);

@@ -6,6 +6,7 @@ mod config;
 mod constants;
 mod custom_host;
 mod demo;
+mod direct_backdrop_sprite;
 mod direct_text;
 mod direct_world_sprite;
 mod frames;
@@ -43,6 +44,10 @@ pub use custom_host::{
 pub use demo::{
     DemoMusicClip, DemoMusicStarted, DemoSfxClip, HelloWorldText, handle_demo_boing_command,
     pulse_hello_world_text, run_demo, setup_demo_scene, start_demo_music,
+};
+pub use direct_backdrop_sprite::{
+    DirectBackdropLayer, DirectBackdropSprite, DirectBackdropSpritePlugin,
+    DirectBackdropSpriteSettings,
 };
 pub use direct_text::{DirectText, DirectTextPlugin};
 pub use direct_world_sprite::{

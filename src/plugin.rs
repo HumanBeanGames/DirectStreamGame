@@ -10,6 +10,7 @@ use crate::{
         CustomHostPanelAction, StreamPointerClick, poll_custom_host_panel_actions,
         poll_stream_pointer_clicks,
     },
+    direct_backdrop_sprite::DirectBackdropSpritePlugin,
     direct_text::DirectTextPlugin,
     direct_world_sprite::DirectWorldSpritePlugin,
     gpu_palette::GpuPalettePlugin,
@@ -34,7 +35,12 @@ impl Plugin for DirectStreamPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<StreamAudioClip>()
             .init_resource::<StreamAudioMixer>()
-            .add_plugins((GpuPalettePlugin, DirectWorldSpritePlugin, DirectTextPlugin))
+            .add_plugins((
+                GpuPalettePlugin,
+                DirectBackdropSpritePlugin,
+                DirectWorldSpritePlugin,
+                DirectTextPlugin,
+            ))
             .add_message::<PlayStreamSound>()
             .add_message::<StreamChatMessage>()
             .add_message::<StreamChatCommand>()

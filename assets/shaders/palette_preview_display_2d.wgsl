@@ -1,21 +1,186 @@
 #import bevy_sprite::mesh2d_vertex_output::VertexOutput
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0)
-var indexed_image: texture_2d<f32>;
+var source_image: texture_2d<f32>;
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(1)
-var indexed_sampler: sampler;
+var source_sampler: sampler;
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(2)
 var palette_texture: texture_2d<f32>;
 
+@group(#{MATERIAL_BIND_GROUP}) @binding(3)
+var lookup_texture: texture_2d<u32>;
+
+struct DitherParams {
+    values: vec4<f32>,
+};
+
+@group(#{MATERIAL_BIND_GROUP}) @binding(4)
+var<uniform> dither_params_a: DitherParams;
+
+@group(#{MATERIAL_BIND_GROUP}) @binding(5)
+var<uniform> dither_params_b: DitherParams;
+
+fn srgb_to_linear_channel(value: f32) -> f32 {
+    let clamped = clamp(value, 0.0, 1.0);
+    if clamped <= 0.04045 {
+        return clamped / 12.92;
+    }
+    return pow((clamped + 0.055) / 1.055, 2.4);
+}
+
+fn srgb_to_linear(rgb: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        srgb_to_linear_channel(rgb.r),
+        srgb_to_linear_channel(rgb.g),
+        srgb_to_linear_channel(rgb.b)
+    );
+}
+
+fn rgb_to_oklab(rgb: vec3<f32>) -> vec3<f32> {
+    let l = 0.41222146 * rgb.r + 0.53633255 * rgb.g + 0.051445995 * rgb.b;
+    let m = 0.2119035 * rgb.r + 0.6806995 * rgb.g + 0.10739696 * rgb.b;
+    let s = 0.08830246 * rgb.r + 0.28171884 * rgb.g + 0.6299787 * rgb.b;
+
+    let l_ = pow(max(l, 0.0), 1.0 / 3.0);
+    let m_ = pow(max(m, 0.0), 1.0 / 3.0);
+    let s_ = pow(max(s, 0.0), 1.0 / 3.0);
+
+    return vec3<f32>(
+        0.21045426 * l_ + 0.7936178 * m_ - 0.004072047 * s_,
+        1.9779985 * l_ - 2.4285922 * m_ + 0.4505937 * s_,
+        0.025904037 * l_ + 0.78277177 * m_ - 0.80867577 * s_,
+    );
+}
+
+fn oklab_to_oklch(oklab: vec3<f32>) -> vec3<f32> {
+    let chroma = sqrt(oklab.y * oklab.y + oklab.z * oklab.z);
+    let hue = select(0.0, atan2(oklab.z, oklab.y), chroma > 0.000001);
+    return vec3<f32>(oklab.x, chroma, hue);
+}
+
+fn oklch_to_linear_srgb(color: vec3<f32>) -> vec3<f32> {
+    let a = cos(color.z) * color.y;
+    let b = sin(color.z) * color.y;
+
+    let l_ = color.x + 0.39633778 * a + 0.21580376 * b;
+    let m_ = color.x - 0.105561346 * a - 0.06385417 * b;
+    let s_ = color.x - 0.08948418 * a - 1.2914855 * b;
+
+    let l = l_ * l_ * l_;
+    let m = m_ * m_ * m_;
+    let s = s_ * s_ * s_;
+
+    return vec3<f32>(
+        4.0767417 * l - 3.3077116 * m + 0.23096994 * s,
+        -1.268438 * l + 2.6097574 * m - 0.34131938 * s,
+        -0.0041960863 * l - 0.7034186 * m + 1.7076147 * s,
+    );
+}
+
+fn in_srgb_gamut(rgb: vec3<f32>) -> bool {
+    let epsilon = 0.000001;
+    return all(rgb >= vec3<f32>(-epsilon)) && all(rgb <= vec3<f32>(1.0 + epsilon));
+}
+
+fn clamp_chroma_to_srgb_gamut(color: vec3<f32>) -> f32 {
+    if color.y <= 0.0 || in_srgb_gamut(oklch_to_linear_srgb(color)) {
+        return max(color.y, 0.0);
+    }
+
+    var low = 0.0;
+    var high = color.y;
+    for (var i = 0; i < 16; i = i + 1) {
+        let mid = (low + high) * 0.5;
+        if in_srgb_gamut(oklch_to_linear_srgb(vec3<f32>(color.x, mid, color.z))) {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    return low;
+}
+
+fn linear_to_srgb_channel(value: f32) -> f32 {
+    let clamped = clamp(value, 0.0, 1.0);
+    if clamped <= 0.0031308 {
+        return clamped * 12.92;
+    }
+    return 1.055 * pow(clamped, 1.0 / 2.4) - 0.055;
+}
+
+fn linear_to_srgb(rgb: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        linear_to_srgb_channel(rgb.r),
+        linear_to_srgb_channel(rgb.g),
+        linear_to_srgb_channel(rgb.b)
+    );
+}
+
+fn bayer2_index(x: u32, y: u32) -> u32 {
+    if x == 0u && y == 0u {
+        return 0u;
+    }
+    if x == 1u && y == 0u {
+        return 2u;
+    }
+    if x == 0u && y == 1u {
+        return 3u;
+    }
+    return 1u;
+}
+
+fn bayer8(cell: vec2<u32>) -> f32 {
+    var index = 0u;
+    for (var bit = 0u; bit < 3u; bit = bit + 1u) {
+        let x_bit = (cell.x >> bit) & 1u;
+        let y_bit = (cell.y >> bit) & 1u;
+        index = index + (bayer2_index(x_bit, y_bit) << (bit * 2u));
+    }
+    return (f32(index) + 0.5) / 64.0;
+}
+
+fn ordered_dither(cell: vec2<i32>, offset: vec2<i32>) -> f32 {
+    let shifted = vec2<u32>(
+        u32((cell.x + offset.x) & 7),
+        u32((cell.y + offset.y) & 7)
+    );
+    return bayer8(shifted) * 2.0 - 1.0;
+}
+
+fn apply_dither(source: vec3<f32>, source_coord: vec2<i32>) -> vec3<f32> {
+    let scale = max(dither_params_a.values.x, 0.125);
+    let intensity = max(dither_params_a.values.y, 0.0);
+    if intensity <= 0.0 {
+        return source;
+    }
+
+    let cell = vec2<i32>(floor((vec2<f32>(f32(source_coord.x), f32(source_coord.y)) + vec2<f32>(0.5)) / scale));
+    let value_noise = ordered_dither(cell, vec2<i32>(0, 0));
+    let chroma_noise = ordered_dither(cell, vec2<i32>(3, 5));
+    let hue_noise = ordered_dither(cell, vec2<i32>(6, 2));
+    var oklch = oklab_to_oklch(rgb_to_oklab(srgb_to_linear(source)));
+    oklch.x = clamp(oklch.x + value_noise * dither_params_a.values.z * intensity, 0.0, 1.0);
+    oklch.y = max(oklch.y + chroma_noise * dither_params_a.values.w * intensity, 0.0);
+    oklch.z = oklch.z + hue_noise * dither_params_b.values.x * intensity * 2.0 * 3.14159265;
+    oklch.y = clamp_chroma_to_srgb_gamut(oklch);
+    return clamp(linear_to_srgb(oklch_to_linear_srgb(oklch)), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
-    let source_size = textureDimensions(indexed_image);
+    let source_size = textureDimensions(source_image);
     let source_uv = clamp(mesh.uv, vec2<f32>(0.0), vec2<f32>(0.999999));
     let source_coord = vec2<i32>(floor(source_uv * vec2<f32>(source_size)));
+    let source = apply_dither(clamp(textureLoad(source_image, source_coord, 0).rgb, vec3<f32>(0.0), vec3<f32>(1.0)), source_coord);
+    let source_u8 = vec3<u32>(round(source * 255.0));
+    let lookup_index = source_u8.r * 65536u + source_u8.g * 256u + source_u8.b;
+    let lookup_coord = vec2<i32>(
+        i32(lookup_index % 4096u),
+        i32(lookup_index / 4096u)
+    );
     let palette_width = textureDimensions(palette_texture).x;
-    let encoded = textureLoad(indexed_image, source_coord, 0).r;
-    let palette_index = min(u32(floor(encoded * 255.0 + 0.5)), palette_width - 1u);
+    let palette_index = min(textureLoad(lookup_texture, lookup_coord, 0).r, palette_width - 1u);
     return textureLoad(palette_texture, vec2<i32>(i32(palette_index), 0), 0);
 }

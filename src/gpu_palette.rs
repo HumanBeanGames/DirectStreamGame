@@ -343,7 +343,7 @@ pub(crate) fn spawn_custom_host_pipeline(
         .spawn((
             Camera2d,
             Camera {
-                order: 1,
+                order: 2,
                 clear_color: ClearColorConfig::Custom(Color::BLACK),
                 ..default()
             },
@@ -356,12 +356,12 @@ pub(crate) fn spawn_custom_host_pipeline(
         .spawn((
             Camera2d,
             Camera {
-                order: 2,
+                order: 1,
                 clear_color: ClearColorConfig::None,
                 is_active: overlay_enabled,
                 ..default()
             },
-            RenderTarget::Image(first_output.clone().into()),
+            RenderTarget::Image(first_source.clone().into()),
             RenderLayers::layer(GPU_DIRECT_TEXT_LAYER),
         ))
         .id();
@@ -384,8 +384,8 @@ pub(crate) fn spawn_custom_host_pipeline(
         ))
         .id();
 
-    target.output_image = first_output.clone();
-    target.output_is_indexed = true;
+    target.output_image = first_source.clone();
+    target.output_is_indexed = false;
     target.overlay_camera = overlay_camera;
     target.overlay_layer = GPU_DIRECT_TEXT_LAYER;
 
@@ -431,7 +431,7 @@ pub(crate) fn retarget_custom_host_pipeline(
     let first_source = source_images.first().cloned().unwrap();
 
     if let Ok(mut camera_target) = camera_targets.get_mut(pipeline.source_copy_camera) {
-        *camera_target = RenderTarget::Image(first_output.clone().into());
+        *camera_target = RenderTarget::Image(first_source.clone().into());
     } else {
         return Err(());
     }
@@ -479,8 +479,8 @@ pub(crate) fn retarget_custom_host_pipeline(
     pipeline.source_images = source_images;
     pipeline.output_images = output_images;
     pipeline.current_output_index = 0;
-    target.output_image = first_output;
-    target.output_is_indexed = true;
+    target.output_image = first_source;
+    target.output_is_indexed = false;
     target.overlay_camera = pipeline.overlay_camera;
     target.overlay_layer = GPU_DIRECT_TEXT_LAYER;
 
@@ -573,7 +573,7 @@ fn throttle_preview_palette_cameras(
             && let Some(display_index) = throttle.queued_output_indices.pop_front()
             && let Some(display_material) = display_materials.get_mut(&throttle.display_material)
         {
-            display_material.source_image = pipeline.output_images[display_index].clone();
+            display_material.source_image = pipeline.source_images[display_index].clone();
             for mut sprite in &mut raw_display {
                 sprite.image = pipeline.source_images[display_index].clone();
             }
@@ -592,7 +592,7 @@ fn throttle_preview_palette_cameras(
             *palette_target = RenderTarget::Image(output_image.clone().into());
         }
         if let Ok(mut overlay_target) = camera_targets.get_mut(pipeline.overlay_camera) {
-            *overlay_target = RenderTarget::Image(output_image.clone().into());
+            *overlay_target = RenderTarget::Image(source_image.clone().into());
         }
 
         throttle.queued_output_indices.push_back(output_index);
@@ -695,7 +695,7 @@ pub(crate) fn cycle_camera_render_targets(
     }
 
     if let Ok(mut overlay_target) = camera_targets.get_mut(pipeline.overlay_camera) {
-        *overlay_target = RenderTarget::Image(current_texture.clone().into());
+        *overlay_target = RenderTarget::Image(current_source.clone().into());
     }
 
     pipeline.current_output_index =

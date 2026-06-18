@@ -3,6 +3,7 @@ use bevy::{
     asset::RenderAssetUsages,
     camera::visibility::RenderLayers,
     light::NotShadowCaster,
+    math::Affine2,
     mesh::Indices,
     prelude::*,
     render::{
@@ -108,9 +109,9 @@ struct DirectBackdropSpriteRender {
     mesh: Handle<Mesh>,
     image: Handle<Image>,
     pixel_rect: Option<URect>,
-    uv_offset: Vec2,
-    uv_scale: Vec2,
     layer: DirectBackdropLayer,
+    depth: f32,
+    target_size: UVec2,
 }
 
 #[derive(Default)]
@@ -121,7 +122,7 @@ fn sync_direct_backdrop_sprites(
     settings: Res<DirectBackdropSpriteSettings>,
     target: Res<DirectStreamTarget>,
     mut queries: ParamSet<(
-        Query<(&Camera, &GlobalTransform, Option<&RenderLayers>)>,
+        Query<(&Camera, Ref<GlobalTransform>, Option<&RenderLayers>)>,
         Query<(Entity, &DirectBackdropSprite), Without<DirectBackdropSpriteRender>>,
         Query<(
             &mut DirectBackdropSpriteRender,
@@ -134,12 +135,18 @@ fn sync_direct_backdrop_sprites(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let (camera, camera_transform, camera_layers) = {
+    let target_changed = target.is_changed();
+    let (camera, camera_transform, camera_changed, camera_layers) = {
         let camera_query = queries.p0();
         let Ok((camera, camera_transform, camera_layers)) = camera_query.get(target.camera) else {
             return;
         };
-        (camera.clone(), *camera_transform, camera_layers.cloned())
+        (
+            camera.clone(),
+            *camera_transform,
+            camera_transform.is_changed(),
+            camera_layers.cloned(),
+        )
     };
 
     let source_sprites = queries
@@ -172,25 +179,23 @@ fn sync_direct_backdrop_sprites(
     let render_layers = camera_layers.unwrap_or_else(|| RenderLayers::layer(0));
     let mut visible_count = 0usize;
     for (owner, sprite) in &source_sprites {
-        let render_mesh = if visible_count < settings.max_sprites {
-            backdrop_mesh(sprite, &camera, &camera_transform, &target)
-        } else {
-            None
-        };
-
-        let Some(render_mesh) = render_mesh else {
+        if visible_count >= settings.max_sprites {
             if let Some(render_entity) = render_map.0.get(owner).copied()
                 && let Ok((_, _, _, mut visibility)) = queries.p2().get_mut(render_entity)
             {
                 *visibility = Visibility::Hidden;
             }
             continue;
-        };
+        }
 
         visible_count += 1;
         let render_entity = if let Some(render_entity) = render_map.0.get(owner).copied() {
             render_entity
         } else {
+            let Some(render_mesh) = backdrop_mesh(sprite, &camera, &camera_transform, &target)
+            else {
+                continue;
+            };
             let mesh = meshes.add(render_mesh);
             let material = materials.add(backdrop_material(sprite));
             let render_entity = commands
@@ -206,9 +211,9 @@ fn sync_direct_backdrop_sprites(
                         mesh,
                         image: sprite.image.clone(),
                         pixel_rect: sprite.pixel_rect,
-                        uv_offset: sprite.uv_offset,
-                        uv_scale: sprite.uv_scale,
                         layer: sprite.layer,
+                        depth: sprite.depth,
+                        target_size: UVec2::new(target.width, target.height),
                     },
                 ))
                 .id();
@@ -225,20 +230,29 @@ fn sync_direct_backdrop_sprites(
                 continue;
             };
 
-            let next_mesh = meshes.add(render_mesh);
-            mesh.0 = next_mesh.clone();
-            render.mesh = next_mesh;
+            let geometry_changed = camera_changed
+                || target_changed
+                || render.pixel_rect != sprite.pixel_rect
+                || render.depth != sprite.depth
+                || render.target_size != UVec2::new(target.width, target.height);
+
+            if geometry_changed
+                && let Some(next_mesh) = backdrop_mesh(sprite, &camera, &camera_transform, &target)
+            {
+                let next_mesh = meshes.add(next_mesh);
+                mesh.0 = next_mesh.clone();
+                render.mesh = next_mesh;
+                render.pixel_rect = sprite.pixel_rect;
+                render.depth = sprite.depth;
+                render.target_size = UVec2::new(target.width, target.height);
+            }
 
             if render.image != sprite.image
                 || render.pixel_rect != sprite.pixel_rect
-                || render.uv_offset != sprite.uv_offset
-                || render.uv_scale != sprite.uv_scale
                 || render.layer != sprite.layer
             {
                 render.image = sprite.image.clone();
                 render.pixel_rect = sprite.pixel_rect;
-                render.uv_offset = sprite.uv_offset;
-                render.uv_scale = sprite.uv_scale;
                 render.layer = sprite.layer;
             }
 
@@ -250,6 +264,8 @@ fn sync_direct_backdrop_sprites(
                 existing_material.base_color = sprite.tint;
                 existing_material.base_color_texture = Some(sprite.image.clone());
                 existing_material.depth_bias = backdrop_depth_bias(sprite.layer);
+                existing_material.uv_transform =
+                    Affine2::from_scale_angle_translation(sprite.uv_scale, 0.0, sprite.uv_offset);
             }
 
             *visibility = Visibility::Visible;
@@ -299,8 +315,6 @@ fn backdrop_mesh(
         plane_normal,
     )?;
 
-    let uv_min = sprite.uv_offset;
-    let uv_max = sprite.uv_offset + sprite.uv_scale;
     Some(
         Mesh::new(
             PrimitiveTopology::TriangleList,
@@ -318,12 +332,7 @@ fn backdrop_mesh(
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![(-plane_normal).to_array(); 4])
         .with_inserted_attribute(
             Mesh::ATTRIBUTE_UV_0,
-            vec![
-                [uv_min.x, uv_min.y],
-                [uv_max.x, uv_min.y],
-                [uv_max.x, uv_max.y],
-                [uv_min.x, uv_max.y],
-            ],
+            vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
         )
         .with_inserted_indices(Indices::U32(vec![0, 1, 2, 0, 2, 3])),
     )
@@ -373,6 +382,7 @@ fn backdrop_material(sprite: &DirectBackdropSprite) -> StandardMaterial {
         cull_mode: None::<Face>,
         alpha_mode: AlphaMode::Blend,
         depth_bias: backdrop_depth_bias(sprite.layer),
+        uv_transform: Affine2::from_scale_angle_translation(sprite.uv_scale, 0.0, sprite.uv_offset),
         ..default()
     }
 }

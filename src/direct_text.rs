@@ -1,6 +1,6 @@
 use crate::{gpu_palette::GpuPalettePipeline, public_types::DirectStreamTarget};
 use bevy::{camera::visibility::RenderLayers, prelude::*};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub struct DirectTextPlugin;
 
@@ -13,7 +13,8 @@ const GLYPH_ON_THRESHOLD: f32 = 0.5;
 
 impl Plugin for DirectTextPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, sync_direct_text_overlays);
+        app.init_resource::<DirectTextOverlayCache>()
+            .add_systems(Update, sync_direct_text_overlays);
     }
 }
 
@@ -60,14 +61,47 @@ struct DirectTextOverlayPixel {
     owner: Entity,
 }
 
+#[derive(Clone, PartialEq)]
+struct DirectTextLayoutKey {
+    text: String,
+    x: u32,
+    y: u32,
+    font_size: f32,
+    threshold: Option<f32>,
+}
+
+impl From<&DirectText> for DirectTextLayoutKey {
+    fn from(text: &DirectText) -> Self {
+        Self {
+            text: text.text.clone(),
+            x: text.x,
+            y: text.y,
+            font_size: text.font_size,
+            threshold: text.threshold,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct DirectTextOverlayState {
+    layout: DirectTextLayoutKey,
+    color: Srgba,
+}
+
+#[derive(Resource, Default)]
+struct DirectTextOverlayCache {
+    entries: HashMap<Entity, DirectTextOverlayState>,
+}
+
 fn sync_direct_text_overlays(
     mut commands: Commands,
     target: Res<DirectStreamTarget>,
     gpu_palette: Option<Res<GpuPalettePipeline>>,
     changed_text: Query<(Entity, &DirectText), Or<(Added<DirectText>, Changed<DirectText>)>>,
     all_text: Query<(Entity, &DirectText)>,
-    existing: Query<(Entity, &DirectTextOverlayPixel)>,
+    mut existing: Query<(Entity, &DirectTextOverlayPixel, &mut Sprite)>,
     mut removed_text: RemovedComponents<DirectText>,
+    mut cache: ResMut<DirectTextOverlayCache>,
 ) {
     let removed_owners: HashSet<Entity> = removed_text.read().collect();
     let target_changed = target.is_changed();
@@ -75,15 +109,58 @@ fn sync_direct_text_overlays(
         return;
     }
 
-    let rebuild_owners: HashSet<Entity> = if target_changed {
+    let mut rebuild_owners: HashSet<Entity> = if target_changed {
         all_text.iter().map(|(entity, _)| entity).collect()
     } else {
-        changed_text.iter().map(|(entity, _)| entity).collect()
+        HashSet::default()
     };
+    let mut recolor_owners: HashSet<Entity> = HashSet::default();
 
-    for (entity, overlay) in &existing {
+    if target_changed {
+        cache.entries.clear();
+    } else {
+        for (owner, text) in &changed_text {
+            let layout = DirectTextLayoutKey::from(text);
+            let Some(previous) = cache.entries.get(&owner) else {
+                rebuild_owners.insert(owner);
+                continue;
+            };
+
+            if previous.layout != layout {
+                rebuild_owners.insert(owner);
+            } else if direct_text_color_changed(previous.color, text.color) {
+                recolor_owners.insert(owner);
+            }
+        }
+    }
+
+    for (entity, overlay, _) in &mut existing {
         if removed_owners.contains(&overlay.owner) || rebuild_owners.contains(&overlay.owner) {
             commands.entity(entity).despawn();
+        }
+    }
+
+    for owner in &removed_owners {
+        cache.entries.remove(owner);
+    }
+
+    if !recolor_owners.is_empty() {
+        let recolors: HashMap<Entity, Color> = all_text
+            .iter()
+            .filter(|(owner, _)| recolor_owners.contains(owner))
+            .map(|(owner, text)| (owner, overlay_color(text, &target, gpu_palette.as_deref())))
+            .collect();
+        for (_, overlay, mut sprite) in &mut existing {
+            if let Some(color) = recolors.get(&overlay.owner) {
+                sprite.color = *color;
+            }
+        }
+        for (owner, text) in &changed_text {
+            if recolor_owners.contains(&owner)
+                && let Some(entry) = cache.entries.get_mut(&owner)
+            {
+                entry.color = text.color;
+            }
         }
     }
 
@@ -133,7 +210,22 @@ fn sync_direct_text_overlays(
                 }
             }
         }
+
+        cache.entries.insert(
+            owner,
+            DirectTextOverlayState {
+                layout: DirectTextLayoutKey::from(text),
+                color: text.color,
+            },
+        );
     }
+}
+
+fn direct_text_color_changed(current: Srgba, next: Srgba) -> bool {
+    (current.red - next.red).abs() > f32::EPSILON
+        || (current.green - next.green).abs() > f32::EPSILON
+        || (current.blue - next.blue).abs() > f32::EPSILON
+        || (current.alpha - next.alpha).abs() > f32::EPSILON
 }
 
 fn resolve_bitmap_scale(desired_pixel_height: f32) -> f32 {

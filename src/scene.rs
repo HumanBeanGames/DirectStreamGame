@@ -192,7 +192,7 @@ pub(crate) fn setup_direct_stream_scene(
             &palette_lookup,
             &mut target,
             batch_size,
-            config.window_mode != WindowMode::Preview,
+            true,
         );
         if config.window_mode == WindowMode::Preview {
             let (display_material, debug_state) = spawn_preview_comparison(

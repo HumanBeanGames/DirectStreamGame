@@ -552,7 +552,7 @@ fn throttle_preview_palette_cameras(
         }
     }
     if let Ok(mut camera) = cameras.get_mut(pipeline.overlay_camera) {
-        camera.is_active = false;
+        camera.is_active = should_render;
     }
 }
 

@@ -282,6 +282,8 @@ fn spawn_preview_comparison(
         source_image: pipeline.source_images[0].clone(),
         palette_texture: pipeline.palette_texture.clone(),
         lookup_texture: pipeline.lookup_texture.clone(),
+        dither_a: Vec4::ZERO,
+        dither_b: Vec4::ZERO,
     });
     commands.spawn((
         Mesh2d(meshes.add(Rectangle::default())),

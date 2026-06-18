@@ -107,6 +107,10 @@ pub(crate) struct PalettePreviewDisplayMaterial {
     pub(crate) palette_texture: Handle<Image>,
     #[texture(3, sample_type = "u_int")]
     pub(crate) lookup_texture: Handle<Image>,
+    #[uniform(4)]
+    pub(crate) dither_a: Vec4,
+    #[uniform(5)]
+    pub(crate) dither_b: Vec4,
 }
 
 impl Material2d for PalettePreviewDisplayMaterial {
@@ -497,7 +501,9 @@ fn sync_palette_material_bias(
 fn sync_palette_material_dither(
     dither: Option<Res<DirectStreamDitherSettings>>,
     pipeline: Option<Res<GpuPalettePipeline>>,
+    throttle: Option<Res<PreviewPaletteThrottle>>,
     mut materials: ResMut<Assets<PaletteMaterial>>,
+    mut preview_materials: ResMut<Assets<PalettePreviewDisplayMaterial>>,
 ) {
     let (Some(dither), Some(pipeline)) = (dither, pipeline) else {
         return;
@@ -507,6 +513,21 @@ fn sync_palette_material_dither(
     }
 
     if let Some(material) = materials.get_mut(&pipeline.material) {
+        let dither_a = Vec4::new(
+            dither.scale.max(1.0),
+            dither.intensity.max(0.0),
+            dither.value_strength,
+            dither.chroma_strength,
+        );
+        let dither_b = Vec4::new(dither.hue_strength, 0.0, 0.0, 0.0);
+        if material.dither_a != dither_a || material.dither_b != dither_b {
+            material.dither_a = dither_a;
+            material.dither_b = dither_b;
+        }
+    }
+    if let Some(throttle) = throttle
+        && let Some(material) = preview_materials.get_mut(&throttle.display_material)
+    {
         let dither_a = Vec4::new(
             dither.scale.max(1.0),
             dither.intensity.max(0.0),

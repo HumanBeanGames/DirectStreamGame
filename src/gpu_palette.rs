@@ -2,7 +2,7 @@ use crate::{
     config::{AppConfig, WindowMode},
     palette::SharedPaletteBias,
     palette_lut::PaletteLookup,
-    public_types::DirectStreamTarget,
+    public_types::{DirectStreamDitherSettings, DirectStreamTarget},
     scene::{PendingReadback, PreviewPixelDebugState, RenderedBatchFrame, StreamReadback},
     stream_control::StreamControl,
 };
@@ -56,14 +56,16 @@ impl Plugin for GpuPalettePlugin {
             Shader::from_wgsl
         );
 
-        app.add_plugins((
-            Material2dPlugin::<PaletteMaterial>::default(),
-            Material2dPlugin::<PalettePreviewDisplayMaterial>::default(),
-            Material2dPlugin::<RawPreviewCopyMaterial>::default(),
-        ))
-        .add_systems(Update, sync_palette_material_bias)
-        .add_systems(Update, throttle_preview_palette_cameras)
-        .add_systems(Update, cycle_camera_render_targets);
+        app.init_resource::<DirectStreamDitherSettings>()
+            .add_plugins((
+                Material2dPlugin::<PaletteMaterial>::default(),
+                Material2dPlugin::<PalettePreviewDisplayMaterial>::default(),
+                Material2dPlugin::<RawPreviewCopyMaterial>::default(),
+            ))
+            .add_systems(Update, sync_palette_material_bias)
+            .add_systems(Update, sync_palette_material_dither)
+            .add_systems(Update, throttle_preview_palette_cameras)
+            .add_systems(Update, cycle_camera_render_targets);
     }
 }
 
@@ -84,6 +86,10 @@ pub(crate) struct PaletteMaterial {
     pub(crate) input_offset_a: Vec4,
     #[uniform(7)]
     pub(crate) input_offset_b: Vec4,
+    #[uniform(8)]
+    pub(crate) dither_a: Vec4,
+    #[uniform(9)]
+    pub(crate) dither_b: Vec4,
 }
 
 impl Material2d for PaletteMaterial {
@@ -306,6 +312,8 @@ pub(crate) fn spawn_custom_host_pipeline(
         lookup_texture: lookup_texture.clone(),
         input_offset_a: palette_input_offset_a(&palette_bias),
         input_offset_b: palette_input_offset_b(&palette_bias),
+        dither_a: Vec4::ZERO,
+        dither_b: Vec4::ZERO,
     });
 
     let source_copy_camera = commands
@@ -483,6 +491,33 @@ fn sync_palette_material_bias(
         material.params = palette_material_params(&bias, pipeline.palette_count);
         material.input_offset_a = palette_input_offset_a(&bias);
         material.input_offset_b = palette_input_offset_b(&bias);
+    }
+}
+
+fn sync_palette_material_dither(
+    dither: Option<Res<DirectStreamDitherSettings>>,
+    pipeline: Option<Res<GpuPalettePipeline>>,
+    mut materials: ResMut<Assets<PaletteMaterial>>,
+) {
+    let (Some(dither), Some(pipeline)) = (dither, pipeline) else {
+        return;
+    };
+    if !dither.is_changed() {
+        return;
+    }
+
+    if let Some(material) = materials.get_mut(&pipeline.material) {
+        let dither_a = Vec4::new(
+            dither.scale.max(1.0),
+            dither.intensity.max(0.0),
+            dither.value_strength,
+            dither.chroma_strength,
+        );
+        let dither_b = Vec4::new(dither.hue_strength, 0.0, 0.0, 0.0);
+        if material.dither_a != dither_a || material.dither_b != dither_b {
+            material.dither_a = dither_a;
+            material.dither_b = dither_b;
+        }
     }
 }
 

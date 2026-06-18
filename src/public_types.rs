@@ -33,6 +33,27 @@ pub struct DirectStreamTarget {
     pub fps: u32,
 }
 
+#[derive(Clone, Copy, Debug, Resource)]
+pub struct DirectStreamDitherSettings {
+    pub scale: f32,
+    pub intensity: f32,
+    pub value_strength: f32,
+    pub chroma_strength: f32,
+    pub hue_strength: f32,
+}
+
+impl Default for DirectStreamDitherSettings {
+    fn default() -> Self {
+        Self {
+            scale: 1.0,
+            intensity: 0.0,
+            value_strength: 0.0,
+            chroma_strength: 0.0,
+            hue_strength: 0.0,
+        }
+    }
+}
+
 #[derive(Clone, Resource)]
 pub struct DirectStreamState {
     pub mode: DirectStreamMode,

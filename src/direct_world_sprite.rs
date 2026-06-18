@@ -302,7 +302,7 @@ fn project_world_sprite(
         return None;
     }
 
-    let snapped_anchor = Vec2::new(projected.x.round(), projected.y.round());
+    let snapped_anchor = Vec2::new(projected.x.floor(), projected.y.floor()) + Vec2::splat(0.5);
     let pixel_size = sprite.pixel_size.as_vec2();
     let center_viewport = snapped_anchor + (Vec2::splat(0.5) - sprite.anchor) * pixel_size;
     let rotation = sprite_rotation(sprite.facing, anchor_world, camera_transform);

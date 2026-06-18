@@ -16,6 +16,10 @@ struct InputHueOffsetParams {
     values: vec4<f32>,
 };
 
+struct DitherParams {
+    values: vec4<f32>,
+};
+
 @group(#{MATERIAL_BIND_GROUP}) @binding(0)
 var<uniform> palette_params: PaletteParams;
 
@@ -39,6 +43,28 @@ var<uniform> input_offset_params: InputOffsetParams;
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(7)
 var<uniform> input_hue_offset_params: InputHueOffsetParams;
+
+@group(#{MATERIAL_BIND_GROUP}) @binding(8)
+var<uniform> dither_params_a: DitherParams;
+
+@group(#{MATERIAL_BIND_GROUP}) @binding(9)
+var<uniform> dither_params_b: DitherParams;
+
+fn srgb_to_linear_channel(value: f32) -> f32 {
+    let clamped = clamp(value, 0.0, 1.0);
+    if clamped <= 0.04045 {
+        return clamped / 12.92;
+    }
+    return pow((clamped + 0.055) / 1.055, 2.4);
+}
+
+fn srgb_to_linear(rgb: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        srgb_to_linear_channel(rgb.r),
+        srgb_to_linear_channel(rgb.g),
+        srgb_to_linear_channel(rgb.b)
+    );
+}
 
 fn rgb_to_oklab(rgb: vec3<f32>) -> vec3<f32> {
     let l = 0.41222146 * rgb.r + 0.53633255 * rgb.g + 0.051445995 * rgb.b;
@@ -148,12 +174,62 @@ fn linear_to_srgb(rgb: vec3<f32>) -> vec3<f32> {
     );
 }
 
+fn bayer2_index(x: u32, y: u32) -> u32 {
+    if x == 0u && y == 0u {
+        return 0u;
+    }
+    if x == 1u && y == 0u {
+        return 2u;
+    }
+    if x == 0u && y == 1u {
+        return 3u;
+    }
+    return 1u;
+}
+
+fn bayer8(cell: vec2<u32>) -> f32 {
+    var index = 0u;
+    for (var bit = 0u; bit < 3u; bit = bit + 1u) {
+        let x_bit = (cell.x >> bit) & 1u;
+        let y_bit = (cell.y >> bit) & 1u;
+        index = index + (bayer2_index(x_bit, y_bit) << (bit * 2u));
+    }
+    return (f32(index) + 0.5) / 64.0;
+}
+
+fn ordered_dither(cell: vec2<i32>, offset: vec2<i32>) -> f32 {
+    let shifted = vec2<u32>(
+        u32((cell.x + offset.x) & 7),
+        u32((cell.y + offset.y) & 7)
+    );
+    return bayer8(shifted) * 2.0 - 1.0;
+}
+
+fn apply_dither(source: vec3<f32>, source_coord: vec2<i32>) -> vec3<f32> {
+    let scale = max(dither_params_a.values.x, 0.125);
+    let intensity = max(dither_params_a.values.y, 0.0);
+    if intensity <= 0.0 {
+        return source;
+    }
+
+    let cell = vec2<i32>(floor((vec2<f32>(f32(source_coord.x), f32(source_coord.y)) + vec2<f32>(0.5)) / scale));
+    let value_noise = ordered_dither(cell, vec2<i32>(0, 0));
+    let chroma_noise = ordered_dither(cell, vec2<i32>(3, 5));
+    let hue_noise = ordered_dither(cell, vec2<i32>(6, 2));
+    var oklch = oklab_to_oklch(rgb_to_oklab(srgb_to_linear(source)));
+    oklch.x = clamp(oklch.x + value_noise * dither_params_a.values.z * intensity, 0.0, 1.0);
+    oklch.y = max(oklch.y + chroma_noise * dither_params_a.values.w * intensity, 0.0);
+    oklch.z = oklch.z + hue_noise * dither_params_b.values.x * intensity * 2.0 * 3.14159265;
+    oklch.y = clamp_chroma_to_srgb_gamut(oklch);
+    return clamp(linear_to_srgb(oklch_to_linear_srgb(oklch)), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let source_size = textureDimensions(source_image);
     let source_uv = clamp(mesh.uv, vec2<f32>(0.0), vec2<f32>(0.999999));
     let source_coord = vec2<i32>(floor(source_uv * vec2<f32>(source_size)));
-    let source = clamp(textureLoad(source_image, source_coord, 0).rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    let source = apply_dither(clamp(textureLoad(source_image, source_coord, 0).rgb, vec3<f32>(0.0), vec3<f32>(1.0)), source_coord);
     let source_u8 = vec3<u32>(round(source * 255.0));
     let lookup_index = source_u8.r * 65536u + source_u8.g * 256u + source_u8.b;
     let lookup_coord = vec2<i32>(

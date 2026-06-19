@@ -105,6 +105,12 @@ pub(crate) struct PalettePreviewDisplayMaterial {
     pub(crate) source_image: Handle<Image>,
     #[texture(2)]
     pub(crate) palette_texture: Handle<Image>,
+    #[texture(3, sample_type = "u_int")]
+    pub(crate) lookup_texture: Handle<Image>,
+    #[uniform(4)]
+    pub(crate) dither_a: Vec4,
+    #[uniform(5)]
+    pub(crate) dither_b: Vec4,
 }
 
 impl Material2d for PalettePreviewDisplayMaterial {
@@ -158,6 +164,7 @@ pub(crate) struct PreviewPaletteThrottle {
     batch_size: usize,
     queued_output_indices: VecDeque<usize>,
     display_material: Handle<PalettePreviewDisplayMaterial>,
+    delay_filled: bool,
 }
 
 impl PreviewPaletteThrottle {
@@ -173,6 +180,7 @@ impl PreviewPaletteThrottle {
             batch_size: batch_size.max(1),
             queued_output_indices: VecDeque::with_capacity(batch_size.max(1)),
             display_material,
+            delay_filled: false,
         }
     }
 }
@@ -501,7 +509,9 @@ fn sync_palette_material_bias(
 fn sync_palette_material_dither(
     dither: Option<Res<DirectStreamDitherSettings>>,
     pipeline: Option<Res<GpuPalettePipeline>>,
+    throttle: Option<Res<PreviewPaletteThrottle>>,
     mut materials: ResMut<Assets<PaletteMaterial>>,
+    mut display_materials: ResMut<Assets<PalettePreviewDisplayMaterial>>,
 ) {
     let (Some(dither), Some(pipeline)) = (dither, pipeline) else {
         return;
@@ -522,6 +532,13 @@ fn sync_palette_material_dither(
             material.dither_a = dither_a;
             material.dither_b = dither_b;
         }
+    }
+    if let Some(throttle) = throttle
+        && let Some(material) = display_materials.get_mut(&throttle.display_material)
+        && (material.dither_a != dither_a || material.dither_b != dither_b)
+    {
+        material.dither_a = dither_a;
+        material.dither_b = dither_b;
     }
 }
 
@@ -554,19 +571,6 @@ fn throttle_preview_palette_cameras(
     }
 
     if should_render && !pipeline.output_images.is_empty() && !pipeline.source_images.is_empty() {
-        if throttle.queued_output_indices.len() >= throttle.batch_size
-            && let Some(display_index) = throttle.queued_output_indices.pop_front()
-            && let Some(display_material) = display_materials.get_mut(&throttle.display_material)
-        {
-            display_material.source_image = pipeline.output_images[display_index].clone();
-            for mut sprite in &mut raw_display {
-                sprite.image = pipeline.source_images[display_index].clone();
-            }
-            if let Some(debug_state) = debug_state.as_deref_mut() {
-                debug_state.raw_image = pipeline.source_images[display_index].clone();
-            }
-        }
-
         let output_index = pipeline.current_output_index;
         let output_image = pipeline.output_images[output_index].clone();
         let source_image = pipeline.source_images[output_index].clone();
@@ -581,6 +585,26 @@ fn throttle_preview_palette_cameras(
         }
 
         throttle.queued_output_indices.push_back(output_index);
+        let display_index = if throttle.queued_output_indices.len() >= throttle.batch_size {
+            throttle.delay_filled = true;
+            throttle.queued_output_indices.pop_front()
+        } else if throttle.delay_filled {
+            None
+        } else {
+            throttle.queued_output_indices.back().copied()
+        };
+        if let Some(display_index) = display_index
+            && let Some(display_material) = display_materials.get_mut(&throttle.display_material)
+        {
+            display_material.source_image = pipeline.source_images[display_index].clone();
+            for mut sprite in &mut raw_display {
+                sprite.image = pipeline.source_images[display_index].clone();
+            }
+            if let Some(debug_state) = debug_state.as_deref_mut() {
+                debug_state.raw_image = pipeline.source_images[display_index].clone();
+            }
+        }
+
         pipeline.current_output_index =
             (pipeline.current_output_index + 1) % pipeline.output_images.len();
     }

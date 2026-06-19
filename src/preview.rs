@@ -1,5 +1,5 @@
 use crate::{
-    frames::{EncodedFrameHub, RawFrame},
+    frames::{EncodedFrameHub, RawFrame, RawFramePixels},
     stats::SharedStats,
 };
 use crossbeam_channel::Receiver;
@@ -96,8 +96,11 @@ impl JpegPreviewEncoder {
             return Err(ffmpeg::Error::InvalidData);
         }
 
+        let RawFramePixels::Bgra(bgra) = &raw.pixels else {
+            return Err(ffmpeg::Error::InvalidData);
+        };
         let mut input = frame::Video::new(Pixel::BGRA, raw.width, raw.height);
-        copy_bgra_into_frame(&raw.bgra, &mut input, raw.width, raw.height);
+        copy_bgra_into_frame(bgra, &mut input, raw.width, raw.height);
 
         let mut converted = frame::Video::new(Pixel::YUVJ420P, raw.width, raw.height);
         self.scaler.run(&input, &mut converted)?;

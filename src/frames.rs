@@ -56,10 +56,16 @@ pub(crate) struct RawFrameSenders {
 
 #[derive(Clone)]
 pub(crate) struct RawFrame {
-    pub(crate) bgra: Vec<u8>,
+    pub(crate) pixels: RawFramePixels,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) captured_at: Instant,
+}
+
+#[derive(Clone)]
+pub(crate) enum RawFramePixels {
+    Bgra(Vec<u8>),
+    Indexed(Vec<u8>),
 }
 
 #[derive(Resource, Default)]

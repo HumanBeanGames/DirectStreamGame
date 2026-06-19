@@ -1,5 +1,7 @@
 use crate::{
-    frames::{DirectStreamFrame, DirectStreamFrameProcessors, RawFrame, RawFrameSenders},
+    frames::{
+        DirectStreamFrame, DirectStreamFrameProcessors, RawFrame, RawFramePixels, RawFrameSenders,
+    },
     public_types::DirectStreamTarget,
     scene::StreamReadback,
     stream_control::StreamControl,
@@ -60,11 +62,11 @@ pub(crate) fn queue_readback_frame(
         return;
     }
 
-    let row_bytes = target.width as usize * 4;
+    let row_bytes = readback.pixel_format.row_bytes(target.width);
     let aligned_row_bytes =
         bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(row_bytes);
 
-    let mut bgra = if row_bytes == aligned_row_bytes {
+    let mut pixels = if row_bytes == aligned_row_bytes {
         event.data.clone()
     } else {
         event
@@ -75,19 +77,21 @@ pub(crate) fn queue_readback_frame(
             .collect()
     };
 
-    processors.process(DirectStreamFrame::new(
-        bgra.as_mut_slice(),
-        target.width,
-        target.height,
-        row_bytes,
-    ));
+    if readback.pixel_format.is_bgra() {
+        processors.process(DirectStreamFrame::new(
+            pixels.as_mut_slice(),
+            target.width,
+            target.height,
+            row_bytes,
+        ));
+    }
 
     senders.stats.with_mut(|stats| stats.frames_captured += 1);
 
     if let Some(preview) = &senders.preview
         && preview
             .try_send(RawFrame {
-                bgra: bgra.clone(),
+                pixels: RawFramePixels::Bgra(pixels.clone()),
                 width: target.width,
                 height: target.height,
                 captured_at,
@@ -103,7 +107,10 @@ pub(crate) fn queue_readback_frame(
     if let Some(custom) = &senders.custom
         && custom
             .try_send(RawFrame {
-                bgra,
+                pixels: match readback.pixel_format {
+                    crate::scene::ReadbackPixelFormat::Bgra => RawFramePixels::Bgra(pixels),
+                    crate::scene::ReadbackPixelFormat::Indexed => RawFramePixels::Indexed(pixels),
+                },
                 width: target.width,
                 height: target.height,
                 captured_at,

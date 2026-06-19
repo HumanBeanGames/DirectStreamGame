@@ -40,6 +40,7 @@ pub(crate) struct RenderedBatchFrame {
 #[derive(Resource)]
 pub(crate) struct StreamReadback {
     pub(crate) images: Vec<Handle<Image>>,
+    pub(crate) pixel_format: ReadbackPixelFormat,
     pub(crate) readback_entities: Vec<Entity>,
     pub(crate) next_readback_entity: usize,
     pub(crate) frame_interval: Duration,
@@ -52,6 +53,25 @@ pub(crate) struct StreamReadback {
     pub(crate) textures_rendered_in_batch: usize,
     pub(crate) frame_waiting_for_render: Option<RenderedBatchFrame>,
     pub(crate) rendered_batch_frames: Vec<RenderedBatchFrame>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReadbackPixelFormat {
+    Bgra,
+    Indexed,
+}
+
+impl ReadbackPixelFormat {
+    pub(crate) fn row_bytes(self, width: u32) -> usize {
+        match self {
+            Self::Bgra => width as usize * 4,
+            Self::Indexed => width as usize,
+        }
+    }
+
+    pub(crate) fn is_bgra(self) -> bool {
+        self == Self::Bgra
+    }
 }
 
 #[derive(Component)]
@@ -223,6 +243,7 @@ pub(crate) fn setup_direct_stream_scene(
                 spawn_readback_entities(&mut commands, pipeline_clone.output_images.len());
             commands.insert_resource(StreamReadback {
                 images: pipeline_clone.output_images.clone(),
+                pixel_format: ReadbackPixelFormat::Indexed,
                 readback_entities,
                 next_readback_entity: 0,
                 frame_interval: Duration::from_secs_f64(1.0 / config.stream_fps as f64),
@@ -279,11 +300,8 @@ fn spawn_preview_comparison(
     ));
 
     let display_material = preview_display_materials.add(PalettePreviewDisplayMaterial {
-        source_image: pipeline.source_images[0].clone(),
+        source_image: pipeline.output_images[0].clone(),
         palette_texture: pipeline.palette_texture.clone(),
-        lookup_texture: pipeline.lookup_texture.clone(),
-        dither_a: Vec4::ZERO,
-        dither_b: Vec4::ZERO,
     });
     commands.spawn((
         Mesh2d(meshes.add(Rectangle::default())),

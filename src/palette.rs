@@ -1,5 +1,5 @@
 use crate::{
-    frames::RawFrame,
+    frames::{RawFrame, RawFramePixels},
     palette_lut::{PaletteLookup, PaletteMatching, load_lookup_bundle},
     stats::SharedStats,
     stream_control::CustomStreamState,
@@ -594,7 +594,10 @@ impl IndexedPixelEncoder {
     }
 
     fn encode(&mut self, raw: &RawFrame, bias: PaletteBias) -> Result<EncodedFrame, String> {
-        let current = self.quantize(raw, bias)?;
+        let current = match &raw.pixels {
+            RawFramePixels::Bgra(_) => self.quantize(raw, bias)?,
+            RawFramePixels::Indexed(pixels) => self.framebuffer_from_indexed(raw, pixels)?,
+        };
         self.encode_framebuffer(raw.width, raw.height, current)
     }
 
@@ -648,12 +651,15 @@ impl IndexedPixelEncoder {
 
     fn quantize(&self, raw: &RawFrame, bias: PaletteBias) -> Result<Framebuffer, String> {
         let pixel_count = raw.width as usize * raw.height as usize;
-        if raw.bgra.len() < pixel_count * 4 {
+        let RawFramePixels::Bgra(bgra) = &raw.pixels else {
+            return Err("indexed frame cannot be quantized as BGRA".to_owned());
+        };
+        if bgra.len() < pixel_count * 4 {
             return Err("raw frame is shorter than expected".to_owned());
         }
 
         let mut pixels = Vec::with_capacity(pixel_count);
-        for pixel in raw.bgra.chunks_exact(4).take(pixel_count) {
+        for pixel in bgra.chunks_exact(4).take(pixel_count) {
             let b = pixel[0];
             let g = pixel[1];
             let r = pixel[2];
@@ -668,6 +674,23 @@ impl IndexedPixelEncoder {
 
         Ok(Framebuffer {
             pixels,
+            width: raw.width as usize,
+            height: raw.height as usize,
+        })
+    }
+
+    fn framebuffer_from_indexed(
+        &self,
+        raw: &RawFrame,
+        indexed: &[u8],
+    ) -> Result<Framebuffer, String> {
+        let pixel_count = raw.width as usize * raw.height as usize;
+        if indexed.len() < pixel_count {
+            return Err("indexed frame is shorter than expected".to_owned());
+        }
+
+        Ok(Framebuffer {
+            pixels: indexed[..pixel_count].to_vec(),
             width: raw.width as usize,
             height: raw.height as usize,
         })
@@ -1499,7 +1522,7 @@ mod tests {
         let mut encoder =
             IndexedPixelEncoder::new(generated_test_palette(), PaletteBias::default(), None);
         let raw = RawFrame {
-            bgra: vec![0; 256 * 256 * 4],
+            pixels: RawFramePixels::Bgra(vec![0; 256 * 256 * 4]),
             width: 256,
             height: 256,
             captured_at: Instant::now(),
@@ -1526,7 +1549,7 @@ mod tests {
             None,
         );
         let raw = RawFrame {
-            bgra: [0, 0, 255, 255].repeat(8 * 8),
+            pixels: RawFramePixels::Bgra([0, 0, 255, 255].repeat(8 * 8)),
             width: 8,
             height: 8,
             captured_at: Instant::now(),
@@ -1535,6 +1558,23 @@ mod tests {
         let encoded = encoder.encode(&raw, PaletteBias::default()).unwrap();
 
         assert!(encoded.framebuffer.pixels.iter().all(|index| *index == 0));
+    }
+
+    #[test]
+    fn indexed_raw_frame_bypasses_cpu_quantization() {
+        let mut encoder =
+            IndexedPixelEncoder::new(generated_test_palette(), PaletteBias::default(), None);
+        let pixels = (0..64).map(|index| index as u8).collect::<Vec<_>>();
+        let raw = RawFrame {
+            pixels: RawFramePixels::Indexed(pixels.clone()),
+            width: 8,
+            height: 8,
+            captured_at: Instant::now(),
+        };
+
+        let encoded = encoder.encode(&raw, PaletteBias::default()).unwrap();
+
+        assert_eq!(encoded.framebuffer.pixels, pixels);
     }
 
     #[test]

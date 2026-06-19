@@ -88,7 +88,8 @@ pub(crate) fn queue_readback_frame(
 
     senders.stats.with_mut(|stats| stats.frames_captured += 1);
 
-    if let Some(preview) = &senders.preview
+    if readback.pixel_format.is_bgra()
+        && let Some(preview) = &senders.preview
         && preview
             .try_send(RawFrame {
                 pixels: RawFramePixels::Bgra(pixels.clone()),
@@ -104,13 +105,18 @@ pub(crate) fn queue_readback_frame(
         });
     }
 
+    let pixel_format = readback.pixel_format;
+    let custom_frame_pixels = match pixel_format {
+        crate::scene::ReadbackPixelFormat::Bgra => RawFramePixels::Bgra(pixels),
+        crate::scene::ReadbackPixelFormat::IndexedRgba8 => {
+            RawFramePixels::Indexed(compact_indexed_rgba8(&pixels, target.width, target.height))
+        }
+    };
+
     if let Some(custom) = &senders.custom
         && custom
             .try_send(RawFrame {
-                pixels: match readback.pixel_format {
-                    crate::scene::ReadbackPixelFormat::Bgra => RawFramePixels::Bgra(pixels),
-                    crate::scene::ReadbackPixelFormat::Indexed => RawFramePixels::Indexed(pixels),
-                },
+                pixels: custom_frame_pixels,
                 width: target.width,
                 height: target.height,
                 captured_at,
@@ -128,6 +134,27 @@ pub(crate) fn queue_readback_frame(
         stats.record_custom_readback_cpu(callback_started.elapsed().as_secs_f64() * 1000.0);
     });
     finish_readback_batch_if_complete(&mut readback, &senders);
+}
+
+fn compact_indexed_rgba8(pixels: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let pixel_count = width as usize * height as usize;
+    let mut indexed = Vec::with_capacity(pixel_count);
+    for pixel in pixels.chunks_exact(4).take(pixel_count) {
+        indexed.push(pixel[0]);
+    }
+    indexed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indexed_rgba8_readback_compacts_red_channel() {
+        let pixels = vec![3, 0, 0, 255, 17, 0, 0, 255, 89, 0, 0, 255, 241, 0, 0, 255];
+
+        assert_eq!(compact_indexed_rgba8(&pixels, 2, 2), vec![3, 17, 89, 241]);
+    }
 }
 
 fn finish_readback_batch_if_complete(readback: &mut StreamReadback, senders: &RawFrameSenders) {

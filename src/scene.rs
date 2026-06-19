@@ -58,14 +58,14 @@ pub(crate) struct StreamReadback {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReadbackPixelFormat {
     Bgra,
-    Indexed,
+    IndexedRgba8,
 }
 
 impl ReadbackPixelFormat {
     pub(crate) fn row_bytes(self, width: u32) -> usize {
         match self {
             Self::Bgra => width as usize * 4,
-            Self::Indexed => width as usize,
+            Self::IndexedRgba8 => width as usize * 4,
         }
     }
 
@@ -243,7 +243,7 @@ pub(crate) fn setup_direct_stream_scene(
                 spawn_readback_entities(&mut commands, pipeline_clone.output_images.len());
             commands.insert_resource(StreamReadback {
                 images: pipeline_clone.output_images.clone(),
-                pixel_format: ReadbackPixelFormat::Indexed,
+                pixel_format: ReadbackPixelFormat::IndexedRgba8,
                 readback_entities,
                 next_readback_entity: 0,
                 frame_interval: Duration::from_secs_f64(1.0 / config.stream_fps as f64),

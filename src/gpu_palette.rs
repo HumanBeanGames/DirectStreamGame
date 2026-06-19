@@ -212,8 +212,8 @@ pub(crate) fn make_stream_output_image(width: u32, height: u32) -> Image {
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        &[0],
-        TextureFormat::R8Unorm,
+        &[0, 0, 0, 255],
+        TextureFormat::Rgba8Unorm,
         RenderAssetUsages::default(),
     );
     image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING

@@ -147,7 +147,7 @@ impl StreamControl {
         direct_stream_state.height = height;
         direct_stream_state.fps = fps;
         readback.images = gpu_palette.output_images.clone();
-        readback.pixel_format = ReadbackPixelFormat::Indexed;
+        readback.pixel_format = ReadbackPixelFormat::IndexedRgba8;
         readback.batch_size = batch_size;
         readback.next_readback_entity = 0;
         readback.batch_started_at = None;

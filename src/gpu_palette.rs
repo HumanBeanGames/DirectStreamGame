@@ -547,6 +547,7 @@ fn throttle_preview_palette_cameras(
     config: Res<AppConfig>,
     pipeline: Option<ResMut<GpuPalettePipeline>>,
     throttle: Option<ResMut<PreviewPaletteThrottle>>,
+    mut palette_materials: ResMut<Assets<PaletteMaterial>>,
     mut display_materials: ResMut<Assets<PalettePreviewDisplayMaterial>>,
     mut debug_state: Option<ResMut<PreviewPixelDebugState>>,
     mut camera_targets: Query<&mut RenderTarget>,
@@ -582,6 +583,9 @@ fn throttle_preview_palette_cameras(
         }
         if let Ok(mut overlay_target) = camera_targets.get_mut(pipeline.overlay_camera) {
             *overlay_target = RenderTarget::Image(source_image.clone().into());
+        }
+        if let Some(material) = palette_materials.get_mut(&pipeline.material) {
+            material.source_image = source_image.clone();
         }
 
         throttle.queued_output_indices.push_back(output_index);
@@ -623,6 +627,7 @@ pub(crate) fn cycle_camera_render_targets(
     time: Res<Time>,
     stream_control: Res<StreamControl>,
     pipeline: Option<ResMut<GpuPalettePipeline>>,
+    mut materials: ResMut<Assets<PaletteMaterial>>,
     mut camera_targets: Query<&mut RenderTarget>,
     readback: Option<ResMut<StreamReadback>>,
     stats: Res<crate::stats::SharedStats>,
@@ -705,6 +710,9 @@ pub(crate) fn cycle_camera_render_targets(
 
     if let Ok(mut overlay_target) = camera_targets.get_mut(pipeline.overlay_camera) {
         *overlay_target = RenderTarget::Image(current_source.clone().into());
+    }
+    if let Some(material) = materials.get_mut(&pipeline.material) {
+        material.source_image = current_source;
     }
 
     pipeline.current_output_index =

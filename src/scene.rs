@@ -53,6 +53,7 @@ pub(crate) struct StreamReadback {
     pub(crate) textures_rendered_in_batch: usize,
     pub(crate) frame_waiting_for_render: Option<RenderedBatchFrame>,
     pub(crate) rendered_batch_frames: Vec<RenderedBatchFrame>,
+    pub(crate) render_settle_frames_remaining: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -256,6 +257,7 @@ pub(crate) fn setup_direct_stream_scene(
                 textures_rendered_in_batch: 0,
                 frame_waiting_for_render: None,
                 rendered_batch_frames: Vec::with_capacity(batch_size),
+                render_settle_frames_remaining: 1,
             });
         }
     }

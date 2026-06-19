@@ -157,6 +157,7 @@ impl StreamControl {
         readback.frame_waiting_for_render = None;
         readback.rendered_batch_frames.clear();
         readback.rendered_batch_frames.reserve(batch_size);
+        readback.render_settle_frames_remaining = 1;
         readback.frame_interval = std::time::Duration::from_secs_f64(1.0 / fps as f64);
         readback.frame_accumulator = std::time::Duration::ZERO;
         readback.pending_requests.clear();
@@ -206,6 +207,7 @@ impl StreamControl {
         readback.textures_rendered_in_batch = 0;
         readback.frame_waiting_for_render = None;
         readback.rendered_batch_frames.clear();
+        readback.render_settle_frames_remaining = 1;
         audio_target.clear();
         self.status = "Custom host stopped".to_owned();
         stats.with_mut(|stats| {

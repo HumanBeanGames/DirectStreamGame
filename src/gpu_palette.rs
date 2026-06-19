@@ -637,7 +637,20 @@ pub(crate) fn cycle_camera_render_targets(
         return;
     };
 
-    if pipeline.output_images.is_empty() || !stream_control.is_streaming() {
+    if pipeline.output_images.is_empty() {
+        return;
+    }
+
+    if !stream_control.is_streaming() {
+        readback.pending_requests.clear();
+        readback.batch_started_at = None;
+        readback.batch_in_progress = false;
+        readback.frame_due = false;
+        readback.frame_accumulator = Duration::ZERO;
+        readback.textures_rendered_in_batch = 0;
+        readback.frame_waiting_for_render = None;
+        readback.rendered_batch_frames.clear();
+        readback.render_settle_frames_remaining = 1;
         return;
     }
 
@@ -653,8 +666,12 @@ pub(crate) fn cycle_camera_render_targets(
     }
 
     if let Some(rendered_frame) = readback.frame_waiting_for_render.take() {
-        readback.textures_rendered_in_batch += 1;
-        readback.rendered_batch_frames.push(rendered_frame);
+        if readback.render_settle_frames_remaining > 0 {
+            readback.render_settle_frames_remaining -= 1;
+        } else {
+            readback.textures_rendered_in_batch += 1;
+            readback.rendered_batch_frames.push(rendered_frame);
+        }
     }
 
     if readback.textures_rendered_in_batch >= readback.batch_size {

@@ -14,6 +14,7 @@ cpu-palette-encoder = []
 [dependencies]
 arboard = "3.4.0"
 bevy = "0.18.1"
+bevy_ui_widgets = "0.18.1"
 crossbeam-channel = "0.5.15"
 
 # Dynamically link LGPL-compatible FFmpeg shared libraries. Do not enable
@@ -21,3 +22,5 @@ crossbeam-channel = "0.5.15"
 # "build-license-nonfree" features for proprietary distribution.
 ffmpeg-next = { version = "=8.1.0", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
 image = { version = "0.25.9", default-features = false, features = ["png"] }
+open = "5.3"
+rfd = "0.15"

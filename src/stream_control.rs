@@ -2,6 +2,7 @@ use crate::{
     audio::DirectStreamAudioTarget,
     chat::LocalChatHub,
     config::{AppConfig, effective_custom_batch_size},
+    constants::INITIAL_RENDER_SETTLE_FRAMES,
     frames::{RawFrame, RawFrameSenders},
     gpu_palette::{
         GpuPalettePipeline, PaletteMaterial, RawPreviewCopyMaterial, make_stream_source_image,
@@ -24,7 +25,7 @@ use bevy::{
 use crossbeam_channel::Sender;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
 };
 
 #[derive(Resource)]
@@ -157,7 +158,7 @@ impl StreamControl {
         readback.frame_waiting_for_render = None;
         readback.rendered_batch_frames.clear();
         readback.rendered_batch_frames.reserve(batch_size);
-        readback.render_settle_frames_remaining = 1;
+        readback.render_settle_frames_remaining = INITIAL_RENDER_SETTLE_FRAMES;
         readback.frame_interval = std::time::Duration::from_secs_f64(1.0 / fps as f64);
         readback.frame_accumulator = std::time::Duration::ZERO;
         readback.pending_requests.clear();
@@ -167,6 +168,7 @@ impl StreamControl {
         senders.custom = Some(custom_sender);
         self.custom_stream_state.set_dimensions(width, height);
         self.custom_stream_state.set_fps(fps);
+        self.custom_stream_state.set_batch_size(batch_size);
         let estimated_latency_ms =
             estimated_video_latency_ms(batch_size, fps, readback.frame_interval);
         let audio_delay_ms = audio_sync.effective_delay_ms(estimated_latency_ms, None);
@@ -207,7 +209,7 @@ impl StreamControl {
         readback.textures_rendered_in_batch = 0;
         readback.frame_waiting_for_render = None;
         readback.rendered_batch_frames.clear();
-        readback.render_settle_frames_remaining = 1;
+        readback.render_settle_frames_remaining = INITIAL_RENDER_SETTLE_FRAMES;
         audio_target.clear();
         self.status = "Custom host stopped".to_owned();
         stats.with_mut(|stats| {
@@ -256,6 +258,7 @@ pub(crate) struct CustomStreamState {
     width: Arc<AtomicU32>,
     height: Arc<AtomicU32>,
     fps: Arc<AtomicU32>,
+    batch_size: Arc<AtomicUsize>,
     audio_delay_ms: Arc<AtomicU32>,
 }
 
@@ -266,6 +269,7 @@ impl CustomStreamState {
             width: Arc::new(AtomicU32::new(1)),
             height: Arc::new(AtomicU32::new(1)),
             fps: Arc::new(AtomicU32::new(1)),
+            batch_size: Arc::new(AtomicUsize::new(1)),
             audio_delay_ms: Arc::new(AtomicU32::new(1_000)),
         }
     }
@@ -280,6 +284,10 @@ impl CustomStreamState {
 
     pub(crate) fn fps(&self) -> u32 {
         self.fps.load(Ordering::Relaxed).max(1)
+    }
+
+    pub(crate) fn batch_size(&self) -> usize {
+        self.batch_size.load(Ordering::Relaxed).max(1)
     }
 
     pub(crate) fn width(&self) -> u32 {
@@ -297,6 +305,10 @@ impl CustomStreamState {
 
     fn set_fps(&self, fps: u32) {
         self.fps.store(fps.max(1), Ordering::Relaxed);
+    }
+
+    fn set_batch_size(&self, batch_size: usize) {
+        self.batch_size.store(batch_size.max(1), Ordering::Relaxed);
     }
 
     pub(crate) fn audio_delay_ms(&self) -> u32 {

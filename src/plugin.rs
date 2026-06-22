@@ -15,8 +15,12 @@ use crate::{
     direct_world_sprite::DirectWorldSpritePlugin,
     gpu_palette::GpuPalettePlugin,
     scene::{
-        handle_preview_pixel_debug_clicks, request_preview_palette_validation,
-        setup_direct_stream_scene, update_preview_pixel_debug_text, update_stats_window,
+        enter_preview_fullscreen, handle_preview_oklch_picker_interactions,
+        handle_preview_palette_checkbox_changes, handle_preview_palette_editor_interactions,
+        handle_preview_pixel_debug_clicks, process_preview_palette_rebake,
+        process_preview_palette_save, request_preview_palette_validation,
+        setup_direct_stream_scene, sync_preview_palette_editor_ui, update_preview_layout,
+        update_preview_pixel_debug_text, update_stats_window,
     },
     stream_control::{
         handle_direct_stream_start_requests, handle_direct_stream_stop_requests,
@@ -27,7 +31,8 @@ use crate::{
     },
     web::start_local_web_server_from_resources,
 };
-use bevy::prelude::*;
+use bevy::{input_focus::InputDispatchPlugin, prelude::*};
+use bevy_ui_widgets::{UiWidgetsPlugins, checkbox_self_update, slider_self_update};
 
 pub struct DirectStreamPlugin;
 
@@ -36,6 +41,8 @@ impl Plugin for DirectStreamPlugin {
         app.init_asset::<StreamAudioClip>()
             .init_resource::<StreamAudioMixer>()
             .add_plugins((
+                UiWidgetsPlugins,
+                InputDispatchPlugin,
                 GpuPalettePlugin,
                 DirectBackdropSpritePlugin,
                 DirectWorldSpritePlugin,
@@ -49,6 +56,8 @@ impl Plugin for DirectStreamPlugin {
             .add_message::<crate::DirectStreamStartRequest>()
             .add_message::<crate::DirectStreamStopRequest>()
             .add_message::<crate::DirectStreamControlResult>()
+            .add_observer(slider_self_update)
+            .add_observer(checkbox_self_update)
             .add_systems(
                 Startup,
                 (
@@ -89,6 +98,14 @@ impl Plugin for DirectStreamPlugin {
                 (
                     update_stream_control_ui,
                     update_stats_window,
+                    enter_preview_fullscreen,
+                    update_preview_layout,
+                    handle_preview_palette_editor_interactions,
+                    handle_preview_palette_checkbox_changes,
+                    handle_preview_oklch_picker_interactions,
+                    process_preview_palette_rebake,
+                    process_preview_palette_save,
+                    sync_preview_palette_editor_ui,
                     request_preview_palette_validation,
                     handle_preview_pixel_debug_clicks,
                     update_preview_pixel_debug_text,

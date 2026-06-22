@@ -220,10 +220,15 @@ fn handle_web_request(
         }
     } else if path.starts_with(STREAM_STATUS_PATH) {
         if let LocalStreamSource::Palette {
-            active, chat_panel, ..
+            frames,
+            active,
+            chat_panel,
+            ..
         } = source
         {
-            serve_stream_status(stream, active, stats, &branding, &layout, chat_panel);
+            serve_stream_status(
+                stream, frames, active, stats, &branding, &layout, chat_panel,
+            );
         } else {
             serve_not_found(stream);
         }
@@ -320,6 +325,7 @@ fn serve_not_found(mut stream: TcpStream) {
 
 fn serve_stream_status(
     mut stream: TcpStream,
+    frame_hub: PaletteFrameHub,
     active: CustomStreamState,
     stats: SharedStats,
     branding: &CustomHostBranding,
@@ -354,9 +360,13 @@ fn serve_stream_status(
         (0.0, 0.0, 0.0, 0.0, active.audio_delay_ms())
     };
     let chat_panel = chat_panel.snapshot();
+    let stream_ready = active.is_active()
+        && frame_hub
+            .has_delayed_encoded_start_batch(CUSTOM_STREAM_SERVER_DELAY, active.batch_size());
     let body = format!(
-        r#"{{"online":{},"version":"{}","branding":{{"page_title":"{}","header_title":"{}"}},"layout":{{"max_player_width_px":{},"prefer_larger_player":{},"minimizable_player":{},"start_player_minimized":{}}},"chat_panel":{{"requested":{},"title":"{}"}},"width":{},"height":{},"fps":{},"audio_delay_ms":{},"video_latency_ms_estimate":{},"batch_duration_ms":{},"readback_latency_ms":{},"http_batch_latency_ms":{}}}"#,
+        r#"{{"online":{},"stream_ready":{},"version":"{}","branding":{{"page_title":"{}","header_title":"{}"}},"layout":{{"max_player_width_px":{},"prefer_larger_player":{},"minimizable_player":{},"start_player_minimized":{}}},"chat_panel":{{"requested":{},"title":"{}"}},"width":{},"height":{},"fps":{},"audio_delay_ms":{},"video_latency_ms_estimate":{},"batch_duration_ms":{},"readback_latency_ms":{},"http_batch_latency_ms":{}}}"#,
         active.is_active(),
+        stream_ready,
         env!("CARGO_PKG_VERSION"),
         json_escape(&branding.page_title),
         json_escape(&branding.header_title),
@@ -1016,21 +1026,14 @@ fn stream_palette(
     }
 
     stats.with_mut(|stats| stats.stream_clients += 1);
-    let stream_fps = active.fps();
-    let header = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Expose-Headers: X-Stream-Fps, X-Playback-Buffer-Seconds\r\nConnection: close\r\nX-Stream-Fps: {stream_fps}\r\nX-Playback-Buffer-Seconds: {CUSTOM_STREAM_PLAYBACK_BUFFER_SECONDS:.3}\r\n\r\n"
-    );
-    if stream.write_all(header.as_bytes()).is_err() {
-        stats.with_mut(|stats| stats.stream_clients = stats.stream_clients.saturating_sub(1));
-        return;
-    }
 
     stats.with_mut(|stats| stats.custom_stage = "waiting for stream frame");
-    let Some(start_batch) =
-        frame_hub.wait_for_delayed_encoded_start_batch(CUSTOM_STREAM_SERVER_DELAY, &stats, || {
-            active.is_active()
-        })
-    else {
+    let Some(start_batch) = frame_hub.wait_for_delayed_encoded_start_batch(
+        CUSTOM_STREAM_SERVER_DELAY,
+        active.batch_size(),
+        &stats,
+        || active.is_active(),
+    ) else {
         stats.with_mut(|stats| stats.stream_clients = stats.stream_clients.saturating_sub(1));
         return;
     };
@@ -1047,8 +1050,13 @@ fn stream_palette(
         stats.with_mut(|stats| stats.stream_clients = stats.stream_clients.saturating_sub(1));
         return;
     };
+    let stream_fps = active.fps();
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Expose-Headers: X-Stream-Fps, X-Playback-Buffer-Seconds\r\nConnection: close\r\nX-Stream-Fps: {stream_fps}\r\nX-Playback-Buffer-Seconds: {CUSTOM_STREAM_PLAYBACK_BUFFER_SECONDS:.3}\r\n\r\n"
+    );
     let mut last_sequence = start_batch.batch.sequence;
-    if stream.write_all(&stream_header).is_err()
+    if stream.write_all(header.as_bytes()).is_err()
+        || stream.write_all(&stream_header).is_err()
         || write_palette_cache_reset(&mut stream).is_err()
         || write_palette_packets(&mut stream, start_packets).is_err()
     {
@@ -1275,6 +1283,8 @@ fn palette_stream_page_html_with_options(
     .player {{ grid-area: player; position: relative; width: min(100%, var(--direct-stream-max-player-width)); aspect-ratio: var(--direct-stream-aspect-ratio); min-width: 240px; }}
     canvas {{ display: block; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; image-rendering: crisp-edges; background: #050608; border: 1px solid #303847; }}
     .stream-overlay {{ position: absolute; inset: 0; width: 100%; height: 100%; border: 0; pointer-events: none; z-index: 3; background: transparent; }}
+    .stream-loading {{ position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; background: #050608; color: #dbe7f3; font: 700 clamp(16px, 3vw, 28px) Arial, sans-serif; letter-spacing: 0; text-align: center; pointer-events: none; }}
+    .stream-loading[hidden] {{ display: none; }}
     .unmute {{ appearance: none; position: absolute; inset: -1px; z-index: 4; display: grid; place-items: center; box-sizing: border-box; margin: 0; padding: 0; border: 0; border-radius: 0; background: rgba(5, 6, 8, 0.54); color: #f8fafc; font: 700 clamp(18px, 4vw, 34px) Arial, sans-serif; cursor: pointer; text-shadow: 0 2px 8px #000; }}
     .unmute[hidden] {{ display: none; }}
     .player-controls {{ position: absolute; z-index: 7; left: 10px; right: 10px; bottom: 10px; display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 5px; background: rgba(5, 6, 8, 0.62); opacity: 0; pointer-events: none; transition: opacity 120ms ease; }}
@@ -1357,6 +1367,7 @@ fn palette_stream_page_html_with_options(
       <div class="player">
         <canvas id="screen" width="{STREAM_WIDTH}" height="{STREAM_HEIGHT}"></canvas>
         <canvas class="stream-overlay" id="streamOverlay" width="{STREAM_WIDTH}" height="{STREAM_HEIGHT}"></canvas>
+        <div class="stream-loading" id="streamLoading">Loading stream...</div>
         <section class="overlay-panels overlay-top-left" id="overlayTopLeftPanels"></section>
         <section class="overlay-panels overlay-top-right" id="overlayTopRightPanels"></section>
         <section class="overlay-panels overlay-bottom-left" id="overlayBottomLeftPanels"></section>
@@ -1377,6 +1388,7 @@ fn palette_stream_page_html_with_options(
     const stage = document.getElementById("stage");
     const canvas = document.getElementById("screen");
     const overlayCanvas = document.getElementById("streamOverlay");
+    const streamLoading = document.getElementById("streamLoading");
     const player = document.querySelector(".player");
     const togglePlayerButton = document.getElementById("togglePlayerButton");
     const pageHeaderTitle = document.getElementById("pageHeaderTitle");
@@ -1435,6 +1447,7 @@ fn palette_stream_page_html_with_options(
     let audioShouldReconnect = false;
     let audioLoopRunning = false;
     let streamOnline = false;
+    let serverStreamReady = false;
     let requestedUiVisible = false;
     let lastChatId = 0;
     let chatGeneration = null;
@@ -1589,6 +1602,7 @@ fn palette_stream_page_html_with_options(
       pending = new Uint8Array(0);
       frameQueue = [];
       streamReady = false;
+      streamLoading.hidden = false;
       playbackRunning = false;
       playbackStarted = false;
       nextPlaybackAt = 0;
@@ -1663,6 +1677,7 @@ fn palette_stream_page_html_with_options(
       image = ctx.createImageData(width, height);
       tileCache.length = 0;
       streamReady = true;
+      streamLoading.hidden = true;
       pending = pending.slice(headerLength);
       drawCustomOverlays();
       return true;
@@ -1911,6 +1926,13 @@ fn palette_stream_page_html_with_options(
           while (!streamOnline) {{
             await new Promise(resolve => setTimeout(resolve, 250));
           }}
+          while (streamOnline && !serverStreamReady) {{
+            streamLoading.hidden = false;
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }}
+          if (!streamOnline) {{
+            continue;
+          }}
           resetStreamState();
           const response = await fetch("{palette_stream_url}?t=" + Date.now(), {{ cache: "no-store" }});
           if (!response.ok) {{
@@ -2152,6 +2174,8 @@ fn palette_stream_page_html_with_options(
           const response = await fetch("{stream_status_url}?t=" + Date.now(), {{ cache: "no-store" }});
           const status = await response.json();
           streamOnline = !!status.online;
+          serverStreamReady = !!status.stream_ready;
+          streamLoading.hidden = !streamOnline || (serverStreamReady && streamReady);
           setRequestedUiVisible(streamOnline && !!(status.chat_panel && status.chat_panel.requested), status.chat_panel);
           applyRuntimeBranding(status);
           if (streamOnline) {{
@@ -2160,6 +2184,8 @@ fn palette_stream_page_html_with_options(
           updateUnmuteOverlay();
         }} catch (error) {{
           streamOnline = false;
+          serverStreamReady = false;
+          streamLoading.hidden = true;
           setRequestedUiVisible(false, null);
           updateUnmuteOverlay();
         }}

@@ -226,6 +226,7 @@ impl PaletteFrameHub {
     pub(crate) fn wait_for_delayed_encoded_start_batch(
         &self,
         delay: Duration,
+        min_packets: usize,
         stats: &SharedStats,
         should_continue: impl Fn() -> bool,
     ) -> Option<EncodedPaletteStartBatch> {
@@ -240,7 +241,9 @@ impl PaletteFrameHub {
             let now = Instant::now();
             let cutoff = now.checked_sub(delay).unwrap_or(now);
             if let Some(entry) = latest.encoded_history.iter().rev().find(|entry| {
-                entry.captured_at <= cutoff && entry.batch.start_packet_index.is_some()
+                entry.captured_at <= cutoff
+                    && entry.batch.start_packet_index.is_some()
+                    && entry.batch.packets.len() >= min_packets.max(1)
             }) {
                 return Some(EncodedPaletteStartBatch {
                     batch: entry.batch.clone(),
@@ -251,6 +254,24 @@ impl PaletteFrameHub {
             let deadline = next_any_encoded_batch_deadline(&latest.encoded_history, delay, now);
             latest = wait_for_next_palette_deadline(ready, latest, deadline, Some(stats))?;
         }
+    }
+
+    pub(crate) fn has_delayed_encoded_start_batch(
+        &self,
+        delay: Duration,
+        min_packets: usize,
+    ) -> bool {
+        let (lock, _) = &*self.inner;
+        let Ok(latest) = lock.lock() else {
+            return false;
+        };
+        let now = Instant::now();
+        let cutoff = now.checked_sub(delay).unwrap_or(now);
+        latest.encoded_history.iter().rev().any(|entry| {
+            entry.captured_at <= cutoff
+                && entry.batch.start_packet_index.is_some()
+                && entry.batch.packets.len() >= min_packets.max(1)
+        })
     }
 
     pub(crate) fn wait_for_delayed_encoded_batch_after(

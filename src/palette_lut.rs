@@ -179,6 +179,13 @@ pub fn sibling_lut_path(path: impl AsRef<Path>) -> PathBuf {
 }
 
 pub fn build_lookup(config: &PaletteConfig) -> Vec<u8> {
+    build_lookup_with_progress(config, |_| {})
+}
+
+pub fn build_lookup_with_progress(
+    config: &PaletteConfig,
+    mut progress: impl FnMut(usize) + Send,
+) -> Vec<u8> {
     let palette_oklch = config
         .colors
         .iter()
@@ -196,6 +203,7 @@ pub fn build_lookup(config: &PaletteConfig) -> Vec<u8> {
                 ));
             }
         }
+        progress((r as usize + 1) * 100 / 256);
     }
 
     entries
@@ -785,6 +793,41 @@ hue = 0.0
 
         assert!(adjusted.c < unclamped_chroma);
         assert!(oklch_in_srgb_gamut(adjusted));
+    }
+
+    #[test]
+    fn chroma_multiply_affects_lookup_choice() {
+        let palette = [
+            Oklch {
+                l: 0.5,
+                c: 0.08,
+                h: 0.0,
+            },
+            Oklch {
+                l: 0.5,
+                c: 0.16,
+                h: 0.0,
+            },
+        ];
+        let source = Oklch {
+            l: 0.5,
+            c: 0.09,
+            h: 0.0,
+        };
+        let plain = PaletteMatching {
+            lightness: 0.0,
+            chroma: 1.0,
+            hue: 0.0,
+            grey_chroma_threshold: 0.001,
+            ..Default::default()
+        };
+        let multiplied = PaletteMatching {
+            chroma_multiply: 1.0,
+            ..plain
+        };
+
+        assert_eq!(nearest_palette_index(source, &palette, plain), 0);
+        assert_eq!(nearest_palette_index(source, &palette, multiplied), 1);
     }
 
     #[test]

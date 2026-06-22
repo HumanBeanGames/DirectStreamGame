@@ -132,9 +132,16 @@ fn clamp_chroma_to_srgb_gamut(color: vec3<f32>) -> f32 {
 
 fn apply_input_offset(color: vec3<f32>) -> vec3<f32> {
     let value_chroma = input_offset_params.value_chroma;
+    let grey_chroma_threshold = clamp(input_hue_offset_params.values.y, 0.0, 1.0);
+    let chroma_offset_enabled = color.y > grey_chroma_threshold;
+    let adjusted_chroma = select(
+        color.y,
+        max(color.y * (1.0 + value_chroma.z) + value_chroma.w, 0.0),
+        chroma_offset_enabled,
+    );
     var adjusted = vec3<f32>(
         clamp(color.x * (1.0 + value_chroma.x) + value_chroma.y, 0.0, 1.0),
-        max(color.y * (1.0 + value_chroma.z) + value_chroma.w, 0.0),
+        adjusted_chroma,
         color.z + input_hue_offset_params.values.x * 2.0 * 3.14159265,
     );
     adjusted.y = clamp_chroma_to_srgb_gamut(adjusted);
@@ -156,6 +163,28 @@ fn biased_distance_squared_oklch(color: vec3<f32>, palette_color: vec3<f32>, bia
     }
     let dh = sin(hue_delta * 0.5) * 2.0 * sqrt(max(color_c * palette_c, 0.0));
     return bias.x * dl * dl + bias.y * dc * dc + bias.z * dh * dh;
+}
+
+fn nearest_palette_index_direct(source: vec3<f32>) -> u32 {
+    let palette_width = textureDimensions(palette_texture).x;
+    let palette_count = min(u32(max(palette_params.bias.w, 1.0)), palette_width);
+    let source_oklch = apply_input_offset(oklab_to_oklch(rgb_to_oklab(srgb_to_linear(source))));
+    let bias = palette_params.bias.xyz;
+    var best_index = 0u;
+    var best_distance = 3.4028234663852886e38;
+    for (var index = 0u; index < 256u; index = index + 1u) {
+        if index >= palette_count {
+            break;
+        }
+        let palette_rgb = textureLoad(palette_texture, vec2<i32>(i32(index), 0), 0).rgb;
+        let palette_oklch = oklab_to_oklch(rgb_to_oklab(srgb_to_linear(palette_rgb)));
+        let distance = biased_distance_squared_oklch(source_oklch, palette_oklch, bias);
+        if distance < best_distance {
+            best_distance = distance;
+            best_index = index;
+        }
+    }
+    return best_index;
 }
 
 fn linear_to_srgb_channel(value: f32) -> f32 {
@@ -230,12 +259,15 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let source_uv = clamp(mesh.uv, vec2<f32>(0.0), vec2<f32>(0.999999));
     let source_coord = vec2<i32>(floor(source_uv * vec2<f32>(source_size)));
     let source = apply_dither(clamp(textureLoad(source_image, source_coord, 0).rgb, vec3<f32>(0.0), vec3<f32>(1.0)), source_coord);
-    let source_u8 = vec3<u32>(round(source * 255.0));
-    let lookup_index = source_u8.r * 65536u + source_u8.g * 256u + source_u8.b;
-    let lookup_coord = vec2<i32>(
-        i32(lookup_index % 4096u),
-        i32(lookup_index / 4096u)
-    );
-    let palette_index = textureLoad(lookup_texture, lookup_coord, 0).r;
+    var palette_index = nearest_palette_index_direct(source);
+    if lookup_params.flags.x > 0.5 {
+        let source_u8 = vec3<u32>(round(source * 255.0));
+        let lookup_index = source_u8.r * 65536u + source_u8.g * 256u + source_u8.b;
+        let lookup_coord = vec2<i32>(
+            i32(lookup_index % 4096u),
+            i32(lookup_index / 4096u)
+        );
+        palette_index = textureLoad(lookup_texture, lookup_coord, 0).r;
+    }
     return vec4<f32>(f32(palette_index) / 255.0, 0.0, 0.0, 1.0);
 }

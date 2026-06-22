@@ -1,9 +1,13 @@
 use crate::{
     config::{AppConfig, WindowMode},
+    constants::INITIAL_RENDER_SETTLE_FRAMES,
     palette::SharedPaletteBias,
     palette_lut::PaletteLookup,
     public_types::{DirectStreamDitherSettings, DirectStreamTarget},
-    scene::{PendingReadback, PreviewPixelDebugState, RenderedBatchFrame, StreamReadback},
+    scene::{
+        PendingReadback, PreviewLoadingText, PreviewPixelDebugState, PreviewStreamVisual,
+        RenderedBatchFrame, StreamReadback,
+    },
     stream_control::StreamControl,
 };
 use bevy::{
@@ -100,16 +104,24 @@ impl Material2d for PaletteMaterial {
 
 #[derive(AsBindGroup, Debug, Clone, Asset, TypePath)]
 pub(crate) struct PalettePreviewDisplayMaterial {
-    #[texture(0)]
-    #[sampler(1)]
+    #[uniform(0)]
+    pub(crate) params: Vec4,
+    #[texture(1)]
+    #[sampler(2)]
     pub(crate) source_image: Handle<Image>,
-    #[texture(2)]
+    #[texture(3)]
     pub(crate) palette_texture: Handle<Image>,
-    #[texture(3, sample_type = "u_int")]
+    #[texture(5, sample_type = "u_int")]
     pub(crate) lookup_texture: Handle<Image>,
     #[uniform(4)]
+    pub(crate) lookup_params: Vec4,
+    #[uniform(6)]
+    pub(crate) input_offset_a: Vec4,
+    #[uniform(7)]
+    pub(crate) input_offset_b: Vec4,
+    #[uniform(8)]
     pub(crate) dither_a: Vec4,
-    #[uniform(5)]
+    #[uniform(9)]
     pub(crate) dither_b: Vec4,
 }
 
@@ -163,7 +175,7 @@ pub(crate) struct PreviewPaletteThrottle {
     frame_accumulator: Duration,
     batch_size: usize,
     queued_output_indices: VecDeque<usize>,
-    display_material: Handle<PalettePreviewDisplayMaterial>,
+    pub(crate) display_material: Handle<PalettePreviewDisplayMaterial>,
     delay_filled: bool,
 }
 
@@ -490,10 +502,14 @@ pub(crate) fn retarget_custom_host_pipeline(
 }
 
 fn sync_palette_material_bias(
+    config: Res<AppConfig>,
     palette_bias: Option<Res<SharedPaletteBias>>,
     pipeline: Option<Res<GpuPalettePipeline>>,
     mut materials: ResMut<Assets<PaletteMaterial>>,
 ) {
+    if config.window_mode == WindowMode::Preview {
+        return;
+    }
     let (Some(palette_bias), Some(pipeline)) = (palette_bias, pipeline) else {
         return;
     };
@@ -553,6 +569,11 @@ fn throttle_preview_palette_cameras(
     mut camera_targets: Query<&mut RenderTarget>,
     mut cameras: Query<&mut Camera>,
     mut raw_display: Query<&mut Sprite, With<PreviewRawDisplay>>,
+    mut preview_visuals: Query<&mut Visibility, With<PreviewStreamVisual>>,
+    mut loading_text: Query<
+        &mut Visibility,
+        (With<PreviewLoadingText>, Without<PreviewStreamVisual>),
+    >,
 ) {
     if config.window_mode != WindowMode::Preview {
         return;
@@ -590,12 +611,20 @@ fn throttle_preview_palette_cameras(
 
         throttle.queued_output_indices.push_back(output_index);
         let display_index = if throttle.queued_output_indices.len() >= throttle.batch_size {
-            throttle.delay_filled = true;
+            if !throttle.delay_filled {
+                throttle.delay_filled = true;
+                for mut visibility in &mut preview_visuals {
+                    *visibility = Visibility::Inherited;
+                }
+                for mut visibility in &mut loading_text {
+                    *visibility = Visibility::Hidden;
+                }
+            }
             throttle.queued_output_indices.pop_front()
         } else if throttle.delay_filled {
             None
         } else {
-            throttle.queued_output_indices.back().copied()
+            None
         };
         if let Some(display_index) = display_index
             && let Some(display_material) = display_materials.get_mut(&throttle.display_material)
@@ -650,7 +679,7 @@ pub(crate) fn cycle_camera_render_targets(
         readback.textures_rendered_in_batch = 0;
         readback.frame_waiting_for_render = None;
         readback.rendered_batch_frames.clear();
-        readback.render_settle_frames_remaining = 1;
+        readback.render_settle_frames_remaining = INITIAL_RENDER_SETTLE_FRAMES;
         return;
     }
 

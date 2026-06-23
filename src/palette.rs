@@ -722,7 +722,7 @@ impl IndexedPixelEncoder {
             && let Some(lookup) = &self.lookup
         {
             let index = (r as usize) << 16 | (g as usize) << 8 | b as usize;
-            return lookup.entries()[index];
+            return lookup.altered_entries()[index];
         }
 
         self.nearest_palette_index(r, g, b, bias)

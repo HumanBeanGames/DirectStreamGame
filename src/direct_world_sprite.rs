@@ -1,4 +1,7 @@
-use crate::{gpu_palette::GpuPalettePipeline, public_types::DirectStreamTarget};
+use crate::{
+    gpu_palette::GpuPalettePipeline,
+    public_types::{DirectColorLookup, DirectStreamTarget},
+};
 use bevy::{
     asset::RenderAssetUsages,
     camera::visibility::RenderLayers,
@@ -32,6 +35,7 @@ pub struct DirectWorldSprite {
     pub pixel_size: UVec2,
     pub anchor: Vec2,
     pub tint: Color,
+    pub color_lookup: DirectColorLookup,
     pub facing: SpriteFacing,
     pub depth_mode: SpriteDepthMode,
     pub depth_bias: f32,
@@ -46,6 +50,7 @@ impl DirectWorldSprite {
             pixel_size,
             anchor: Vec2::splat(0.5),
             tint: Color::WHITE,
+            color_lookup: DirectColorLookup::Direct,
             facing: SpriteFacing::FaceStreamCamera,
             depth_mode: SpriteDepthMode::TestAndWrite,
             depth_bias: 0.0,
@@ -65,6 +70,11 @@ impl DirectWorldSprite {
 
     pub fn with_tint(mut self, tint: Color) -> Self {
         self.tint = tint;
+        self
+    }
+
+    pub fn with_color_lookup(mut self, color_lookup: DirectColorLookup) -> Self {
+        self.color_lookup = color_lookup;
         self
     }
 
@@ -271,13 +281,13 @@ fn sync_direct_world_sprites(
 
             if let Some(existing_material) = materials.get_mut(&render.material) {
                 existing_material.base_color = sprite_tint(
+                    sprite,
                     sprite.tint,
                     target.output_is_indexed,
                     gpu_palette.as_deref(),
                 );
                 existing_material.base_color_texture = Some(sprite.image.clone());
-                existing_material.alpha_mode =
-                    alpha_mode(sprite.depth_mode, target.output_is_indexed);
+                existing_material.alpha_mode = alpha_mode(sprite, target.output_is_indexed);
                 existing_material.depth_bias = depth_bias(sprite);
             }
 
@@ -460,55 +470,47 @@ fn sprite_material(
     gpu_palette: Option<&GpuPalettePipeline>,
 ) -> StandardMaterial {
     StandardMaterial {
-        base_color: sprite_tint(sprite.tint, output_is_indexed, gpu_palette),
+        base_color: sprite_tint(sprite, sprite.tint, output_is_indexed, gpu_palette),
         base_color_texture: Some(sprite.image.clone()),
         unlit: true,
         double_sided: true,
         cull_mode: None::<Face>,
-        alpha_mode: alpha_mode(sprite.depth_mode, output_is_indexed),
+        alpha_mode: alpha_mode(sprite, output_is_indexed),
         depth_bias: depth_bias(sprite),
         ..default()
     }
 }
 
 fn sprite_tint(
+    sprite: &DirectWorldSprite,
     tint: Color,
     output_is_indexed: bool,
     gpu_palette: Option<&GpuPalettePipeline>,
 ) -> Color {
-    if output_is_indexed && let Some(gpu_palette) = gpu_palette {
+    if output_is_indexed
+        && sprite.color_lookup == DirectColorLookup::Direct
+        && let Some(_gpu_palette) = gpu_palette
+    {
         let tint_srgba = tint.to_srgba();
-        let palette_index = nearest_palette_index(tint_srgba, &gpu_palette.palette_colors);
-        let index_value = f32::from(palette_index) / 255.0;
-        return Color::linear_rgba(index_value, 1.0, 0.0, tint_srgba.alpha);
+        if tint_srgba.alpha >= 1.0 - (0.5 / 255.0) {
+            return Color::srgba(
+                tint_srgba.red,
+                tint_srgba.green,
+                tint_srgba.blue,
+                254.0 / 255.0,
+            );
+        }
     }
 
     tint
 }
 
-fn nearest_palette_index(color: Srgba, palette: &[[u8; 4]]) -> u8 {
-    let mut best_index = 0;
-    let mut best_distance = f32::MAX;
-    for (index, [r, g, b, _]) in palette.iter().enumerate() {
-        let dr = color.red - f32::from(*r) / 255.0;
-        let dg = color.green - f32::from(*g) / 255.0;
-        let db = color.blue - f32::from(*b) / 255.0;
-        let da = color.alpha - 1.0;
-        let distance = dr * dr + dg * dg + db * db + da * da;
-        if distance < best_distance {
-            best_distance = distance;
-            best_index = index as u8;
-        }
-    }
-    best_index
-}
-
-fn alpha_mode(mode: SpriteDepthMode, output_is_indexed: bool) -> AlphaMode {
-    if output_is_indexed {
+fn alpha_mode(sprite: &DirectWorldSprite, output_is_indexed: bool) -> AlphaMode {
+    if output_is_indexed && sprite.color_lookup == DirectColorLookup::Direct {
         return AlphaMode::Mask(0.01);
     }
 
-    match mode {
+    match sprite.depth_mode {
         SpriteDepthMode::TestAgainstScene | SpriteDepthMode::AlwaysOnTopBeforeText => {
             AlphaMode::Blend
         }

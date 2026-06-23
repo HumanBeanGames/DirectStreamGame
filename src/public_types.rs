@@ -20,6 +20,12 @@ impl DirectStreamWindowLayout {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectColorLookup {
+    Direct,
+    Altered,
+}
+
 #[derive(Clone, Resource)]
 pub struct DirectStreamTarget {
     pub camera: Entity,

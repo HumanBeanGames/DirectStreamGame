@@ -181,12 +181,26 @@ fn nearest_palette_index_direct(source: vec3<f32>) -> u32 {
     return best_index;
 }
 
-fn direct_palette_index_marker(source: vec3<f32>) -> u32 {
-    let tolerance = 0.5 / 255.0;
-    if source.g >= 1.0 - tolerance && source.b >= 1.0 - tolerance {
-        return min(u32(floor(clamp(source.r, 0.0, 0.999999) * 256.0)), 255u);
+fn nearest_palette_index_raw(source: vec3<f32>) -> u32 {
+    let palette_width = textureDimensions(palette_texture).x;
+    let palette_count = min(u32(max(palette_params.bias.w, 1.0)), palette_width);
+    let source_oklch = oklab_to_oklch(rgb_to_oklab(srgb_to_linear(source)));
+    let bias = palette_params.bias.xyz;
+    var best_index = 0u;
+    var best_distance = 3.4028234663852886e38;
+    for (var index = 0u; index < 256u; index = index + 1u) {
+        if index >= palette_count {
+            break;
+        }
+        let palette_rgb = textureLoad(palette_texture, vec2<i32>(i32(index), 0), 0).rgb;
+        let palette_oklch = oklab_to_oklch(rgb_to_oklab(srgb_to_linear(palette_rgb)));
+        let distance = biased_distance_squared_oklch(source_oklch, palette_oklch, bias);
+        if distance < best_distance {
+            best_distance = distance;
+            best_index = index;
+        }
     }
-    return 256u;
+    return best_index;
 }
 
 fn linear_to_srgb_channel(value: f32) -> f32 {
@@ -255,31 +269,49 @@ fn apply_dither(source: vec3<f32>, source_coord: vec2<i32>) -> vec3<f32> {
     return clamp(linear_to_srgb(oklch_to_linear_srgb(oklch)), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+fn lookup_palette_index(source: vec3<f32>, direct: bool) -> u32 {
+    let lookup_size = textureDimensions(lookup_texture);
+    let source_u8 = vec3<u32>(round(source * 255.0));
+    let lookup_index = source_u8.r * 65536u + source_u8.g * 256u + source_u8.b;
+    var lookup_y = lookup_index / 4096u;
+    if direct && lookup_size.y >= 8192u {
+        lookup_y = lookup_y + 4096u;
+    }
+    let lookup_coord = vec2<i32>(
+        i32(lookup_index % 4096u),
+        i32(lookup_y)
+    );
+    return textureLoad(lookup_texture, lookup_coord, 0).r;
+}
+
+fn lookup_has_direct_entries() -> bool {
+    return textureDimensions(lookup_texture).y >= 8192u;
+}
+
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let source_size = textureDimensions(source_image);
     let source_uv = clamp(mesh.uv, vec2<f32>(0.0), vec2<f32>(0.999999));
     let source_coord = vec2<i32>(floor(source_uv * vec2<f32>(source_size)));
-    let raw_source = clamp(textureLoad(source_image, source_coord, 0).rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    let raw_sample = textureLoad(source_image, source_coord, 0);
+    let raw_source = clamp(raw_sample.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     let palette_width = textureDimensions(palette_texture).x;
     if lookup_params.flags.y > 0.5 {
         let palette_index = min(u32(round(raw_source.r * 255.0)), palette_width - 1u);
         return textureLoad(palette_texture, vec2<i32>(i32(palette_index), 0), 0);
     }
-    var palette_index = direct_palette_index_marker(raw_source);
-    let direct_index = palette_index < 256u;
+    let direct_index = abs(raw_sample.a - (254.0 / 255.0)) <= (0.5 / 255.0);
     let source = apply_dither(raw_source, source_coord);
-    if !direct_index {
+    var palette_index = nearest_palette_index_raw(raw_source);
+    if direct_index {
+        if lookup_params.flags.x > 0.5 && lookup_has_direct_entries() {
+            palette_index = lookup_palette_index(raw_source, true);
+        }
+    } else {
         palette_index = nearest_palette_index_direct(source);
-    }
-    if lookup_params.flags.x > 0.5 && !direct_index {
-        let source_u8 = vec3<u32>(round(source * 255.0));
-        let lookup_index = source_u8.r * 65536u + source_u8.g * 256u + source_u8.b;
-        let lookup_coord = vec2<i32>(
-            i32(lookup_index % 4096u),
-            i32(lookup_index / 4096u)
-        );
-        palette_index = textureLoad(lookup_texture, lookup_coord, 0).r;
+        if lookup_params.flags.x > 0.5 {
+            palette_index = lookup_palette_index(source, false);
+        }
     }
     palette_index = min(palette_index, palette_width - 1u);
     return textureLoad(palette_texture, vec2<i32>(i32(palette_index), 0), 0);

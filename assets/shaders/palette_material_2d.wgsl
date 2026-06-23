@@ -225,14 +225,6 @@ fn exact_palette_index(source: vec3<f32>) -> u32 {
     return 256u;
 }
 
-fn direct_palette_index_marker(source: vec3<f32>) -> u32 {
-    let tolerance = 0.5 / 255.0;
-    if source.g >= 1.0 - tolerance && source.b <= tolerance {
-        return min(u32(floor(clamp(source.r, 0.0, 0.999999) * 256.0)), 255u);
-    }
-    return 256u;
-}
-
 fn linear_to_srgb_channel(value: f32) -> f32 {
     let clamped = clamp(value, 0.0, 1.0);
     if clamped <= 0.0031308 {
@@ -299,6 +291,25 @@ fn apply_dither(source: vec3<f32>, source_coord: vec2<i32>) -> vec3<f32> {
     return clamp(linear_to_srgb(oklch_to_linear_srgb(oklch)), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+fn lookup_palette_index(source: vec3<f32>, direct: bool) -> u32 {
+    let lookup_size = textureDimensions(lookup_texture);
+    let source_u8 = vec3<u32>(round(source * 255.0));
+    let lookup_index = source_u8.r * 65536u + source_u8.g * 256u + source_u8.b;
+    var lookup_y = lookup_index / 4096u;
+    if direct && lookup_size.y >= 8192u {
+        lookup_y = lookup_y + 4096u;
+    }
+    let lookup_coord = vec2<i32>(
+        i32(lookup_index % 4096u),
+        i32(lookup_y)
+    );
+    return textureLoad(lookup_texture, lookup_coord, 0).r;
+}
+
+fn lookup_has_direct_entries() -> bool {
+    return textureDimensions(lookup_texture).y >= 8192u;
+}
+
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let source_size = textureDimensions(source_image);
@@ -310,25 +321,18 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     if exact_index < 256u {
         return vec4<f32>(f32(exact_index) / 255.0, 0.0, 0.0, 1.0);
     }
-    let direct_index = direct_palette_index_marker(raw_source);
-    if direct_index < 256u {
-        return vec4<f32>(f32(direct_index) / 255.0, 0.0, 0.0, 1.0);
-    }
     let direct_alpha_flag = abs(raw_sample.a - (254.0 / 255.0)) <= (0.5 / 255.0);
     if direct_alpha_flag {
-        let palette_index = nearest_palette_index_raw(raw_source);
+        var palette_index = nearest_palette_index_raw(raw_source);
+        if lookup_params.flags.x > 0.5 && lookup_has_direct_entries() {
+            palette_index = lookup_palette_index(raw_source, true);
+        }
         return vec4<f32>(f32(palette_index) / 255.0, 0.0, 0.0, 1.0);
     }
     let source = apply_dither(raw_source, source_coord);
     var palette_index = nearest_palette_index_direct(source);
     if lookup_params.flags.x > 0.5 {
-        let source_u8 = vec3<u32>(round(source * 255.0));
-        let lookup_index = source_u8.r * 65536u + source_u8.g * 256u + source_u8.b;
-        let lookup_coord = vec2<i32>(
-            i32(lookup_index % 4096u),
-            i32(lookup_index / 4096u)
-        );
-        palette_index = textureLoad(lookup_texture, lookup_coord, 0).r;
+        palette_index = lookup_palette_index(source, false);
     }
     return vec4<f32>(f32(palette_index) / 255.0, 0.0, 0.0, 1.0);
 }

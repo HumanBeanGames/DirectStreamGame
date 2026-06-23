@@ -9,6 +9,7 @@ const LUT_MAGIC_V1: &[u8; 8] = b"IPSMAP1\0";
 const LUT_MAGIC_V2: &[u8; 8] = b"IPSMAP2\0";
 const LUT_MAGIC_V3: &[u8; 8] = b"IPSMAP3\0";
 const LUT_MAGIC_V4: &[u8; 8] = b"IPSMAP4\0";
+const LUT_MAGIC_V5: &[u8; 8] = b"IPSMAP5\0";
 const LUT_V1_HEADER_LEN: usize = 30;
 const LUT_V4_HEADER_LEN: usize = 24;
 const PALETTE_MATCHING_ALGORITHM_VERSION: &[u8] = b"oklch-gamut-clamped-v1";
@@ -57,6 +58,15 @@ pub struct PaletteLookup {
 impl PaletteLookup {
     pub fn entries(&self) -> &[u8] {
         &self.entries
+    }
+
+    pub fn altered_entries(&self) -> &[u8] {
+        &self.entries[..LUT_ENTRY_COUNT.min(self.entries.len())]
+    }
+
+    pub fn direct_entries(&self) -> Option<&[u8]> {
+        self.entries
+            .get(LUT_ENTRY_COUNT..LUT_ENTRY_COUNT.saturating_mul(2))
     }
 
     pub fn hash(&self) -> u64 {
@@ -191,21 +201,37 @@ pub fn build_lookup_with_progress(
         .iter()
         .map(|[r, g, b, _]| Oklch::from(rgb_to_oklab(*r, *g, *b)))
         .collect::<Vec<_>>();
-    let mut entries = Vec::with_capacity(LUT_ENTRY_COUNT);
+    let mut altered_entries = Vec::with_capacity(LUT_ENTRY_COUNT);
+    let mut direct_entries = Vec::with_capacity(LUT_ENTRY_COUNT);
 
     for r in 0..=255u8 {
         for g in 0..=255u8 {
             for b in 0..=255u8 {
-                entries.push(nearest_palette_index(
+                altered_entries.push(nearest_palette_index(
                     Oklch::from(rgb_to_oklab(r, g, b)),
                     &palette_oklch,
                     config.matching,
                 ));
             }
         }
-        progress((r as usize + 1) * 100 / 256);
+        progress((r as usize + 1) * 50 / 256);
     }
 
+    for r in 0..=255u8 {
+        for g in 0..=255u8 {
+            for b in 0..=255u8 {
+                direct_entries.push(nearest_palette_index_unaltered(
+                    Oklch::from(rgb_to_oklab(r, g, b)),
+                    &palette_oklch,
+                    config.matching,
+                ));
+            }
+        }
+        progress(50 + (r as usize + 1) * 50 / 256);
+    }
+
+    let mut entries = altered_entries;
+    entries.extend_from_slice(&direct_entries);
     entries
 }
 
@@ -221,9 +247,9 @@ pub fn write_lookup(
 }
 
 pub fn encode_lookup(config: &PaletteConfig, entries: &[u8]) -> Result<Vec<u8>, String> {
-    if entries.len() != LUT_ENTRY_COUNT {
+    if entries.len() != LUT_ENTRY_COUNT && entries.len() != LUT_ENTRY_COUNT * 2 {
         return Err(format!(
-            "LUT must contain {LUT_ENTRY_COUNT} entries, got {}",
+            "LUT must contain {LUT_ENTRY_COUNT} altered entries or {LUT_ENTRY_COUNT} altered plus {LUT_ENTRY_COUNT} direct entries, got {}",
             entries.len()
         ));
     }
@@ -236,7 +262,11 @@ pub fn encode_lookup(config: &PaletteConfig, entries: &[u8]) -> Result<Vec<u8>, 
     let mut bytes = Vec::with_capacity(
         LUT_V4_HEADER_LEN + config.colors.len() * std::mem::size_of::<[u8; 4]>() + entries.len(),
     );
-    bytes.extend_from_slice(LUT_MAGIC_V4);
+    if entries.len() == LUT_ENTRY_COUNT * 2 {
+        bytes.extend_from_slice(LUT_MAGIC_V5);
+    } else {
+        bytes.extend_from_slice(LUT_MAGIC_V4);
+    }
     bytes.extend_from_slice(&lookup_hash(&config.colors, entries).to_le_bytes());
     bytes.extend_from_slice(&colors_len.to_le_bytes());
     bytes.extend_from_slice(&0u16.to_le_bytes());
@@ -262,6 +292,14 @@ pub fn load_lookup_bundle(path: impl AsRef<Path>) -> Result<PaletteLookup, Strin
 }
 
 pub fn decode_lookup(bytes: &[u8], config: &PaletteConfig) -> Result<PaletteLookup, String> {
+    if bytes.len() >= LUT_MAGIC_V5.len() && &bytes[0..8] == LUT_MAGIC_V5 {
+        let lookup = decode_lookup_bundle(bytes)?;
+        if lookup.config.colors != config.colors {
+            return Err("LUT palette colors do not match palette config".to_owned());
+        }
+        return Ok(lookup);
+    }
+
     if bytes.len() >= LUT_MAGIC_V4.len() && &bytes[0..8] == LUT_MAGIC_V4 {
         let lookup = decode_lookup_bundle(bytes)?;
         if lookup.config.colors != config.colors {
@@ -324,8 +362,11 @@ pub fn decode_lookup(bytes: &[u8], config: &PaletteConfig) -> Result<PaletteLook
 }
 
 pub fn decode_lookup_bundle(bytes: &[u8]) -> Result<PaletteLookup, String> {
+    if bytes.len() >= LUT_MAGIC_V5.len() && &bytes[0..8] == LUT_MAGIC_V5 {
+        return decode_lookup_bundle_v4_or_v5(bytes, LUT_ENTRY_COUNT * 2);
+    }
     if bytes.len() >= LUT_MAGIC_V4.len() && &bytes[0..8] == LUT_MAGIC_V4 {
-        return decode_lookup_bundle_v4(bytes);
+        return decode_lookup_bundle_v4_or_v5(bytes, LUT_ENTRY_COUNT);
     }
     if bytes.len() >= LUT_MAGIC_V3.len() && &bytes[0..8] == LUT_MAGIC_V3 {
         return Err(
@@ -339,10 +380,13 @@ pub fn decode_lookup_bundle(bytes: &[u8]) -> Result<PaletteLookup, String> {
                 .to_owned(),
         );
     }
-    Err("LUT is not a self-contained IPSMAP4 lookup".to_owned())
+    Err("LUT is not a self-contained IPSMAP4/IPSMAP5 lookup".to_owned())
 }
 
-fn decode_lookup_bundle_v4(bytes: &[u8]) -> Result<PaletteLookup, String> {
+fn decode_lookup_bundle_v4_or_v5(
+    bytes: &[u8],
+    expected_entry_count: usize,
+) -> Result<PaletteLookup, String> {
     if bytes.len() < LUT_V4_HEADER_LEN {
         return Err(format!(
             "LUT has {} bytes, expected at least {LUT_V4_HEADER_LEN}",
@@ -359,9 +403,9 @@ fn decode_lookup_bundle_v4(bytes: &[u8]) -> Result<PaletteLookup, String> {
     }
     let entry_count =
         u32::from_le_bytes(bytes[20..24].try_into().expect("header slice length")) as usize;
-    if entry_count != LUT_ENTRY_COUNT {
+    if entry_count != expected_entry_count {
         return Err(format!(
-            "LUT header declares {entry_count} entries, expected {LUT_ENTRY_COUNT}"
+            "LUT header declares {entry_count} entries, expected {expected_entry_count}"
         ));
     }
 
@@ -369,7 +413,7 @@ fn decode_lookup_bundle_v4(bytes: &[u8]) -> Result<PaletteLookup, String> {
         .checked_add(color_count * std::mem::size_of::<[u8; 4]>())
         .ok_or_else(|| "LUT palette length overflowed".to_owned())?;
     let expected_len = entries_start
-        .checked_add(LUT_ENTRY_COUNT)
+        .checked_add(expected_entry_count)
         .ok_or_else(|| "LUT entry length overflowed".to_owned())?;
     if bytes.len() != expected_len {
         return Err(format!(
@@ -518,6 +562,14 @@ impl From<Oklab> for Oklch {
 
 fn nearest_palette_index(color: Oklch, palette: &[Oklch], matching: PaletteMatching) -> u8 {
     let color = apply_input_offset(color, matching);
+    nearest_palette_index_unaltered(color, palette, matching)
+}
+
+fn nearest_palette_index_unaltered(
+    color: Oklch,
+    palette: &[Oklch],
+    matching: PaletteMatching,
+) -> u8 {
     let mut best_index = 0;
     let mut best_distance = f32::MAX;
 
@@ -761,6 +813,29 @@ hue = 0.0
         let second = encode_lookup(&config, &shifted_entries).expect("second lookup encodes");
 
         assert_ne!(&first[8..16], &second[8..16]);
+    }
+
+    #[test]
+    fn ipsmap5_stores_altered_and_direct_lookup_entries() {
+        let config = PaletteConfig {
+            colors: vec![[0, 0, 0, 255], [255, 255, 255, 255]],
+            matching: PaletteMatching::default(),
+        };
+        let mut entries = vec![0u8; LUT_ENTRY_COUNT * 2];
+        entries[LUT_ENTRY_COUNT + 12345] = 1;
+
+        let bytes = encode_lookup(&config, &entries).expect("lookup encodes");
+        let lookup = decode_lookup_bundle(&bytes).expect("lookup decodes");
+
+        assert_eq!(&bytes[0..8], LUT_MAGIC_V5);
+        assert_eq!(lookup.altered_entries().len(), LUT_ENTRY_COUNT);
+        assert_eq!(
+            lookup.direct_entries().expect("direct entries").len(),
+            LUT_ENTRY_COUNT
+        );
+        assert_eq!(lookup.altered_entries()[12345], 0);
+        assert_eq!(lookup.direct_entries().expect("direct entries")[12345], 1);
+        assert_eq!(lookup.hash(), lookup_hash(&config.colors, &entries));
     }
 
     #[test]

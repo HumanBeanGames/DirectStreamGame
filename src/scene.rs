@@ -2066,9 +2066,18 @@ pub(crate) fn process_preview_palette_rebake(
     if let (Some(pipeline), Some(editor)) = (pipeline, editor.as_deref()) {
         if let Some(lookup) = completed_lookup
             && let Some(image) = images.get_mut(&pipeline.lookup_texture)
-            && let Some(data) = image.data.as_mut()
         {
-            *data = lookup;
+            if image
+                .data
+                .as_ref()
+                .is_some_and(|data| data.len() == lookup.len())
+            {
+                if let Some(data) = image.data.as_mut() {
+                    *data = lookup;
+                }
+            } else {
+                *image = crate::gpu_palette::make_lookup_texture_from_entries(&lookup);
+            }
         }
         update_preview_palette_materials_for_gpu(
             &pipeline,

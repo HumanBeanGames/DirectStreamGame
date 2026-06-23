@@ -57,7 +57,7 @@ pub use direct_world_sprite::{
 pub use frames::{DirectStreamFrame, DirectStreamFrameAppExt};
 pub use plugin::DirectStreamPlugin;
 pub use public_types::{
-    AudioSyncMode, DirectStreamAudioSyncConfig, DirectStreamControlAction,
+    AudioSyncMode, DirectColorLookup, DirectStreamAudioSyncConfig, DirectStreamControlAction,
     DirectStreamControlResult, DirectStreamDitherSettings, DirectStreamMode, DirectStreamSet,
     DirectStreamStartRequest, DirectStreamState, DirectStreamStopRequest, DirectStreamTarget,
     DirectStreamWindowLayout,

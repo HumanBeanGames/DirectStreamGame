@@ -283,11 +283,16 @@ pub(crate) fn make_palette_texture(colors: &[[u8; 4]]) -> Image {
 }
 
 pub(crate) fn make_lookup_texture(lookup: &PaletteLookup) -> Image {
-    let data = lookup.entries().to_vec();
+    make_lookup_texture_from_entries(lookup.entries())
+}
+
+pub(crate) fn make_lookup_texture_from_entries(entries: &[u8]) -> Image {
+    let data = entries.to_vec();
+    let height = (data.len() / 4096).max(4096) as u32;
     let mut image = Image::new_fill(
         Extent3d {
             width: 4096,
-            height: 4096,
+            height,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,

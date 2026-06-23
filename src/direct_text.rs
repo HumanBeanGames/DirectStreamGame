@@ -1,4 +1,7 @@
-use crate::{gpu_palette::GpuPalettePipeline, public_types::DirectStreamTarget};
+use crate::{
+    gpu_palette::GpuPalettePipeline,
+    public_types::{DirectColorLookup, DirectStreamTarget},
+};
 use bevy::{camera::visibility::RenderLayers, prelude::*};
 use std::collections::{HashMap, HashSet};
 
@@ -26,6 +29,7 @@ pub struct DirectText {
     pub font_size: f32,
     pub threshold: Option<f32>,
     pub color: Srgba,
+    pub color_lookup: DirectColorLookup,
 }
 
 impl DirectText {
@@ -37,6 +41,7 @@ impl DirectText {
             font_size: DEFAULT_DIRECT_TEXT_FONT_SIZE,
             threshold: None,
             color: Srgba::WHITE,
+            color_lookup: DirectColorLookup::Direct,
         }
     }
 
@@ -54,6 +59,11 @@ impl DirectText {
         self.color = color;
         self
     }
+
+    pub fn with_color_lookup(mut self, color_lookup: DirectColorLookup) -> Self {
+        self.color_lookup = color_lookup;
+        self
+    }
 }
 
 #[derive(Component, Clone, Copy)]
@@ -69,6 +79,7 @@ struct DirectTextLayoutKey {
     y: u32,
     font_size: f32,
     threshold: Option<f32>,
+    color_lookup: DirectColorLookup,
 }
 
 impl From<&DirectText> for DirectTextLayoutKey {
@@ -79,6 +90,7 @@ impl From<&DirectText> for DirectTextLayoutKey {
             y: text.y,
             font_size: text.font_size,
             threshold: text.threshold,
+            color_lookup: text.color_lookup,
         }
     }
 }
@@ -146,7 +158,7 @@ fn sync_direct_text_overlays(
     }
 
     if !recolor_owners.is_empty() {
-        let recolors: HashMap<Entity, (Color, Color)> = all_text
+        let recolors: HashMap<Entity, (Color, Color, DirectColorLookup)> = all_text
             .iter()
             .filter(|(owner, _)| recolor_owners.contains(owner))
             .map(|(owner, text)| {
@@ -155,16 +167,19 @@ fn sync_direct_text_overlays(
                     (
                         raw_overlay_color(text),
                         indexed_overlay_color(text, &target, gpu_palette.as_deref()),
+                        text.color_lookup,
                     ),
                 )
             })
             .collect();
         for (_, overlay, mut sprite) in &mut existing {
-            if let Some((raw_color, indexed_color)) = recolors.get(&overlay.owner) {
+            if let Some((raw_color, indexed_color, color_lookup)) = recolors.get(&overlay.owner) {
                 sprite.color = if overlay.raw {
                     *raw_color
-                } else {
+                } else if *color_lookup == DirectColorLookup::Direct {
                     *indexed_color
+                } else {
+                    *raw_color
                 };
             }
         }
@@ -225,20 +240,37 @@ fn sync_direct_text_overlays(
                             columns,
                         );
                     }
-                    spawn_bitmap_glyph(
-                        &mut commands,
-                        &overlay_layer,
-                        owner,
-                        false,
-                        indexed_color,
-                        left,
-                        top,
-                        cursor_x,
-                        cursor_y,
-                        scale,
-                        threshold,
-                        columns,
-                    );
+                    if text.color_lookup == DirectColorLookup::Direct {
+                        spawn_bitmap_glyph(
+                            &mut commands,
+                            &overlay_layer,
+                            owner,
+                            false,
+                            indexed_color,
+                            left,
+                            top,
+                            cursor_x,
+                            cursor_y,
+                            scale,
+                            threshold,
+                            columns,
+                        );
+                    } else if raw_overlay_layer.is_none() {
+                        spawn_bitmap_glyph(
+                            &mut commands,
+                            &overlay_layer,
+                            owner,
+                            false,
+                            raw_color,
+                            left,
+                            top,
+                            cursor_x,
+                            cursor_y,
+                            scale,
+                            threshold,
+                            columns,
+                        );
+                    }
                     cursor_x += advance;
                 }
             }

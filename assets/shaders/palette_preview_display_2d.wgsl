@@ -262,6 +262,10 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let source_coord = vec2<i32>(floor(source_uv * vec2<f32>(source_size)));
     let raw_source = clamp(textureLoad(source_image, source_coord, 0).rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     let palette_width = textureDimensions(palette_texture).x;
+    if lookup_params.flags.y > 0.5 {
+        let palette_index = min(u32(round(raw_source.r * 255.0)), palette_width - 1u);
+        return textureLoad(palette_texture, vec2<i32>(i32(palette_index), 0), 0);
+    }
     var palette_index = direct_palette_index_marker(raw_source);
     let direct_index = palette_index < 256u;
     let source = apply_dither(raw_source, source_coord);

@@ -187,6 +187,28 @@ fn nearest_palette_index_direct(source: vec3<f32>) -> u32 {
     return best_index;
 }
 
+fn nearest_palette_index_raw(source: vec3<f32>) -> u32 {
+    let palette_width = textureDimensions(palette_texture).x;
+    let palette_count = min(u32(max(palette_params.bias.w, 1.0)), palette_width);
+    let source_oklch = oklab_to_oklch(rgb_to_oklab(srgb_to_linear(source)));
+    let bias = palette_params.bias.xyz;
+    var best_index = 0u;
+    var best_distance = 3.4028234663852886e38;
+    for (var index = 0u; index < 256u; index = index + 1u) {
+        if index >= palette_count {
+            break;
+        }
+        let palette_rgb = textureLoad(palette_texture, vec2<i32>(i32(index), 0), 0).rgb;
+        let palette_oklch = oklab_to_oklch(rgb_to_oklab(srgb_to_linear(palette_rgb)));
+        let distance = biased_distance_squared_oklch(source_oklch, palette_oklch, bias);
+        if distance < best_distance {
+            best_distance = distance;
+            best_index = index;
+        }
+    }
+    return best_index;
+}
+
 fn exact_palette_index(source: vec3<f32>) -> u32 {
     let palette_width = textureDimensions(palette_texture).x;
     let palette_count = min(u32(max(palette_params.bias.w, 1.0)), palette_width);
@@ -205,7 +227,7 @@ fn exact_palette_index(source: vec3<f32>) -> u32 {
 
 fn direct_palette_index_marker(source: vec3<f32>) -> u32 {
     let tolerance = 0.5 / 255.0;
-    if source.g >= 1.0 - tolerance && source.b >= 1.0 - tolerance {
+    if source.g >= 1.0 - tolerance && source.b <= tolerance {
         return min(u32(floor(clamp(source.r, 0.0, 0.999999) * 256.0)), 255u);
     }
     return 256u;
@@ -282,7 +304,8 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let source_size = textureDimensions(source_image);
     let source_uv = clamp(mesh.uv, vec2<f32>(0.0), vec2<f32>(0.999999));
     let source_coord = vec2<i32>(floor(source_uv * vec2<f32>(source_size)));
-    let raw_source = clamp(textureLoad(source_image, source_coord, 0).rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    let raw_sample = textureLoad(source_image, source_coord, 0);
+    let raw_source = clamp(raw_sample.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     let exact_index = exact_palette_index(raw_source);
     if exact_index < 256u {
         return vec4<f32>(f32(exact_index) / 255.0, 0.0, 0.0, 1.0);
@@ -290,6 +313,11 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let direct_index = direct_palette_index_marker(raw_source);
     if direct_index < 256u {
         return vec4<f32>(f32(direct_index) / 255.0, 0.0, 0.0, 1.0);
+    }
+    let direct_alpha_flag = abs(raw_sample.a - (254.0 / 255.0)) <= (0.5 / 255.0);
+    if direct_alpha_flag {
+        let palette_index = nearest_palette_index_raw(raw_source);
+        return vec4<f32>(f32(palette_index) / 255.0, 0.0, 0.0, 1.0);
     }
     let source = apply_dither(raw_source, source_coord);
     var palette_index = nearest_palette_index_direct(source);

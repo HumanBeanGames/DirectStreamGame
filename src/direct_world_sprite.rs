@@ -276,7 +276,8 @@ fn sync_direct_world_sprites(
                     gpu_palette.as_deref(),
                 );
                 existing_material.base_color_texture = Some(sprite.image.clone());
-                existing_material.alpha_mode = alpha_mode(sprite.depth_mode);
+                existing_material.alpha_mode =
+                    alpha_mode(sprite.depth_mode, target.output_is_indexed);
                 existing_material.depth_bias = depth_bias(sprite);
             }
 
@@ -464,7 +465,7 @@ fn sprite_material(
         unlit: true,
         double_sided: true,
         cull_mode: None::<Face>,
-        alpha_mode: alpha_mode(sprite.depth_mode),
+        alpha_mode: alpha_mode(sprite.depth_mode, output_is_indexed),
         depth_bias: depth_bias(sprite),
         ..default()
     }
@@ -478,14 +479,8 @@ fn sprite_tint(
     if output_is_indexed && let Some(gpu_palette) = gpu_palette {
         let tint_srgba = tint.to_srgba();
         let palette_index = nearest_palette_index(tint_srgba, &gpu_palette.palette_colors);
-        if let Some([r, g, b, _]) = gpu_palette.palette_colors.get(palette_index as usize) {
-            return Color::srgba(
-                f32::from(*r) / 255.0,
-                f32::from(*g) / 255.0,
-                f32::from(*b) / 255.0,
-                tint_srgba.alpha,
-            );
-        }
+        let index_value = f32::from(palette_index) / 255.0;
+        return Color::linear_rgba(index_value, 1.0, 0.0, tint_srgba.alpha);
     }
 
     tint
@@ -508,7 +503,11 @@ fn nearest_palette_index(color: Srgba, palette: &[[u8; 4]]) -> u8 {
     best_index
 }
 
-fn alpha_mode(mode: SpriteDepthMode) -> AlphaMode {
+fn alpha_mode(mode: SpriteDepthMode, output_is_indexed: bool) -> AlphaMode {
+    if output_is_indexed {
+        return AlphaMode::Mask(0.01);
+    }
+
     match mode {
         SpriteDepthMode::TestAgainstScene | SpriteDepthMode::AlwaysOnTopBeforeText => {
             AlphaMode::Blend

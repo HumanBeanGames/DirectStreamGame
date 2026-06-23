@@ -28,6 +28,7 @@ pub struct DirectStreamTarget {
     pub output_image: Handle<Image>,
     pub output_is_indexed: bool,
     pub overlay_layer: usize,
+    pub raw_overlay_layer: Option<usize>,
     pub width: u32,
     pub height: u32,
     pub fps: u32,

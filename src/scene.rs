@@ -481,6 +481,7 @@ pub(crate) fn setup_direct_stream_scene(
         output_image: stream_image.clone(),
         output_is_indexed: false,
         overlay_layer: 0,
+        raw_overlay_layer: None,
         width: config.stream_width,
         height: config.stream_height,
         fps: config.stream_fps,
@@ -603,10 +604,10 @@ fn spawn_preview_comparison(
 
     let display_material = preview_display_materials.add(PalettePreviewDisplayMaterial {
         params: Vec4::new(0.333, 0.333, 0.334, pipeline.palette_count.max(1) as f32),
-        source_image: pipeline.source_images[0].clone(),
+        source_image: pipeline.output_images[0].clone(),
         palette_texture: pipeline.palette_texture.clone(),
         lookup_texture: pipeline.lookup_texture.clone(),
-        lookup_params: Vec4::new(1.0, 0.0, 0.0, 0.0),
+        lookup_params: Vec4::new(1.0, 1.0, 0.0, 0.0),
         input_offset_a: Vec4::ZERO,
         input_offset_b: Vec4::new(0.0, 0.001, 0.0, 0.0),
         dither_a: Vec4::ZERO,

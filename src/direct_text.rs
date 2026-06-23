@@ -282,14 +282,8 @@ fn overlay_color(
         && let Some(gpu_palette) = gpu_palette
     {
         let palette_index = nearest_palette_index(text.color, &gpu_palette.palette_colors);
-        if let Some([r, g, b, _]) = gpu_palette.palette_colors.get(palette_index as usize) {
-            return Color::srgba(
-                f32::from(*r) / 255.0,
-                f32::from(*g) / 255.0,
-                f32::from(*b) / 255.0,
-                text.color.alpha,
-            );
-        }
+        let index_value = (f32::from(palette_index) + 0.5) / 256.0;
+        return Color::linear_rgba(index_value, 1.0, 1.0, text.color.alpha);
     }
 
     Color::srgba(

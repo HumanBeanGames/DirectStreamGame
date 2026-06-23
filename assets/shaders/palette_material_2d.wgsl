@@ -203,6 +203,14 @@ fn exact_palette_index(source: vec3<f32>) -> u32 {
     return 256u;
 }
 
+fn direct_palette_index_marker(source: vec3<f32>) -> u32 {
+    let tolerance = 0.5 / 255.0;
+    if source.g >= 1.0 - tolerance && source.b >= 1.0 - tolerance {
+        return min(u32(floor(clamp(source.r, 0.0, 0.999999) * 256.0)), 255u);
+    }
+    return 256u;
+}
+
 fn linear_to_srgb_channel(value: f32) -> f32 {
     let clamped = clamp(value, 0.0, 1.0);
     if clamped <= 0.0031308 {
@@ -278,6 +286,10 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let exact_index = exact_palette_index(raw_source);
     if exact_index < 256u {
         return vec4<f32>(f32(exact_index) / 255.0, 0.0, 0.0, 1.0);
+    }
+    let direct_index = direct_palette_index_marker(raw_source);
+    if direct_index < 256u {
+        return vec4<f32>(f32(direct_index) / 255.0, 0.0, 0.0, 1.0);
     }
     let source = apply_dither(raw_source, source_coord);
     var palette_index = nearest_palette_index_direct(source);

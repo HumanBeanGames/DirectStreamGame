@@ -801,11 +801,15 @@ current working directory. Missing, invalid, or stale lookup files fail startup
 immediately.
 
 The `.ipsmap` file is a direct sRGB-to-palette lookup table plus the binary
-palette colours needed to build stream headers. New maps use the `IPSMAP4`
-format. IPSMAP4 does not store palette TOML or matching/bias settings: those
-authoring controls are cooked into the 16,777,216 lookup entries when the map is
-baked. The file hash validates the embedded palette colours and cooked entries
-themselves.
+palette colours needed to build stream headers. New maps use the `IPSMAP5`
+format. IPSMAP5 stores two 16,777,216-entry lookup tables: the altered table for
+normal composited scene pixels, then the direct table for explicit colours that
+should bypass input offsets. The format does not store palette TOML or
+matching/bias settings: those authoring controls are cooked into the lookup
+entries when the map is baked. The file hash validates the embedded palette
+colours and cooked entries themselves. Older self-contained IPSMAP4 files still
+load, but direct-colour pixels fall back to raw nearest-palette matching until
+the map is regenerated as IPSMAP5.
 
 Palette TOML remains the editable source format used by the palette tools and
 lab. Palette matching during baking has two stages:
@@ -851,7 +855,7 @@ colours, or DirectStreamGame palette-matching versions.
 Migration for existing apps:
 
 1. Update the `DirectStreamGame` dependency to a version that supports cooked
-   self-contained `IPSMAP4` lookup files.
+   self-contained `IPSMAP5` lookup files.
 2. Keep a palette TOML in your downstream app or asset pipeline if useful, but
    ship `palette.ipsmap` as the runtime artifact.
 3. Regenerate `.ipsmap` with `ipsc_build_palette_lut` or the Palette Lab.

@@ -310,14 +310,14 @@ pub fn decode_lookup(bytes: &[u8], config: &PaletteConfig) -> Result<PaletteLook
 
     if bytes.len() >= LUT_MAGIC_V3.len() && &bytes[0..8] == LUT_MAGIC_V3 {
         return Err(
-            "IPSMAP3 matching-metadata lookups are no longer supported; regenerate an IPSMAP4 lookup"
+            "IPSMAP3 matching-metadata lookups are no longer supported; regenerate an IPSMAP5 lookup"
                 .to_owned(),
         );
     }
 
     if bytes.len() >= LUT_MAGIC_V2.len() && &bytes[0..8] == LUT_MAGIC_V2 {
         return Err(
-            "IPSMAP2 embedded-TOML lookups are no longer supported; regenerate an IPSMAP4 lookup"
+            "IPSMAP2 embedded-TOML lookups are no longer supported; regenerate an IPSMAP5 lookup"
                 .to_owned(),
         );
     }
@@ -370,13 +370,13 @@ pub fn decode_lookup_bundle(bytes: &[u8]) -> Result<PaletteLookup, String> {
     }
     if bytes.len() >= LUT_MAGIC_V3.len() && &bytes[0..8] == LUT_MAGIC_V3 {
         return Err(
-            "IPSMAP3 matching-metadata lookups are no longer supported; regenerate an IPSMAP4 lookup"
+            "IPSMAP3 matching-metadata lookups are no longer supported; regenerate an IPSMAP5 lookup"
                 .to_owned(),
         );
     }
     if bytes.len() >= LUT_MAGIC_V2.len() && &bytes[0..8] == LUT_MAGIC_V2 {
         return Err(
-            "IPSMAP2 embedded-TOML lookups are no longer supported; regenerate an IPSMAP4 lookup"
+            "IPSMAP2 embedded-TOML lookups are no longer supported; regenerate an IPSMAP5 lookup"
                 .to_owned(),
         );
     }

@@ -1030,7 +1030,9 @@ fn palette_lab_html() -> String {
     }
 
     async function bakeMapBlob(artifact) {
-      const entries = new Uint8Array(256 * 256 * 256);
+      const tableSize = 256 * 256 * 256;
+      const alteredEntries = new Uint8Array(tableSize);
+      const directEntries = new Uint8Array(tableSize);
       const paletteOklch = artifact.colors.map(color => oklabToOklch(rgbToOklab(color[0], color[1], color[2])));
       const matching = artifact.settings.bias;
       const offset = artifact.settings.offset;
@@ -1040,16 +1042,33 @@ fn palette_lab_html() -> String {
       for (let r = 0; r < 256; r++) {
         for (let g = 0; g < 256; g++) {
           for (let b = 0; b < 256; b++) {
-            entries[cursor++] = nearestPaletteIndexForMap(rgbToOklab(r, g, b), paletteOklch, matching, offset);
+            alteredEntries[cursor++] = nearestPaletteIndexForMap(rgbToOklab(r, g, b), paletteOklch, matching, offset);
           }
         }
         if (r % 4 === 0) {
-          const percent = r / 255 * 100;
+          const percent = r / 255 * 50;
           setBakeProgress(percent);
           status.textContent = `${artifact.baseStatus}\nbaking ${artifact.base}.ipsmap... ${Math.round(percent)}%`;
           await new Promise(resolve => setTimeout(resolve, 0));
         }
       }
+      cursor = 0;
+      for (let r = 0; r < 256; r++) {
+        for (let g = 0; g < 256; g++) {
+          for (let b = 0; b < 256; b++) {
+            directEntries[cursor++] = nearestPaletteIndexForMap(rgbToOklab(r, g, b), paletteOklch, matching, null);
+          }
+        }
+        if (r % 4 === 0) {
+          const percent = 50 + r / 255 * 50;
+          setBakeProgress(percent);
+          status.textContent = `${artifact.baseStatus}\nbaking ${artifact.base}.ipsmap... ${Math.round(percent)}%`;
+          await new Promise(resolve => setTimeout(resolve, 0));
+        }
+      }
+      const entries = new Uint8Array(tableSize * 2);
+      entries.set(alteredEntries, 0);
+      entries.set(directEntries, tableSize);
       setBakeProgress(100);
 
       const paletteBytes = new Uint8Array(artifact.colors.length * 4);
@@ -1062,7 +1081,7 @@ fn palette_lab_html() -> String {
         paletteBytes[dst + 3] = color[3] ?? 255;
       }
       const header = new Uint8Array(24);
-      header.set([0x49, 0x50, 0x53, 0x4d, 0x41, 0x50, 0x34, 0x00], 0);
+      header.set([0x49, 0x50, 0x53, 0x4d, 0x41, 0x50, 0x35, 0x00], 0);
       writeU64(header, 8, lookupHash(artifact.colors, entries));
       writeU16(header, 16, artifact.colors.length);
       writeU16(header, 18, 0);
@@ -1071,7 +1090,8 @@ fn palette_lab_html() -> String {
     }
 
     function nearestPaletteIndexForMap(oklab, paletteOklch, matching, offset) {
-      const color = offsetInputOklch(oklabToOklch(oklab), offset);
+      const baseColor = oklabToOklch(oklab);
+      const color = offset ? offsetInputOklch(baseColor, offset) : baseColor;
       let bestIndex = 0;
       let bestDistance = Number.POSITIVE_INFINITY;
       for (let i = 0; i < Math.min(256, paletteOklch.length); i++) {

@@ -193,18 +193,23 @@
     }
 
     function parseIpsmap(bytes) {
-      const magic = [0x49, 0x50, 0x53, 0x4d, 0x41, 0x50, 0x34, 0x00];
-      if (bytes.length < 24 || !magic.every((value, index) => bytes[index] === value)) {
-        throw new Error("Palette must be a self-contained IPSMAP4 lookup.");
+      const magic4 = [0x49, 0x50, 0x53, 0x4d, 0x41, 0x50, 0x34, 0x00];
+      const magic5 = [0x49, 0x50, 0x53, 0x4d, 0x41, 0x50, 0x35, 0x00];
+      const isIpsmap4 = bytes.length >= 24 && magic4.every((value, index) => bytes[index] === value);
+      const isIpsmap5 = bytes.length >= 24 && magic5.every((value, index) => bytes[index] === value);
+      if (!isIpsmap4 && !isIpsmap5) {
+        throw new Error("Palette must be a self-contained IPSMAP4/IPSMAP5 lookup.");
       }
 
       const colorCount = readU16(bytes, 16);
       const entryCount = readU32(bytes, 20);
+      const alteredEntryCount = 256 * 256 * 256;
+      const expectedEntryCount = isIpsmap5 ? alteredEntryCount * 2 : alteredEntryCount;
       if (colorCount < 1 || colorCount > 256) {
         throw new Error(`IPSMAP palette has invalid colour count ${colorCount}.`);
       }
-      if (entryCount !== 256 * 256 * 256) {
-        throw new Error(`IPSMAP lookup has ${entryCount} entries; expected 16777216.`);
+      if (entryCount !== expectedEntryCount) {
+        throw new Error(`IPSMAP lookup has ${entryCount} entries; expected ${expectedEntryCount}.`);
       }
 
       const paletteOffset = 24;
@@ -222,7 +227,7 @@
 
       return {
         palette,
-        entries: bytes.slice(entriesOffset, expectedLength),
+        entries: bytes.slice(entriesOffset, entriesOffset + alteredEntryCount),
       };
     }
 

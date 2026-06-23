@@ -33,6 +33,7 @@ pub struct DirectBackdropSprite {
     pub uv_offset: Vec2,
     pub uv_scale: Vec2,
     pub tint: Color,
+    pub alpha_cutoff: Option<f32>,
     pub layer: DirectBackdropLayer,
     pub depth: f32,
 }
@@ -45,6 +46,7 @@ impl DirectBackdropSprite {
             uv_offset: Vec2::ZERO,
             uv_scale: Vec2::ONE,
             tint: Color::WHITE,
+            alpha_cutoff: None,
             layer: DirectBackdropLayer::BehindWorld,
             depth: 512.0,
         }
@@ -67,6 +69,11 @@ impl DirectBackdropSprite {
 
     pub fn with_tint(mut self, tint: Color) -> Self {
         self.tint = tint;
+        self
+    }
+
+    pub fn with_alpha_cutoff(mut self, alpha_cutoff: f32) -> Self {
+        self.alpha_cutoff = Some(alpha_cutoff.clamp(0.0, 1.0));
         self
     }
 
@@ -109,6 +116,7 @@ struct DirectBackdropSpriteRender {
     mesh: Handle<Mesh>,
     image: Handle<Image>,
     pixel_rect: Option<URect>,
+    alpha_cutoff: Option<f32>,
     layer: DirectBackdropLayer,
     depth: f32,
     target_size: UVec2,
@@ -211,6 +219,7 @@ fn sync_direct_backdrop_sprites(
                         mesh,
                         image: sprite.image.clone(),
                         pixel_rect: sprite.pixel_rect,
+                        alpha_cutoff: sprite.alpha_cutoff,
                         layer: sprite.layer,
                         depth: sprite.depth,
                         target_size: UVec2::new(target.width, target.height),
@@ -249,10 +258,12 @@ fn sync_direct_backdrop_sprites(
 
             if render.image != sprite.image
                 || render.pixel_rect != sprite.pixel_rect
+                || render.alpha_cutoff != sprite.alpha_cutoff
                 || render.layer != sprite.layer
             {
                 render.image = sprite.image.clone();
                 render.pixel_rect = sprite.pixel_rect;
+                render.alpha_cutoff = sprite.alpha_cutoff;
                 render.layer = sprite.layer;
             }
 
@@ -264,6 +275,7 @@ fn sync_direct_backdrop_sprites(
                 existing_material.base_color = sprite.tint;
                 existing_material.base_color_texture = Some(sprite.image.clone());
                 existing_material.depth_bias = backdrop_depth_bias(sprite.layer);
+                existing_material.alpha_mode = backdrop_alpha_mode(sprite);
                 existing_material.uv_transform =
                     Affine2::from_scale_angle_translation(sprite.uv_scale, 0.0, sprite.uv_offset);
             }
@@ -380,10 +392,18 @@ fn backdrop_material(sprite: &DirectBackdropSprite) -> StandardMaterial {
         unlit: true,
         double_sided: true,
         cull_mode: None::<Face>,
-        alpha_mode: AlphaMode::Blend,
+        alpha_mode: backdrop_alpha_mode(sprite),
         depth_bias: backdrop_depth_bias(sprite.layer),
         uv_transform: Affine2::from_scale_angle_translation(sprite.uv_scale, 0.0, sprite.uv_offset),
         ..default()
+    }
+}
+
+fn backdrop_alpha_mode(sprite: &DirectBackdropSprite) -> AlphaMode {
+    if let Some(alpha_cutoff) = sprite.alpha_cutoff {
+        AlphaMode::Mask(alpha_cutoff)
+    } else {
+        AlphaMode::Blend
     }
 }
 

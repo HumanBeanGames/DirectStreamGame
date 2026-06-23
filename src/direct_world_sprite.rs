@@ -1,4 +1,4 @@
-use crate::public_types::DirectStreamTarget;
+use crate::{gpu_palette::GpuPalettePipeline, public_types::DirectStreamTarget};
 use bevy::{
     asset::RenderAssetUsages,
     camera::visibility::RenderLayers,
@@ -151,6 +151,7 @@ fn sync_direct_world_sprites(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     atlases: Res<Assets<TextureAtlasLayout>>,
+    gpu_palette: Option<Res<GpuPalettePipeline>>,
 ) {
     let (camera, camera_transform, camera_layers) = {
         let camera_query = queries.p0();
@@ -213,7 +214,11 @@ fn sync_direct_world_sprites(
             render_entity
         } else {
             let mesh = meshes.add(sprite_mesh(atlas_frame));
-            let material = materials.add(sprite_material(sprite));
+            let material = materials.add(sprite_material(
+                sprite,
+                target.output_is_indexed,
+                gpu_palette.as_deref(),
+            ));
             let render_entity = commands
                 .spawn((
                     Mesh3d(mesh.clone()),
@@ -265,7 +270,11 @@ fn sync_direct_world_sprites(
             }
 
             if let Some(existing_material) = materials.get_mut(&render.material) {
-                existing_material.base_color = sprite.tint;
+                existing_material.base_color = sprite_tint(
+                    sprite.tint,
+                    target.output_is_indexed,
+                    gpu_palette.as_deref(),
+                );
                 existing_material.base_color_texture = Some(sprite.image.clone());
                 existing_material.alpha_mode = alpha_mode(sprite.depth_mode);
                 existing_material.depth_bias = depth_bias(sprite);
@@ -444,9 +453,13 @@ fn sprite_mesh(atlas_frame: Option<AtlasFrame>) -> Mesh {
     .with_inserted_indices(Indices::U32(vec![0, 1, 2, 0, 2, 3]))
 }
 
-fn sprite_material(sprite: &DirectWorldSprite) -> StandardMaterial {
+fn sprite_material(
+    sprite: &DirectWorldSprite,
+    output_is_indexed: bool,
+    gpu_palette: Option<&GpuPalettePipeline>,
+) -> StandardMaterial {
     StandardMaterial {
-        base_color: sprite.tint,
+        base_color: sprite_tint(sprite.tint, output_is_indexed, gpu_palette),
         base_color_texture: Some(sprite.image.clone()),
         unlit: true,
         double_sided: true,
@@ -455,6 +468,44 @@ fn sprite_material(sprite: &DirectWorldSprite) -> StandardMaterial {
         depth_bias: depth_bias(sprite),
         ..default()
     }
+}
+
+fn sprite_tint(
+    tint: Color,
+    output_is_indexed: bool,
+    gpu_palette: Option<&GpuPalettePipeline>,
+) -> Color {
+    if output_is_indexed && let Some(gpu_palette) = gpu_palette {
+        let tint_srgba = tint.to_srgba();
+        let palette_index = nearest_palette_index(tint_srgba, &gpu_palette.palette_colors);
+        if let Some([r, g, b, _]) = gpu_palette.palette_colors.get(palette_index as usize) {
+            return Color::srgba(
+                f32::from(*r) / 255.0,
+                f32::from(*g) / 255.0,
+                f32::from(*b) / 255.0,
+                tint_srgba.alpha,
+            );
+        }
+    }
+
+    tint
+}
+
+fn nearest_palette_index(color: Srgba, palette: &[[u8; 4]]) -> u8 {
+    let mut best_index = 0;
+    let mut best_distance = f32::MAX;
+    for (index, [r, g, b, _]) in palette.iter().enumerate() {
+        let dr = color.red - f32::from(*r) / 255.0;
+        let dg = color.green - f32::from(*g) / 255.0;
+        let db = color.blue - f32::from(*b) / 255.0;
+        let da = color.alpha - 1.0;
+        let distance = dr * dr + dg * dg + db * db + da * da;
+        if distance < best_distance {
+            best_distance = distance;
+            best_index = index as u8;
+        }
+    }
+    best_index
 }
 
 fn alpha_mode(mode: SpriteDepthMode) -> AlphaMode {

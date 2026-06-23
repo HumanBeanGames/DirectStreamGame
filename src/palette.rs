@@ -1582,6 +1582,33 @@ mod tests {
     }
 
     #[test]
+    fn exact_palette_fast_path_ignores_input_offsets() {
+        let mut encoder = IndexedPixelEncoder::new(
+            vec![[255, 0, 0, 255], [0, 255, 255, 255]],
+            PaletteBias::default(),
+            None,
+        );
+        let raw = RawFrame {
+            pixels: RawFramePixels::Bgra([0, 0, 255, 255].repeat(8 * 8)),
+            width: 8,
+            height: 8,
+            captured_at: Instant::now(),
+        };
+        let bias = PaletteBias {
+            lightness_multiply: -0.85,
+            lightness_add: -0.35,
+            chroma_multiply: 2.5,
+            chroma_add: 0.25,
+            hue_add: 0.5,
+            ..PaletteBias::default()
+        };
+
+        let encoded = encoder.encode(&raw, bias).unwrap();
+
+        assert!(encoded.framebuffer.pixels.iter().all(|index| *index == 0));
+    }
+
+    #[test]
     fn indexed_raw_frame_bypasses_cpu_quantization() {
         let mut encoder =
             IndexedPixelEncoder::new(generated_test_palette(), PaletteBias::default(), None);

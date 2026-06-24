@@ -198,7 +198,7 @@
       const isIpsmap4 = bytes.length >= 24 && magic4.every((value, index) => bytes[index] === value);
       const isIpsmap5 = bytes.length >= 24 && magic5.every((value, index) => bytes[index] === value);
       if (!isIpsmap4 && !isIpsmap5) {
-        throw new Error("Palette must be a self-contained IPSMAP4/IPSMAP5 lookup.");
+        throw new Error("Palette must be a self-contained IPSMAP4/IPSMAP5/IPSMAP6 lookup.");
       }
 
       const colorCount = readU16(bytes, 16);

@@ -379,6 +379,23 @@ impl From<PreviewLabSettings> for PaletteMatching {
     }
 }
 
+impl PreviewLabSettings {
+    fn with_matching(self, matching: PaletteMatching) -> Self {
+        Self {
+            bias_lightness: matching.lightness,
+            bias_chroma: matching.chroma,
+            bias_hue: matching.hue,
+            offset_lightness_multiply: matching.lightness_multiply,
+            offset_lightness_add: matching.lightness_add,
+            offset_chroma_multiply: matching.chroma_multiply,
+            offset_chroma_add: matching.chroma_add,
+            grey_chroma_threshold: matching.grey_chroma_threshold,
+            offset_hue_add: matching.hue_add,
+            ..self
+        }
+    }
+}
+
 #[derive(Component)]
 struct PreviewPixelDebugReadback {
     source: PreviewPixelSource,
@@ -982,9 +999,9 @@ fn spawn_preview_palette_editor_ui(
                                 (
                                     "Priorities",
                                     &[
-                                        ("value prio", PreviewLabSlider::BiasLightness, 0.0, 1.0),
-                                        ("chroma prio", PreviewLabSlider::BiasChroma, 0.0, 1.0),
-                                        ("hue prio", PreviewLabSlider::BiasHue, 0.0, 1.0),
+                                        ("Oklab L", PreviewLabSlider::BiasLightness, 0.0, 1.0),
+                                        ("Oklab a", PreviewLabSlider::BiasChroma, 0.0, 1.0),
+                                        ("Oklab b", PreviewLabSlider::BiasHue, 0.0, 1.0),
                                     ][..],
                                 ),
                             ] {
@@ -1714,11 +1731,14 @@ pub(crate) fn handle_preview_palette_editor_interactions(
     for interaction in &mut load_buttons {
         if *interaction == Interaction::Pressed {
             match load_preview_palette_file() {
-                Ok(Some((colors, path))) => set_preview_palette_colors(
-                    editor,
-                    padded_preview_palette(colors),
-                    format!("Loaded {}", path.display()),
-                ),
+                Ok(Some((config, path))) => {
+                    editor.lab_settings = editor.lab_settings.with_matching(config.matching);
+                    set_preview_palette_colors(
+                        editor,
+                        padded_preview_palette(config.colors),
+                        format!("Loaded {}", path.display()),
+                    );
+                }
                 Ok(None) => editor.status = "Load cancelled".to_owned(),
                 Err(err) => editor.status = format!("Load failed: {err}"),
             }
@@ -1990,7 +2010,7 @@ fn commit_preview_palette_to_pipeline(
     editor.committed_lab_settings = editor.lab_settings;
     editor.dirty = false;
     start_preview_palette_rebake(commands, &editor.colors, editor.lab_settings);
-    editor.status = "IPSMAP5 rebake queued".to_owned();
+    editor.status = "IPSMAP6 rebake queued".to_owned();
 }
 
 fn start_preview_palette_rebake(
@@ -2011,7 +2031,7 @@ fn start_preview_palette_rebake(
         }) {
             Ok(lookup) => (lookup, PreviewPaletteRebakeMode::Gpu),
             Err(error) => {
-                eprintln!("{error}; falling back to CPU IPSMAP5 rebake");
+                eprintln!("{error}; falling back to CPU IPSMAP6 rebake");
                 let lookup = build_lookup_with_progress(&config, |percent| {
                     worker_progress.store(percent, Ordering::Relaxed);
                 });
@@ -2110,8 +2130,8 @@ pub(crate) fn process_preview_palette_rebake(
 
     if let Some(editor) = editor.as_deref_mut() {
         editor.status = match completed_mode {
-            PreviewPaletteRebakeMode::Gpu => "GPU IPSMAP5 rebake complete".to_owned(),
-            PreviewPaletteRebakeMode::Cpu => "IPSMAP5 rebake complete".to_owned(),
+            PreviewPaletteRebakeMode::Gpu => "GPU IPSMAP6 rebake complete".to_owned(),
+            PreviewPaletteRebakeMode::Cpu => "IPSMAP6 rebake complete".to_owned(),
         };
     }
 
@@ -2272,7 +2292,7 @@ fn preview_slider_max(slider: PreviewLabSlider) -> f32 {
 
 fn preview_lab_settings_text(settings: PreviewLabSettings) -> String {
     format!(
-        "Lab C {:.3}-{:.3}/{} V {:.3}-{:.3}/{} H {:.1}-{:.1}/{} offset {:.1} B{} W{} match {:.3}/{:.3}/{:.3}",
+        "Lab C {:.3}-{:.3}/{} V {:.3}-{:.3}/{} H {:.1}-{:.1}/{} offset {:.1} B{} W{} match L/a/b {:.3}/{:.3}/{:.3}",
         settings.chroma_min,
         settings.chroma_max,
         settings.chroma_divisions,
@@ -2649,7 +2669,7 @@ pub(crate) fn process_preview_palette_save(
     }
 }
 
-fn load_preview_palette_file() -> Result<Option<(Vec<[u8; 4]>, PathBuf)>, String> {
+fn load_preview_palette_file() -> Result<Option<(PaletteConfig, PathBuf)>, String> {
     let Some(path) = rfd::FileDialog::new()
         .set_title("Load preview palette")
         .add_filter("Palette files", &["txt", "toml", "ipsmap"])
@@ -2657,16 +2677,21 @@ fn load_preview_palette_file() -> Result<Option<(Vec<[u8; 4]>, PathBuf)>, String
     else {
         return Ok(None);
     };
-    let colors = if path
+    let config = if path
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("ipsmap"))
     {
-        direct_stream_game_palette_from_ipsmap(&path)?
+        crate::palette_lut::load_lookup_bundle(&path)?
+            .config()
+            .clone()
     } else {
-        load_preview_palette_text_file(&path)?
+        PaletteConfig {
+            colors: load_preview_palette_text_file(&path)?,
+            matching: PaletteMatching::default(),
+        }
     };
-    Ok(Some((colors, path)))
+    Ok(Some((config, path)))
 }
 
 fn load_preview_palette_text_file(path: &PathBuf) -> Result<Vec<[u8; 4]>, String> {
@@ -2683,11 +2708,6 @@ fn load_preview_palette_text_file(path: &PathBuf) -> Result<Vec<[u8; 4]>, String
     } else {
         Ok(colors)
     }
-}
-
-fn direct_stream_game_palette_from_ipsmap(path: &PathBuf) -> Result<Vec<[u8; 4]>, String> {
-    let lookup = crate::palette_lut::load_lookup_bundle(path)?;
-    Ok(lookup.config().colors.clone())
 }
 
 fn parse_preview_palette_color(value: &str) -> Result<[u8; 4], String> {

@@ -372,8 +372,8 @@ mod tests {
     use crate::palette_lut::PaletteMatching;
 
     #[test]
-    #[ignore = "requires a GPU and builds the full IPSMAP5 lookup"]
-    fn gpu_lookup_builds_ipsmap5_altered_and_direct_tables() {
+    #[ignore = "requires a GPU and builds the full IPSMAP6 altered/direct entry table"]
+    fn gpu_lookup_builds_ipsmap6_altered_and_direct_entries() {
         let config = PaletteConfig {
             colors: vec![[0, 0, 0, 255], [255, 255, 255, 255]],
             matching: PaletteMatching {

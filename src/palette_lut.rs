@@ -10,9 +10,11 @@ const LUT_MAGIC_V2: &[u8; 8] = b"IPSMAP2\0";
 const LUT_MAGIC_V3: &[u8; 8] = b"IPSMAP3\0";
 const LUT_MAGIC_V4: &[u8; 8] = b"IPSMAP4\0";
 const LUT_MAGIC_V5: &[u8; 8] = b"IPSMAP5\0";
+const LUT_MAGIC_V6: &[u8; 8] = b"IPSMAP6\0";
 const LUT_V1_HEADER_LEN: usize = 30;
 const LUT_V4_HEADER_LEN: usize = 24;
-const PALETTE_MATCHING_ALGORITHM_VERSION: &[u8] = b"delta-e-ok-v5";
+const LUT_V6_MATCHING_LEN: usize = 9 * std::mem::size_of::<f32>();
+const PALETTE_MATCHING_ALGORITHM_VERSION: &[u8] = b"delta-e-ok-v6";
 
 #[derive(Clone, Copy, Debug)]
 pub struct PaletteMatching {
@@ -104,12 +106,17 @@ pub fn parse_palette_config(contents: &str) -> Result<PaletteConfig, String> {
             && let Some((key, value)) = line.split_once('=')
         {
             match key.trim() {
-                "lightness" | "lightness_weight" | "value" | "value_weight" => {
+                "oklab_l" | "oklab_l_weight" | "l" | "l_weight" | "lightness"
+                | "lightness_weight" | "value" | "value_weight" => {
                     let value = parse_f32_value(value)?;
                     matching.lightness = value
                 }
-                "chroma" | "chroma_weight" => matching.chroma = parse_f32_value(value)?,
-                "hue" | "hue_weight" => matching.hue = parse_f32_value(value)?,
+                "oklab_a" | "oklab_a_weight" | "a" | "a_weight" | "chroma" | "chroma_weight" => {
+                    matching.chroma = parse_f32_value(value)?
+                }
+                "oklab_b" | "oklab_b_weight" | "b" | "b_weight" | "hue" | "hue_weight" => {
+                    matching.hue = parse_f32_value(value)?
+                }
                 "lightness_multiply" | "value_multiply" => {
                     matching.lightness_multiply = parse_f32_value(value)?
                 }
@@ -152,9 +159,9 @@ pub fn serialize_palette_config(config: &PaletteConfig) -> String {
         }
     }
     output.push_str("]\n\n[matching]\n");
-    output.push_str(&format!("lightness = {}\n", config.matching.lightness));
-    output.push_str(&format!("chroma = {}\n", config.matching.chroma));
-    output.push_str(&format!("hue = {}\n", config.matching.hue));
+    output.push_str(&format!("oklab_l = {}\n", config.matching.lightness));
+    output.push_str(&format!("oklab_a = {}\n", config.matching.chroma));
+    output.push_str(&format!("oklab_b = {}\n", config.matching.hue));
     output.push_str(&format!(
         "lightness_multiply = {}\n",
         config.matching.lightness_multiply
@@ -260,20 +267,20 @@ pub fn encode_lookup(config: &PaletteConfig, entries: &[u8]) -> Result<Vec<u8>, 
     let colors_len = u16::try_from(config.colors.len())
         .map_err(|_| "palette contains more than 65535 colors".to_owned())?;
     let mut bytes = Vec::with_capacity(
-        LUT_V4_HEADER_LEN + config.colors.len() * std::mem::size_of::<[u8; 4]>() + entries.len(),
+        LUT_V4_HEADER_LEN
+            + config.colors.len() * std::mem::size_of::<[u8; 4]>()
+            + LUT_V6_MATCHING_LEN
+            + entries.len(),
     );
-    if entries.len() == LUT_ENTRY_COUNT * 2 {
-        bytes.extend_from_slice(LUT_MAGIC_V5);
-    } else {
-        bytes.extend_from_slice(LUT_MAGIC_V4);
-    }
-    bytes.extend_from_slice(&lookup_hash(&config.colors, entries).to_le_bytes());
+    bytes.extend_from_slice(LUT_MAGIC_V6);
+    bytes.extend_from_slice(&lookup_hash(config, entries).to_le_bytes());
     bytes.extend_from_slice(&colors_len.to_le_bytes());
-    bytes.extend_from_slice(&0u16.to_le_bytes());
+    bytes.extend_from_slice(&(LUT_V6_MATCHING_LEN as u16).to_le_bytes());
     bytes.extend_from_slice(&(entries.len() as u32).to_le_bytes());
     for color in &config.colors {
         bytes.extend_from_slice(color);
     }
+    bytes.extend_from_slice(&palette_matching_bytes(config.matching));
     bytes.extend_from_slice(entries);
     Ok(bytes)
 }
@@ -297,16 +304,30 @@ pub fn recover_lookup_config(path: impl AsRef<Path>) -> Result<PaletteConfig, St
 }
 
 pub fn decode_lookup_config_unchecked(bytes: &[u8]) -> Result<PaletteConfig, String> {
+    if bytes.len() >= LUT_MAGIC_V6.len() && &bytes[0..8] == LUT_MAGIC_V6 {
+        return decode_lookup_config_v6(bytes);
+    }
     if bytes.len() >= LUT_MAGIC_V5.len() && &bytes[0..8] == LUT_MAGIC_V5 {
         return decode_lookup_config_v4_or_v5(bytes, LUT_ENTRY_COUNT * 2);
     }
     if bytes.len() >= LUT_MAGIC_V4.len() && &bytes[0..8] == LUT_MAGIC_V4 {
         return decode_lookup_config_v4_or_v5(bytes, LUT_ENTRY_COUNT);
     }
-    Err("LUT is not a recoverable self-contained IPSMAP4/IPSMAP5 lookup".to_owned())
+    Err("LUT is not a recoverable self-contained IPSMAP4/IPSMAP5/IPSMAP6 lookup".to_owned())
 }
 
 pub fn decode_lookup(bytes: &[u8], config: &PaletteConfig) -> Result<PaletteLookup, String> {
+    if bytes.len() >= LUT_MAGIC_V6.len() && &bytes[0..8] == LUT_MAGIC_V6 {
+        let lookup = decode_lookup_bundle(bytes)?;
+        if lookup.config.colors != config.colors {
+            return Err("LUT palette colors do not match palette config".to_owned());
+        }
+        if !palette_matching_eq(lookup.config.matching, config.matching) {
+            return Err("LUT matching metadata does not match palette config".to_owned());
+        }
+        return Ok(lookup);
+    }
+
     if bytes.len() >= LUT_MAGIC_V5.len() && &bytes[0..8] == LUT_MAGIC_V5 {
         let lookup = decode_lookup_bundle(bytes)?;
         if lookup.config.colors != config.colors {
@@ -325,14 +346,14 @@ pub fn decode_lookup(bytes: &[u8], config: &PaletteConfig) -> Result<PaletteLook
 
     if bytes.len() >= LUT_MAGIC_V3.len() && &bytes[0..8] == LUT_MAGIC_V3 {
         return Err(
-            "IPSMAP3 matching-metadata lookups are no longer supported; regenerate an IPSMAP5 lookup"
+            "IPSMAP3 matching-metadata lookups are no longer supported; regenerate an IPSMAP6 lookup"
                 .to_owned(),
         );
     }
 
     if bytes.len() >= LUT_MAGIC_V2.len() && &bytes[0..8] == LUT_MAGIC_V2 {
         return Err(
-            "IPSMAP2 embedded-TOML lookups are no longer supported; regenerate an IPSMAP5 lookup"
+            "IPSMAP2 embedded-TOML lookups are no longer supported; regenerate an IPSMAP6 lookup"
                 .to_owned(),
         );
     }
@@ -377,6 +398,9 @@ pub fn decode_lookup(bytes: &[u8], config: &PaletteConfig) -> Result<PaletteLook
 }
 
 pub fn decode_lookup_bundle(bytes: &[u8]) -> Result<PaletteLookup, String> {
+    if bytes.len() >= LUT_MAGIC_V6.len() && &bytes[0..8] == LUT_MAGIC_V6 {
+        return decode_lookup_bundle_v6(bytes);
+    }
     if bytes.len() >= LUT_MAGIC_V5.len() && &bytes[0..8] == LUT_MAGIC_V5 {
         return decode_lookup_bundle_v4_or_v5(bytes, LUT_ENTRY_COUNT * 2);
     }
@@ -385,17 +409,31 @@ pub fn decode_lookup_bundle(bytes: &[u8]) -> Result<PaletteLookup, String> {
     }
     if bytes.len() >= LUT_MAGIC_V3.len() && &bytes[0..8] == LUT_MAGIC_V3 {
         return Err(
-            "IPSMAP3 matching-metadata lookups are no longer supported; regenerate an IPSMAP5 lookup"
+            "IPSMAP3 matching-metadata lookups are no longer supported; regenerate an IPSMAP6 lookup"
                 .to_owned(),
         );
     }
     if bytes.len() >= LUT_MAGIC_V2.len() && &bytes[0..8] == LUT_MAGIC_V2 {
         return Err(
-            "IPSMAP2 embedded-TOML lookups are no longer supported; regenerate an IPSMAP5 lookup"
+            "IPSMAP2 embedded-TOML lookups are no longer supported; regenerate an IPSMAP6 lookup"
                 .to_owned(),
         );
     }
-    Err("LUT is not a self-contained IPSMAP4/IPSMAP5 lookup".to_owned())
+    Err("LUT is not a self-contained IPSMAP4/IPSMAP5/IPSMAP6 lookup".to_owned())
+}
+
+fn decode_lookup_bundle_v6(bytes: &[u8]) -> Result<PaletteLookup, String> {
+    let (hash, config, entries) = decode_lookup_v6_parts(bytes)?;
+    if lookup_hash(&config, &entries) != hash {
+        return Err(
+            "binary palette, matching metadata, and entries do not match LUT hash".to_owned(),
+        );
+    }
+    Ok(PaletteLookup {
+        hash,
+        entries,
+        config,
+    })
 }
 
 fn decode_lookup_bundle_v4_or_v5(
@@ -442,7 +480,7 @@ fn decode_lookup_bundle_v4_or_v5(
         .map(|color| [color[0], color[1], color[2], color[3]])
         .collect::<Vec<_>>();
     let entries = bytes[entries_start..].to_vec();
-    if lookup_hash(&colors, &entries) != hash {
+    if legacy_lookup_hash(&colors, &entries) != hash {
         return Err("binary palette and entries do not match LUT hash".to_owned());
     }
     let config = PaletteConfig {
@@ -504,6 +542,67 @@ fn decode_lookup_config_v4_or_v5(
     })
 }
 
+fn decode_lookup_config_v6(bytes: &[u8]) -> Result<PaletteConfig, String> {
+    let (_, config, _) = decode_lookup_v6_parts(bytes)?;
+    Ok(config)
+}
+
+fn decode_lookup_v6_parts(bytes: &[u8]) -> Result<(u64, PaletteConfig, Vec<u8>), String> {
+    if bytes.len() < LUT_V4_HEADER_LEN {
+        return Err(format!(
+            "LUT has {} bytes, expected at least {LUT_V4_HEADER_LEN}",
+            bytes.len()
+        ));
+    }
+    let hash = u64::from_le_bytes(bytes[8..16].try_into().expect("header slice length"));
+    let color_count =
+        u16::from_le_bytes(bytes[16..18].try_into().expect("header slice length")) as usize;
+    if color_count == 0 || color_count > 256 {
+        return Err(format!(
+            "LUT header declares {color_count} colors, expected 1-256"
+        ));
+    }
+    let matching_len =
+        u16::from_le_bytes(bytes[18..20].try_into().expect("header slice length")) as usize;
+    if matching_len != LUT_V6_MATCHING_LEN {
+        return Err(format!(
+            "IPSMAP6 header declares {matching_len} matching bytes, expected {LUT_V6_MATCHING_LEN}"
+        ));
+    }
+    let entry_count =
+        u32::from_le_bytes(bytes[20..24].try_into().expect("header slice length")) as usize;
+    if entry_count != LUT_ENTRY_COUNT && entry_count != LUT_ENTRY_COUNT * 2 {
+        return Err(format!(
+            "LUT header declares {entry_count} entries, expected {LUT_ENTRY_COUNT} or {}",
+            LUT_ENTRY_COUNT * 2
+        ));
+    }
+
+    let matching_start = LUT_V4_HEADER_LEN
+        .checked_add(color_count * std::mem::size_of::<[u8; 4]>())
+        .ok_or_else(|| "LUT palette length overflowed".to_owned())?;
+    let entries_start = matching_start
+        .checked_add(matching_len)
+        .ok_or_else(|| "LUT matching metadata length overflowed".to_owned())?;
+    let expected_len = entries_start
+        .checked_add(entry_count)
+        .ok_or_else(|| "LUT entry length overflowed".to_owned())?;
+    if bytes.len() != expected_len {
+        return Err(format!(
+            "LUT has {} bytes, expected {expected_len} for binary palette, matching metadata, and entries",
+            bytes.len()
+        ));
+    }
+
+    let colors = bytes[LUT_V4_HEADER_LEN..matching_start]
+        .chunks_exact(4)
+        .map(|color| [color[0], color[1], color[2], color[3]])
+        .collect::<Vec<_>>();
+    let matching = palette_matching_from_bytes(&bytes[matching_start..entries_start])?;
+    let entries = bytes[entries_start..].to_vec();
+    Ok((hash, PaletteConfig { colors, matching }, entries))
+}
+
 pub fn palette_hash(config: &PaletteConfig) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
 
@@ -541,7 +640,26 @@ pub fn palette_hash(config: &PaletteConfig) -> u64 {
     hash
 }
 
-fn lookup_hash(colors: &[[u8; 4]], entries: &[u8]) -> u64 {
+fn lookup_hash(config: &PaletteConfig, entries: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in PALETTE_MATCHING_ALGORITHM_VERSION {
+        feed_hash(&mut hash, *byte);
+    }
+    for color in &config.colors {
+        for byte in color {
+            feed_hash(&mut hash, *byte);
+        }
+    }
+    for byte in palette_matching_bytes(config.matching) {
+        feed_hash(&mut hash, byte);
+    }
+    for byte in entries {
+        feed_hash(&mut hash, *byte);
+    }
+    hash
+}
+
+fn legacy_lookup_hash(colors: &[[u8; 4]], entries: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for byte in PALETTE_MATCHING_ALGORITHM_VERSION {
         feed_hash(&mut hash, *byte);
@@ -560,6 +678,56 @@ fn lookup_hash(colors: &[[u8; 4]], entries: &[u8]) -> u64 {
 fn feed_hash(hash: &mut u64, byte: u8) {
     *hash ^= byte as u64;
     *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+}
+
+fn palette_matching_bytes(matching: PaletteMatching) -> [u8; LUT_V6_MATCHING_LEN] {
+    let values = [
+        matching.lightness,
+        matching.chroma,
+        matching.hue,
+        matching.lightness_multiply,
+        matching.lightness_add,
+        matching.chroma_multiply,
+        matching.chroma_add,
+        matching.grey_chroma_threshold,
+        matching.hue_add,
+    ];
+    let mut bytes = [0u8; LUT_V6_MATCHING_LEN];
+    for (index, value) in values.iter().copied().enumerate() {
+        let start = index * std::mem::size_of::<f32>();
+        bytes[start..start + std::mem::size_of::<f32>()].copy_from_slice(&value.to_le_bytes());
+    }
+    bytes
+}
+
+fn palette_matching_from_bytes(bytes: &[u8]) -> Result<PaletteMatching, String> {
+    if bytes.len() != LUT_V6_MATCHING_LEN {
+        return Err(format!(
+            "matching metadata has {} bytes, expected {LUT_V6_MATCHING_LEN}",
+            bytes.len()
+        ));
+    }
+    let mut values = [0.0f32; 9];
+    for (index, chunk) in bytes.chunks_exact(std::mem::size_of::<f32>()).enumerate() {
+        values[index] = f32::from_le_bytes(chunk.try_into().expect("f32 chunk length"));
+    }
+    Ok(PaletteMatching {
+        lightness: values[0],
+        chroma: values[1],
+        hue: values[2],
+        lightness_multiply: values[3],
+        lightness_add: values[4],
+        chroma_multiply: values[5],
+        chroma_add: values[6],
+        grey_chroma_threshold: values[7],
+        hue_add: values[8],
+    })
+}
+
+fn palette_matching_eq(a: PaletteMatching, b: PaletteMatching) -> bool {
+    let a = palette_matching_bytes(a);
+    let b = palette_matching_bytes(b);
+    a == b
 }
 
 impl PaletteMatching {
@@ -841,28 +1009,28 @@ colors = [
 ]
 
 [matching]
-lightness = 1.0
-chroma = 0.0
-hue = 0.0
+oklab_l = 1.0
+oklab_a = 0.0
+oklab_b = 0.0
 "##;
         let config = parse_palette_config(toml).expect("test palette parses");
         let entries = vec![0u8; LUT_ENTRY_COUNT];
         let bytes = encode_lookup(&config, &entries).expect("lookup encodes");
         let lookup = decode_lookup_bundle(&bytes).expect("lookup decodes");
 
-        assert_eq!(&bytes[0..8], LUT_MAGIC_V4);
+        assert_eq!(&bytes[0..8], LUT_MAGIC_V6);
         assert!(
             !bytes
                 .windows(b"[matching]".len())
                 .any(|window| window == b"[matching]")
         );
         assert_eq!(lookup.entries().len(), LUT_ENTRY_COUNT);
-        assert_eq!(lookup.hash(), lookup_hash(&config.colors, &entries));
+        assert_eq!(lookup.hash(), lookup_hash(&config, &entries));
         assert_eq!(lookup.config().colors, config.colors);
-        assert_eq!(
-            lookup.config().matching.lightness,
-            PaletteMatching::default().lightness
-        );
+        assert!(palette_matching_eq(
+            lookup.config().matching,
+            config.matching
+        ));
     }
 
     #[test]
@@ -881,10 +1049,16 @@ hue = 0.0
     }
 
     #[test]
-    fn ipsmap5_stores_altered_and_direct_lookup_entries() {
+    fn ipsmap6_stores_matching_altered_and_direct_lookup_entries() {
         let config = PaletteConfig {
             colors: vec![[0, 0, 0, 255], [255, 255, 255, 255]],
-            matching: PaletteMatching::default(),
+            matching: PaletteMatching {
+                lightness: 0.2,
+                chroma: 0.3,
+                hue: 0.5,
+                lightness_add: 0.1,
+                ..PaletteMatching::default()
+            },
         };
         let mut entries = vec![0u8; LUT_ENTRY_COUNT * 2];
         entries[LUT_ENTRY_COUNT + 12345] = 1;
@@ -892,7 +1066,7 @@ hue = 0.0
         let bytes = encode_lookup(&config, &entries).expect("lookup encodes");
         let lookup = decode_lookup_bundle(&bytes).expect("lookup decodes");
 
-        assert_eq!(&bytes[0..8], LUT_MAGIC_V5);
+        assert_eq!(&bytes[0..8], LUT_MAGIC_V6);
         assert_eq!(lookup.altered_entries().len(), LUT_ENTRY_COUNT);
         assert_eq!(
             lookup.direct_entries().expect("direct entries").len(),
@@ -900,14 +1074,24 @@ hue = 0.0
         );
         assert_eq!(lookup.altered_entries()[12345], 0);
         assert_eq!(lookup.direct_entries().expect("direct entries")[12345], 1);
-        assert_eq!(lookup.hash(), lookup_hash(&config.colors, &entries));
+        assert!(palette_matching_eq(
+            lookup.config().matching,
+            config.matching
+        ));
+        assert_eq!(lookup.hash(), lookup_hash(&config, &entries));
     }
 
     #[test]
     fn stale_self_contained_lookup_can_recover_palette_config() {
         let config = PaletteConfig {
             colors: vec![[3, 5, 7, 255], [255, 240, 220, 255]],
-            matching: PaletteMatching::default(),
+            matching: PaletteMatching {
+                lightness: 0.1,
+                chroma: 0.7,
+                hue: 0.2,
+                chroma_add: 0.03,
+                ..PaletteMatching::default()
+            },
         };
         let entries = vec![0u8; LUT_ENTRY_COUNT * 2];
         let mut bytes = encode_lookup(&config, &entries).expect("lookup encodes");
@@ -918,10 +1102,7 @@ hue = 0.0
             decode_lookup_config_unchecked(&bytes).expect("embedded palette can be recovered");
 
         assert_eq!(recovered.colors, config.colors);
-        assert_eq!(
-            recovered.matching.lightness,
-            PaletteMatching::default().lightness
-        );
+        assert!(palette_matching_eq(recovered.matching, config.matching));
     }
 
     #[test]

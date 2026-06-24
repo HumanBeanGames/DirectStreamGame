@@ -80,7 +80,7 @@ pub(crate) fn load_palette_lookup_runtime(path: &Path) -> PaletteLookup {
         Err(load_err) => {
             match recover_lookup_config(path).and_then(|config| {
                 eprintln!(
-                    "Palette lookup {} is stale or invalid ({load_err}); regenerating IPSMAP5 from embedded palette colors.",
+                    "Palette lookup {} is stale or invalid ({load_err}); regenerating IPSMAP6 from embedded palette colors.",
                     path.display()
                 );
                 let entries = rebuild_runtime_lookup_entries(&config);
@@ -1476,7 +1476,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "rebuilds the full IPSMAP5 lookup"]
+    #[ignore = "rebuilds the full IPSMAP6 lookup"]
     fn stale_runtime_lookup_rebuilds_in_place() {
         let config = PaletteConfig {
             colors: vec![[0, 0, 0, 255], [255, 0, 0, 255], [255, 255, 255, 255]],

@@ -519,7 +519,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn direct_lookup_uses_ipsmap5_direct_entries() {
+    fn direct_lookup_uses_ipsmap_direct_entries() {
         let color = Srgba::new(1.0, 0.0, 0.0, 1.0);
         let lookup_key = 255usize << 16;
         let mut entries = vec![0u8; LUT_ENTRY_COUNT * 2];

@@ -10,6 +10,7 @@ mod direct_backdrop_sprite;
 mod direct_text;
 mod direct_world_sprite;
 mod frames;
+mod gpu_lookup;
 mod gpu_palette;
 mod palette;
 pub mod palette_lut;

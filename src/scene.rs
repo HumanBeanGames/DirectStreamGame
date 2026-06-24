@@ -4,6 +4,7 @@ use crate::{
         INITIAL_RENDER_SETTLE_FRAMES, PREVIEW_EDITOR_HEIGHT, STREAM_FPS, STREAM_HEIGHT,
         STREAM_WIDTH, WEB_ADDR, preview_display_scale,
     },
+    gpu_lookup::build_lookup_gpu_with_progress,
     gpu_palette::{
         GPU_PREVIEW_DISPLAY_LAYER, PaletteMaterial, PalettePreviewDisplayMaterial,
         PreviewPaletteThrottle, PreviewRawDisplay, RawPreviewCopyMaterial,
@@ -203,10 +204,15 @@ pub(crate) struct PreviewPaletteEditor {
 
 #[derive(Resource)]
 pub(crate) struct PreviewPaletteRebake {
-    receiver: Option<Receiver<Vec<u8>>>,
+    receiver: Option<Receiver<PreviewPaletteRebakeResult>>,
     progress: Arc<AtomicUsize>,
     mode: PreviewPaletteRebakeMode,
     frames_remaining: u8,
+}
+
+pub(crate) struct PreviewPaletteRebakeResult {
+    lookup: Vec<u8>,
+    mode: PreviewPaletteRebakeMode,
 }
 
 #[derive(Resource)]
@@ -217,6 +223,7 @@ pub(crate) struct PreviewPaletteSave {
 
 #[derive(Clone, Copy)]
 pub(crate) enum PreviewPaletteRebakeMode {
+    Gpu,
     Cpu,
 }
 
@@ -1999,22 +2006,31 @@ fn start_preview_palette_rebake(
         matching: PaletteMatching::from(lab_settings),
     };
     std::thread::spawn(move || {
-        let lookup = build_lookup_with_progress(&config, |percent| {
+        let (lookup, mode) = match build_lookup_gpu_with_progress(&config, |percent| {
             worker_progress.store(percent, Ordering::Relaxed);
-        });
+        }) {
+            Ok(lookup) => (lookup, PreviewPaletteRebakeMode::Gpu),
+            Err(error) => {
+                eprintln!("{error}; falling back to CPU IPSMAP5 rebake");
+                let lookup = build_lookup_with_progress(&config, |percent| {
+                    worker_progress.store(percent, Ordering::Relaxed);
+                });
+                (lookup, PreviewPaletteRebakeMode::Cpu)
+            }
+        };
         worker_progress.store(100, Ordering::Relaxed);
-        let _ = sender.send(lookup);
+        let _ = sender.send(PreviewPaletteRebakeResult { lookup, mode });
     });
     commands.insert_resource(PreviewPaletteRebake {
         receiver: Some(receiver),
         progress,
-        mode: PreviewPaletteRebakeMode::Cpu,
+        mode: PreviewPaletteRebakeMode::Gpu,
         frames_remaining: 12,
     });
 }
 
 pub(crate) fn process_preview_palette_rebake(
-    rebake: Option<Res<PreviewPaletteRebake>>,
+    rebake: Option<ResMut<PreviewPaletteRebake>>,
     mut commands: Commands,
     mut editor: Option<ResMut<PreviewPaletteEditor>>,
     mut pipeline: Option<ResMut<crate::gpu_palette::GpuPalettePipeline>>,
@@ -2026,7 +2042,7 @@ pub(crate) fn process_preview_palette_rebake(
     mut overlays: Query<&mut Visibility, With<PreviewRebakingOverlay>>,
     mut overlay_text: Query<&mut Text, With<PreviewRebakingOverlayText>>,
 ) {
-    let Some(rebake) = rebake else {
+    let Some(mut rebake) = rebake else {
         for mut visibility in &mut overlays {
             *visibility = Visibility::Hidden;
         }
@@ -2042,19 +2058,24 @@ pub(crate) fn process_preview_palette_rebake(
         text.0 = format!("Rebaking... {progress}%");
     }
 
-    let completed_lookup = if let Some(receiver) = &rebake.receiver {
-        let Ok(lookup) = receiver.try_recv() else {
+    let completed_rebake = if let Some(receiver) = &rebake.receiver {
+        let Ok(result) = receiver.try_recv() else {
             return;
         };
-        Some(lookup)
+        Some(result)
     } else {
         None
     };
+    let mut completed_mode = rebake.mode;
 
     if let (Some(pipeline), Some(editor)) = (pipeline.as_deref_mut(), editor.as_deref()) {
-        if let Some(lookup) = completed_lookup
+        if let Some(result) = completed_rebake
             && let Some(image) = images.get_mut(&pipeline.lookup_texture)
         {
+            completed_mode = result.mode;
+            rebake.mode = result.mode;
+            rebake.receiver = None;
+            let lookup = result.lookup;
             let lookup_entries = Arc::<[u8]>::from(lookup.clone().into_boxed_slice());
             if image
                 .data
@@ -2088,23 +2109,20 @@ pub(crate) fn process_preview_palette_rebake(
     }
 
     if let Some(editor) = editor.as_deref_mut() {
-        editor.status = match rebake.mode {
+        editor.status = match completed_mode {
+            PreviewPaletteRebakeMode::Gpu => "GPU IPSMAP5 rebake complete".to_owned(),
             PreviewPaletteRebakeMode::Cpu => "IPSMAP5 rebake complete".to_owned(),
         };
     }
 
-    let mut remove = false;
-    commands.queue(move |world: &mut World| {
-        if let Some(mut rebake) = world.get_resource_mut::<PreviewPaletteRebake>() {
-            if rebake.frames_remaining > 0 {
-                rebake.frames_remaining -= 1;
-            }
-            remove = rebake.frames_remaining == 0;
-        }
-        if remove {
-            world.remove_resource::<PreviewPaletteRebake>();
-        }
-    });
+    if rebake.receiver.is_none() && rebake.frames_remaining > 0 {
+        rebake.frames_remaining -= 1;
+    }
+    let remove = rebake.receiver.is_none() && rebake.frames_remaining == 0;
+    drop(rebake);
+    if remove {
+        commands.remove_resource::<PreviewPaletteRebake>();
+    }
 }
 
 fn update_preview_palette_materials_for_gpu(
@@ -2113,7 +2131,7 @@ fn update_preview_palette_materials_for_gpu(
     palette_materials: &mut Assets<PaletteMaterial>,
     display_materials: &mut Assets<PalettePreviewDisplayMaterial>,
     settings: PreviewLabSettings,
-    mode: PreviewPaletteRebakeMode,
+    _mode: PreviewPaletteRebakeMode,
 ) {
     let matching = PaletteMatching::from(settings);
     let params = Vec4::new(
@@ -2122,8 +2140,8 @@ fn update_preview_palette_materials_for_gpu(
         matching.hue,
         pipeline.palette_count.max(1) as f32,
     );
-    let _ = mode;
     let lookup_params = Vec4::new(1.0, 0.0, 0.0, 0.0);
+    let display_lookup_params = Vec4::new(1.0, 1.0, 0.0, 0.0);
     let input_offset_a = Vec4::new(
         matching.lightness_multiply,
         matching.lightness_add,
@@ -2142,7 +2160,7 @@ fn update_preview_palette_materials_for_gpu(
         && let Some(material) = display_materials.get_mut(&throttle.display_material)
     {
         material.params = params;
-        material.lookup_params = lookup_params;
+        material.lookup_params = display_lookup_params;
         material.input_offset_a = input_offset_a;
         material.input_offset_b = input_offset_b;
     }

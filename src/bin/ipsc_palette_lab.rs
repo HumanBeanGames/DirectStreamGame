@@ -598,6 +598,10 @@ fn palette_lab_html() -> String {
       return delta > Math.PI ? Math.PI * 2 - delta : delta;
     }
 
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
     function smoothstep(edge0, edge1, value) {
       const t = clamp((value - edge0) / Math.max(edge1 - edge0, 0.000001), 0, 1);
       return t * t * (3 - 2 * t);

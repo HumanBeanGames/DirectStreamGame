@@ -217,7 +217,6 @@ pub(crate) struct PreviewPaletteSave {
 
 #[derive(Clone, Copy)]
 pub(crate) enum PreviewPaletteRebakeMode {
-    Gpu,
     Cpu,
 }
 
@@ -404,6 +403,7 @@ enum PreviewPixelSource {
 #[derive(Resource)]
 pub(crate) struct PreviewPixelDebugState {
     pub(crate) raw_image: Handle<Image>,
+    pub(crate) quantized_image: Handle<Image>,
     pub(crate) palette_colors: Vec<[u8; 4]>,
     pub(crate) lookup_entries: Arc<[u8]>,
     raw_center: Vec2,
@@ -413,6 +413,8 @@ pub(crate) struct PreviewPixelDebugState {
     validation_pending: bool,
     validation_warmup_updates: u32,
     validation_frames_checked: u32,
+    validation_raw_data: Option<Vec<u8>>,
+    validation_quantized_data: Option<Vec<u8>>,
 }
 
 struct RawPixelDebug {
@@ -634,6 +636,7 @@ fn spawn_preview_comparison(
         display_material,
         PreviewPixelDebugState {
             raw_image: raw_output_images[0].clone(),
+            quantized_image: pipeline.output_images[0].clone(),
             palette_colors: pipeline.palette_colors.clone(),
             lookup_entries,
             raw_center,
@@ -645,6 +648,8 @@ fn spawn_preview_comparison(
             validation_pending: false,
             validation_warmup_updates: 0,
             validation_frames_checked: 0,
+            validation_raw_data: None,
+            validation_quantized_data: None,
         },
     )
 }
@@ -1978,11 +1983,7 @@ fn commit_preview_palette_to_pipeline(
     editor.committed_lab_settings = editor.lab_settings;
     editor.dirty = false;
     start_preview_palette_rebake(commands, &editor.colors, editor.lab_settings);
-    editor.status = if use_cpu_preview_rebake() {
-        "CPU fallback rebake queued".to_owned()
-    } else {
-        "GPU rebake queued".to_owned()
-    };
+    editor.status = "IPSMAP5 rebake queued".to_owned();
 }
 
 fn start_preview_palette_rebake(
@@ -1991,47 +1992,34 @@ fn start_preview_palette_rebake(
     lab_settings: PreviewLabSettings,
 ) {
     let progress = Arc::new(AtomicUsize::new(0));
-    if use_cpu_preview_rebake() {
-        let (sender, receiver) = crossbeam_channel::bounded(1);
-        let worker_progress = progress.clone();
-        let config = PaletteConfig {
-            colors: colors.to_vec(),
-            matching: PaletteMatching::from(lab_settings),
-        };
-        std::thread::spawn(move || {
-            let lookup = build_lookup_with_progress(&config, |percent| {
-                worker_progress.store(percent, Ordering::Relaxed);
-            });
-            worker_progress.store(100, Ordering::Relaxed);
-            let _ = sender.send(lookup);
+    let (sender, receiver) = crossbeam_channel::bounded(1);
+    let worker_progress = progress.clone();
+    let config = PaletteConfig {
+        colors: colors.to_vec(),
+        matching: PaletteMatching::from(lab_settings),
+    };
+    std::thread::spawn(move || {
+        let lookup = build_lookup_with_progress(&config, |percent| {
+            worker_progress.store(percent, Ordering::Relaxed);
         });
-        commands.insert_resource(PreviewPaletteRebake {
-            receiver: Some(receiver),
-            progress,
-            mode: PreviewPaletteRebakeMode::Cpu,
-            frames_remaining: 12,
-        });
-        return;
-    }
-    progress.store(100, Ordering::Relaxed);
+        worker_progress.store(100, Ordering::Relaxed);
+        let _ = sender.send(lookup);
+    });
     commands.insert_resource(PreviewPaletteRebake {
-        receiver: None,
+        receiver: Some(receiver),
         progress,
-        mode: PreviewPaletteRebakeMode::Gpu,
+        mode: PreviewPaletteRebakeMode::Cpu,
         frames_remaining: 12,
     });
-}
-
-fn use_cpu_preview_rebake() -> bool {
-    std::env::var_os("DIRECTSTREAM_CPU_REBAKE").is_some()
 }
 
 pub(crate) fn process_preview_palette_rebake(
     rebake: Option<Res<PreviewPaletteRebake>>,
     mut commands: Commands,
     mut editor: Option<ResMut<PreviewPaletteEditor>>,
-    pipeline: Option<Res<crate::gpu_palette::GpuPalettePipeline>>,
+    mut pipeline: Option<ResMut<crate::gpu_palette::GpuPalettePipeline>>,
     throttle: Option<Res<PreviewPaletteThrottle>>,
+    mut debug_state: Option<ResMut<PreviewPixelDebugState>>,
     mut images: ResMut<Assets<Image>>,
     mut palette_materials: ResMut<Assets<PaletteMaterial>>,
     mut display_materials: ResMut<Assets<PalettePreviewDisplayMaterial>>,
@@ -2063,10 +2051,11 @@ pub(crate) fn process_preview_palette_rebake(
         None
     };
 
-    if let (Some(pipeline), Some(editor)) = (pipeline, editor.as_deref()) {
+    if let (Some(pipeline), Some(editor)) = (pipeline.as_deref_mut(), editor.as_deref()) {
         if let Some(lookup) = completed_lookup
             && let Some(image) = images.get_mut(&pipeline.lookup_texture)
         {
+            let lookup_entries = Arc::<[u8]>::from(lookup.clone().into_boxed_slice());
             if image
                 .data
                 .as_ref()
@@ -2078,9 +2067,18 @@ pub(crate) fn process_preview_palette_rebake(
             } else {
                 *image = crate::gpu_palette::make_lookup_texture_from_entries(&lookup);
             }
+            pipeline.lookup_entries = lookup_entries.clone();
+            if let Some(debug_state) = debug_state.as_deref_mut() {
+                debug_state.lookup_entries = lookup_entries;
+                debug_state.validation_pending = false;
+                debug_state.validation_warmup_updates = 0;
+                debug_state.validation_frames_checked = 0;
+                debug_state.validation_raw_data = None;
+                debug_state.validation_quantized_data = None;
+            }
         }
         update_preview_palette_materials_for_gpu(
-            &pipeline,
+            pipeline,
             throttle.as_deref(),
             &mut palette_materials,
             &mut display_materials,
@@ -2091,8 +2089,7 @@ pub(crate) fn process_preview_palette_rebake(
 
     if let Some(editor) = editor.as_deref_mut() {
         editor.status = match rebake.mode {
-            PreviewPaletteRebakeMode::Gpu => "GPU rebake complete".to_owned(),
-            PreviewPaletteRebakeMode::Cpu => "CPU fallback rebake complete".to_owned(),
+            PreviewPaletteRebakeMode::Cpu => "IPSMAP5 rebake complete".to_owned(),
         };
     }
 
@@ -2125,15 +2122,8 @@ fn update_preview_palette_materials_for_gpu(
         matching.hue,
         pipeline.palette_count.max(1) as f32,
     );
-    let lookup_params = Vec4::new(
-        match mode {
-            PreviewPaletteRebakeMode::Gpu => 0.0,
-            PreviewPaletteRebakeMode::Cpu => 1.0,
-        },
-        0.0,
-        0.0,
-        0.0,
-    );
+    let _ = mode;
+    let lookup_params = Vec4::new(1.0, 0.0, 0.0, 0.0);
     let input_offset_a = Vec4::new(
         matching.lightness_multiply,
         matching.lightness_add,
@@ -2934,7 +2924,10 @@ pub(crate) fn request_preview_palette_validation(
     }
 
     debug_state.validation_pending = true;
+    debug_state.validation_raw_data = None;
+    debug_state.validation_quantized_data = None;
     let raw_image = debug_state.raw_image.clone();
+    let quantized_image = debug_state.quantized_image.clone();
     commands
         .spawn(PreviewPaletteValidationReadback {
             source: PreviewPixelSource::Raw,
@@ -2943,6 +2936,14 @@ pub(crate) fn request_preview_palette_validation(
         })
         .observe(handle_preview_palette_validation_readback)
         .insert(Readback::texture(raw_image));
+    commands
+        .spawn(PreviewPaletteValidationReadback {
+            source: PreviewPixelSource::Quantized,
+            width: config.stream_width,
+            height: config.stream_height,
+        })
+        .observe(handle_preview_palette_validation_readback)
+        .insert(Readback::texture(quantized_image));
 }
 
 fn handle_preview_palette_validation_readback(
@@ -2960,12 +2961,23 @@ fn handle_preview_palette_validation_readback(
         return;
     };
 
-    if readback.source == PreviewPixelSource::Raw {
+    match readback.source {
+        PreviewPixelSource::Raw => debug_state.validation_raw_data = Some(event.data.clone()),
+        PreviewPixelSource::Quantized => {
+            debug_state.validation_quantized_data = Some(event.data.clone())
+        }
+    }
+
+    if let (Some(raw), Some(quantized)) = (
+        debug_state.validation_raw_data.take(),
+        debug_state.validation_quantized_data.take(),
+    ) {
         debug_state.validation_pending = false;
         debug_state.validation_frames_checked =
             debug_state.validation_frames_checked.saturating_add(1);
         let report = validate_preview_palette_frame(
-            &event.data,
+            &raw,
+            &quantized,
             readback.width,
             readback.height,
             &debug_state.lookup_entries,
@@ -2987,6 +2999,7 @@ fn handle_preview_palette_validation_readback(
 
 fn validate_preview_palette_frame(
     raw: &[u8],
+    quantized: &[u8],
     width: u32,
     height: u32,
     lookup_entries: &[u8],
@@ -3011,16 +3024,55 @@ fn validate_preview_palette_frame(
             let r = raw[raw_offset + 2];
             let a = raw[raw_offset + 3];
             let lookup_key = (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b);
-            let expected_index = lookup_entries.get(lookup_key).copied().unwrap_or(0);
+            let expected_lookup_key = lookup_key_with_alpha(lookup_key, a, lookup_entries);
+            let expected_index = lookup_entries
+                .get(expected_lookup_key)
+                .copied()
+                .unwrap_or(0);
             if palette_colors.get(expected_index as usize).is_none() {
                 return Some(format!(
                     "automatic preview palette validation frame {frame_number} [MISMATCH]\nraw preview ({x}, {y})\nraw BGRA: {b}, {g}, {r}, {a}\nraw RGB: #{r:02X}{g:02X}{b:02X}\nlookup RGB key: {lookup_key}\nlookup index {expected_index} is outside the loaded palette"
+                ));
+            }
+
+            let quantized_offset = y * raw_aligned_row_bytes + x * 4;
+            if quantized_offset + 3 >= quantized.len() {
+                return Some(format!(
+                    "automatic preview palette validation frame {frame_number}\nquantized readback out of range at ({x}, {y})"
+                ));
+            }
+            let actual_index = quantized[quantized_offset];
+            if actual_index != expected_index {
+                let expected_color = palette_colors
+                    .get(expected_index as usize)
+                    .copied()
+                    .unwrap_or([0, 0, 0, 255]);
+                let actual_color = palette_colors
+                    .get(actual_index as usize)
+                    .copied()
+                    .unwrap_or([0, 0, 0, 255]);
+                return Some(format!(
+                    "automatic preview palette validation frame {frame_number} [MISMATCH]\nraw preview ({x}, {y})\nraw BGRA: {b}, {g}, {r}, {a}\nraw RGB: #{r:02X}{g:02X}{b:02X}\nlookup RGB key: {lookup_key}\nexpected index {expected_index} #{:02X}{:02X}{:02X}\nactual output index {actual_index} #{:02X}{:02X}{:02X}",
+                    expected_color[0],
+                    expected_color[1],
+                    expected_color[2],
+                    actual_color[0],
+                    actual_color[1],
+                    actual_color[2],
                 ));
             }
         }
     }
 
     None
+}
+
+fn lookup_key_with_alpha(lookup_key: usize, alpha: u8, lookup_entries: &[u8]) -> usize {
+    if alpha == 254 && lookup_entries.len() >= crate::palette_lut::LUT_ENTRY_COUNT * 2 {
+        lookup_key + crate::palette_lut::LUT_ENTRY_COUNT
+    } else {
+        lookup_key
+    }
 }
 
 fn preview_raw_pixel_debug(
@@ -3041,7 +3093,8 @@ fn preview_raw_pixel_debug(
     let r = data[offset + 2];
     let a = data[offset + 3];
     let lookup_key = (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b);
-    let expected_index = lookup_entries.get(lookup_key).copied();
+    let expected_lookup_key = lookup_key_with_alpha(lookup_key, a, lookup_entries);
+    let expected_index = lookup_entries.get(expected_lookup_key).copied();
     let expected_color = expected_index
         .and_then(|index| palette_colors.get(index as usize).copied())
         .unwrap_or([0, 0, 0, 255]);

@@ -24,6 +24,7 @@ use bevy::{
 };
 use std::{
     collections::VecDeque,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -169,6 +170,7 @@ pub(crate) struct GpuPalettePipeline {
     pub(crate) current_output_index: usize,
     pub(crate) palette_count: usize,
     pub(crate) palette_colors: Vec<[u8; 4]>,
+    pub(crate) lookup_entries: Arc<[u8]>,
 }
 
 #[derive(Resource)]
@@ -284,6 +286,10 @@ pub(crate) fn make_palette_texture(colors: &[[u8; 4]]) -> Image {
 
 pub(crate) fn make_lookup_texture(lookup: &PaletteLookup) -> Image {
     make_lookup_texture_from_entries(lookup.entries())
+}
+
+pub(crate) fn lookup_entries_arc(lookup: &PaletteLookup) -> Arc<[u8]> {
+    Arc::from(lookup.entries().to_vec().into_boxed_slice())
 }
 
 pub(crate) fn make_lookup_texture_from_entries(entries: &[u8]) -> Image {
@@ -441,6 +447,7 @@ pub(crate) fn spawn_custom_host_pipeline(
         current_output_index: 0,
         palette_count: palette_colors.len(),
         palette_colors: palette_colors.to_vec(),
+        lookup_entries: lookup_entries_arc(palette_lookup),
     }
 }
 
@@ -503,6 +510,7 @@ pub(crate) fn retarget_custom_host_pipeline(
         material.lookup_texture = lookup_texture.clone();
         material.lookup_params = palette_lookup_params();
         pipeline.lookup_texture = lookup_texture;
+        pipeline.lookup_entries = lookup_entries_arc(palette_lookup);
     } else {
         return Err(());
     }
@@ -668,6 +676,7 @@ fn throttle_preview_palette_cameras(
             }
             if let Some(debug_state) = debug_state.as_deref_mut() {
                 debug_state.raw_image = pipeline.source_images[display_index].clone();
+                debug_state.quantized_image = pipeline.output_images[display_index].clone();
             }
         }
 

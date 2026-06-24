@@ -506,7 +506,10 @@ fn sprite_tint(
 }
 
 fn alpha_mode(sprite: &DirectWorldSprite, output_is_indexed: bool) -> AlphaMode {
-    if output_is_indexed && sprite.color_lookup == DirectColorLookup::Direct {
+    if output_is_indexed
+        && sprite.color_lookup == DirectColorLookup::Direct
+        && sprite.tint.to_srgba().alpha >= 1.0 - (0.5 / 255.0)
+    {
         return AlphaMode::Mask(0.01);
     }
 
@@ -522,5 +525,54 @@ fn depth_bias(sprite: &DirectWorldSprite) -> f32 {
     match sprite.depth_mode {
         SpriteDepthMode::AlwaysOnTopBeforeText => sprite.depth_bias.max(10_000.0),
         _ => sprite.depth_bias,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transparent_direct_sprite_uses_blended_alpha_mode() {
+        let sprite = DirectWorldSprite::new(Handle::default(), UVec2::splat(4))
+            .with_tint(Color::srgba(1.0, 0.0, 0.0, 0.5))
+            .with_color_lookup(DirectColorLookup::Direct)
+            .with_depth_mode(SpriteDepthMode::TestAgainstScene);
+
+        assert!(matches!(alpha_mode(&sprite, true), AlphaMode::Blend));
+    }
+
+    #[test]
+    fn opaque_direct_sprite_uses_direct_alpha_sentinel() {
+        let sprite = DirectWorldSprite::new(Handle::default(), UVec2::splat(4))
+            .with_tint(Color::srgba(1.0, 0.0, 0.0, 1.0))
+            .with_color_lookup(DirectColorLookup::Direct);
+
+        let tint = sprite_tint(&sprite, sprite.tint, true, None).to_srgba();
+        assert!((tint.alpha - 1.0).abs() < 0.0001);
+
+        let tint = sprite_tint(&sprite, sprite.tint, true, Some(&dummy_pipeline())).to_srgba();
+        assert!((tint.alpha - 254.0 / 255.0).abs() < 0.0001);
+    }
+
+    fn dummy_pipeline() -> GpuPalettePipeline {
+        GpuPalettePipeline {
+            material: Handle::default(),
+            source_copy_material: Handle::default(),
+            palette_texture: Handle::default(),
+            lookup_texture: Handle::default(),
+            source_copy_camera: Entity::PLACEHOLDER,
+            palette_camera: Entity::PLACEHOLDER,
+            raw_overlay_camera: Entity::PLACEHOLDER,
+            overlay_camera: Entity::PLACEHOLDER,
+            source_copy_quad_entity: Entity::PLACEHOLDER,
+            quad_entity: Entity::PLACEHOLDER,
+            source_images: Vec::new(),
+            output_images: Vec::new(),
+            current_output_index: 0,
+            palette_count: 0,
+            palette_colors: Vec::new(),
+            lookup_entries: std::sync::Arc::from(Vec::new().into_boxed_slice()),
+        }
     }
 }

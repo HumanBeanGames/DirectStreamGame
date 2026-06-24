@@ -1,5 +1,6 @@
 use crate::{
     gpu_palette::GpuPalettePipeline,
+    palette_lut::LUT_ENTRY_COUNT,
     public_types::{DirectColorLookup, DirectStreamTarget},
 };
 use bevy::{camera::visibility::RenderLayers, prelude::*};
@@ -175,7 +176,7 @@ fn sync_direct_text_overlays(
         for (_, overlay, mut sprite) in &mut existing {
             if let Some((raw_color, indexed_color, color_lookup)) = recolors.get(&overlay.owner) {
                 sprite.color = if overlay.raw {
-                    *raw_color
+                    direct_source_overlay_color(*raw_color, *color_lookup, &target)
                 } else if *color_lookup == DirectColorLookup::Direct {
                     *indexed_color
                 } else {
@@ -208,6 +209,7 @@ fn sync_direct_text_overlays(
         let scale = resolve_bitmap_scale(text.font_size);
         let threshold = text.threshold.unwrap_or(GLYPH_ON_THRESHOLD).clamp(0.0, 1.0);
         let raw_color = raw_overlay_color(text);
+        let source_color = direct_source_overlay_color(raw_color, text.color_lookup, &target);
         let indexed_color = indexed_overlay_color(text, &target, gpu_palette.as_deref());
         let mut cursor_x = text.x as f32;
         let mut cursor_y = text.y as f32;
@@ -230,7 +232,7 @@ fn sync_direct_text_overlays(
                             raw_overlay_layer,
                             owner,
                             true,
-                            raw_color,
+                            source_color,
                             left,
                             top,
                             cursor_x,
@@ -240,7 +242,8 @@ fn sync_direct_text_overlays(
                             columns,
                         );
                     }
-                    if text.color_lookup == DirectColorLookup::Direct {
+                    if text.color_lookup == DirectColorLookup::Direct && raw_overlay_layer.is_none()
+                    {
                         spawn_bitmap_glyph(
                             &mut commands,
                             &overlay_layer,
@@ -347,7 +350,8 @@ fn indexed_overlay_color(
     if target.output_is_indexed
         && let Some(gpu_palette) = gpu_palette
     {
-        let palette_index = nearest_palette_index(text.color, &gpu_palette.palette_colors);
+        let palette_index =
+            lookup_palette_index(text.color, &gpu_palette.lookup_entries, true).unwrap_or(0);
         let index_value = f32::from(palette_index) / 255.0;
         return Color::linear_rgba(index_value, 0.0, 0.0, text.color.alpha);
     }
@@ -364,21 +368,29 @@ fn raw_overlay_color(text: &DirectText) -> Color {
     )
 }
 
-fn nearest_palette_index(color: Srgba, palette: &[[u8; 4]]) -> u8 {
-    let mut best_index = 0;
-    let mut best_distance = f32::MAX;
-    for (index, [r, g, b, _]) in palette.iter().enumerate() {
-        let dr = color.red - f32::from(*r) / 255.0;
-        let dg = color.green - f32::from(*g) / 255.0;
-        let db = color.blue - f32::from(*b) / 255.0;
-        let da = color.alpha - 1.0;
-        let distance = dr * dr + dg * dg + db * db + da * da;
-        if distance < best_distance {
-            best_distance = distance;
-            best_index = index as u8;
+fn direct_source_overlay_color(
+    color: Color,
+    color_lookup: DirectColorLookup,
+    target: &DirectStreamTarget,
+) -> Color {
+    if target.output_is_indexed && color_lookup == DirectColorLookup::Direct {
+        let srgba = color.to_srgba();
+        if srgba.alpha >= 1.0 - (0.5 / 255.0) {
+            return Color::srgba(srgba.red, srgba.green, srgba.blue, 254.0 / 255.0);
         }
     }
-    best_index
+    color
+}
+
+fn lookup_palette_index(color: Srgba, lookup_entries: &[u8], direct: bool) -> Option<u8> {
+    let r = (color.red.clamp(0.0, 1.0) * 255.0).round() as usize;
+    let g = (color.green.clamp(0.0, 1.0) * 255.0).round() as usize;
+    let b = (color.blue.clamp(0.0, 1.0) * 255.0).round() as usize;
+    let mut offset = (r << 16) | (g << 8) | b;
+    if direct && lookup_entries.len() >= LUT_ENTRY_COUNT.saturating_mul(2) {
+        offset += LUT_ENTRY_COUNT;
+    }
+    lookup_entries.get(offset).copied()
 }
 
 fn glyph_bit_is_on(glyph_columns: [u8; BITMAP_FONT_WIDTH], column: usize, row: usize) -> bool {
@@ -480,5 +492,54 @@ fn glyph_columns(character: char) -> [u8; BITMAP_FONT_WIDTH] {
         '}' => [0x11, 0x1B, 0x04],
         '~' => [0x0C, 0x04, 0x06],
         _ => [0x01, 0x15, 0x03],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_lookup_uses_ipsmap5_direct_entries() {
+        let color = Srgba::new(1.0, 0.0, 0.0, 1.0);
+        let lookup_key = 255usize << 16;
+        let mut entries = vec![0u8; LUT_ENTRY_COUNT * 2];
+        entries[lookup_key] = 7;
+        entries[lookup_key + LUT_ENTRY_COUNT] = 42;
+
+        assert_eq!(lookup_palette_index(color, &entries, false), Some(7));
+        assert_eq!(lookup_palette_index(color, &entries, true), Some(42));
+    }
+
+    #[test]
+    fn direct_source_overlay_marks_only_opaque_direct_text() {
+        let target = DirectStreamTarget {
+            camera: Entity::PLACEHOLDER,
+            overlay_camera: Entity::PLACEHOLDER,
+            image: Handle::default(),
+            output_image: Handle::default(),
+            output_is_indexed: true,
+            overlay_layer: 0,
+            raw_overlay_layer: Some(1),
+            width: 16,
+            height: 16,
+            fps: 30,
+        };
+
+        let marked = direct_source_overlay_color(
+            Color::srgba(1.0, 0.0, 0.0, 1.0),
+            DirectColorLookup::Direct,
+            &target,
+        )
+        .to_srgba();
+        assert!((marked.alpha - 254.0 / 255.0).abs() < 0.0001);
+
+        let transparent = direct_source_overlay_color(
+            Color::srgba(1.0, 0.0, 0.0, 0.5),
+            DirectColorLookup::Direct,
+            &target,
+        )
+        .to_srgba();
+        assert!((transparent.alpha - 0.5).abs() < 0.0001);
     }
 }

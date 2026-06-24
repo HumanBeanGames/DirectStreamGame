@@ -12,7 +12,7 @@ const LUT_MAGIC_V4: &[u8; 8] = b"IPSMAP4\0";
 const LUT_MAGIC_V5: &[u8; 8] = b"IPSMAP5\0";
 const LUT_V1_HEADER_LEN: usize = 30;
 const LUT_V4_HEADER_LEN: usize = 24;
-const PALETTE_MATCHING_ALGORITHM_VERSION: &[u8] = b"oklch-hue-precision-v4";
+const PALETTE_MATCHING_ALGORITHM_VERSION: &[u8] = b"delta-e-ok-v5";
 
 #[derive(Clone, Copy, Debug)]
 pub struct PaletteMatching {
@@ -724,39 +724,20 @@ fn in_srgb_gamut(r: f32, g: f32, b: f32) -> bool {
 }
 
 fn biased_distance_squared(a: Oklch, b: Oklch, matching: PaletteMatching) -> f32 {
+    let a = oklch_to_oklab(a);
+    let b = oklch_to_oklab(b);
     let dl = a.l - b.l;
-    let dc = a.c - b.c;
-    let angular_hue = (hue_delta(a.h, b.h) * 0.5).sin() * 2.0;
-    let scaled_hue = angular_hue * (a.c * b.c).sqrt();
-    let precision_boost = hue_precision_boost(a, b);
-    matching.lightness * dl * dl
-        + matching.chroma * dc * dc
-        + matching.hue * (scaled_hue * scaled_hue + precision_boost * angular_hue * angular_hue)
+    let da = a.a - b.a;
+    let db = a.b - b.b;
+    let chromatic_weight = (matching.chroma + matching.hue) * 0.5;
+    matching.lightness * dl * dl + chromatic_weight * (da * da + db * db)
 }
 
-fn hue_precision_boost(a: Oklch, b: Oklch) -> f32 {
-    let shared_hue_signal = smoothstep(0.002, 0.03, a.c.min(b.c));
-    let low_chroma_boost = 1.0 - smoothstep(0.02, 0.12, a.c.min(b.c));
-    let lightness_boost =
-        1.0 - lightness_midpoint_relevance(a.l).min(lightness_midpoint_relevance(b.l));
-    shared_hue_signal * low_chroma_boost.max(lightness_boost)
-}
-
-fn lightness_midpoint_relevance(lightness: f32) -> f32 {
-    (lightness * (1.0 - lightness) * 4.0).clamp(0.0, 1.0)
-}
-
-fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
-    let t = ((value - edge0) / (edge1 - edge0).max(0.000_001)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
-fn hue_delta(a: f32, b: f32) -> f32 {
-    let delta = (a - b).abs() % std::f32::consts::TAU;
-    if delta > std::f32::consts::PI {
-        std::f32::consts::TAU - delta
-    } else {
-        delta
+fn oklch_to_oklab(color: Oklch) -> Oklab {
+    Oklab {
+        l: color.l,
+        a: color.h.cos() * color.c,
+        b: color.h.sin() * color.c,
     }
 }
 
@@ -962,65 +943,38 @@ hue = 0.0
     }
 
     #[test]
-    fn hue_precision_boost_rises_at_low_chroma_and_lightness_extremes() {
-        assert_eq!(
-            hue_precision_boost(
-                Oklch {
-                    l: 0.5,
-                    c: 0.0,
-                    h: 0.0,
-                },
-                Oklch {
-                    l: 0.5,
-                    c: 0.02,
-                    h: std::f32::consts::PI,
-                },
-            ),
-            0.0
-        );
-        assert!(
-            hue_precision_boost(
-                Oklch {
-                    l: 0.08,
-                    c: 0.03,
-                    h: 0.0,
-                },
-                Oklch {
-                    l: 0.08,
-                    c: 0.03,
-                    h: std::f32::consts::PI,
-                },
-            ) > 0.9
-        );
-        assert!(
-            hue_precision_boost(
-                Oklch {
-                    l: 0.92,
-                    c: 0.03,
-                    h: 0.0,
-                },
-                Oklch {
-                    l: 0.92,
-                    c: 0.03,
-                    h: std::f32::consts::PI,
-                },
-            ) > 0.9
-        );
-        assert_eq!(
-            hue_precision_boost(
-                Oklch {
-                    l: 0.5,
-                    c: 0.2,
-                    h: 0.0,
-                },
-                Oklch {
-                    l: 0.5,
-                    c: 0.2,
-                    h: std::f32::consts::PI,
-                },
-            ),
-            0.0
-        );
+    fn delta_e_ok_uses_rectangular_oklab_distance() {
+        let redish = Oklch {
+            l: 0.5,
+            c: 0.1,
+            h: 0.0,
+        };
+        let same = redish;
+        let opposite_hue = Oklch {
+            h: std::f32::consts::PI,
+            ..redish
+        };
+        let matching = PaletteMatching::default();
+
+        assert_eq!(biased_distance_squared(redish, same, matching), 0.0);
+        assert!(biased_distance_squared(redish, opposite_hue, matching) > 0.0);
+    }
+
+    #[test]
+    fn delta_e_ok_default_weights_are_balanced_oklab_axes() {
+        let source = Oklch {
+            l: 0.5,
+            c: 0.0,
+            h: 0.0,
+        };
+        let lightness_shift = Oklch { l: 0.6, ..source };
+        let chroma_shift = Oklch { c: 0.1, ..source };
+        let matching = PaletteMatching::default();
+
+        let lightness_distance = biased_distance_squared(source, lightness_shift, matching);
+        let chroma_distance = biased_distance_squared(source, chroma_shift, matching);
+
+        assert!((lightness_distance - chroma_distance).abs() < 0.000_01);
     }
 
     #[test]

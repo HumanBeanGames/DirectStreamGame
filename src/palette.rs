@@ -956,32 +956,22 @@ impl Oklch {
     }
 
     fn biased_distance_squared(self, other: Self, bias: PaletteBias) -> f32 {
-        let dl = self.l - other.l;
-        let dc = self.c - other.c;
-        let angular_hue = (hue_delta(self.h, other.h) * 0.5).sin() * 2.0;
-        let scaled_hue = angular_hue * (self.c * other.c).sqrt();
-        let precision_boost = hue_precision_boost(self, other);
-        bias.lightness * dl * dl
-            + bias.chroma * dc * dc
-            + bias.hue * (scaled_hue * scaled_hue + precision_boost * angular_hue * angular_hue)
+        let self_lab = oklch_to_oklab(self);
+        let other_lab = oklch_to_oklab(other);
+        let dl = self_lab.l - other_lab.l;
+        let da = self_lab.a - other_lab.a;
+        let db = self_lab.b - other_lab.b;
+        let chromatic_weight = (bias.chroma + bias.hue) * 0.5;
+        bias.lightness * dl * dl + chromatic_weight * (da * da + db * db)
     }
 }
 
-fn hue_precision_boost(a: Oklch, b: Oklch) -> f32 {
-    let shared_hue_signal = smoothstep(0.002, 0.03, a.c.min(b.c));
-    let low_chroma_boost = 1.0 - smoothstep(0.02, 0.12, a.c.min(b.c));
-    let lightness_boost =
-        1.0 - lightness_midpoint_relevance(a.l).min(lightness_midpoint_relevance(b.l));
-    shared_hue_signal * low_chroma_boost.max(lightness_boost)
-}
-
-fn lightness_midpoint_relevance(lightness: f32) -> f32 {
-    (lightness * (1.0 - lightness) * 4.0).clamp(0.0, 1.0)
-}
-
-fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
-    let t = ((value - edge0) / (edge1 - edge0).max(0.000_001)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
+fn oklch_to_oklab(color: Oklch) -> Oklab {
+    Oklab {
+        l: color.l,
+        a: color.h.cos() * color.c,
+        b: color.h.sin() * color.c,
+    }
 }
 
 fn clamp_chroma_to_srgb_gamut(color: Oklch) -> f32 {
@@ -1010,15 +1000,6 @@ fn clamp_chroma_to_srgb_gamut(color: Oklch) -> f32 {
 fn oklch_in_srgb_gamut(color: Oklch) -> bool {
     let (r, g, b) = oklch_to_linear_srgb_radians(color.l, color.c, color.h);
     in_srgb_gamut(r, g, b)
-}
-
-fn hue_delta(a: f32, b: f32) -> f32 {
-    let delta = (a - b).abs() % std::f32::consts::TAU;
-    if delta > std::f32::consts::PI {
-        std::f32::consts::TAU - delta
-    } else {
-        delta
-    }
 }
 
 fn rgb_to_oklab(r: u8, g: u8, b: u8) -> Oklab {

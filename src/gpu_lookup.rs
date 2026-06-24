@@ -311,38 +311,15 @@ fn apply_input_offset(color: vec3<f32>) -> vec3<f32> {
     return adjusted;
 }
 
-fn biased_distance_squared_oklch(color: vec3<f32>, palette_color: vec3<f32>) -> f32 {
-    let dl = color.x - palette_color.x;
-    let dc = color.y - palette_color.y;
-    var hue_delta = abs(color.z - palette_color.z) % (2.0 * 3.14159265);
-    if hue_delta > 3.14159265 {
-        hue_delta = 2.0 * 3.14159265 - hue_delta;
-    }
-    let angular_hue = sin(hue_delta * 0.5) * 2.0;
-    let scaled_hue = angular_hue * sqrt(max(color.y * palette_color.y, 0.0));
-    let precision_boost = hue_precision_boost_oklch(color, palette_color);
-    return palette_data.bias.x * dl * dl
-        + palette_data.bias.y * dc * dc
-        + palette_data.bias.z * (scaled_hue * scaled_hue + precision_boost * angular_hue * angular_hue);
+fn oklch_to_oklab(color: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(color.x, cos(color.z) * color.y, sin(color.z) * color.y);
 }
 
-fn smoothstep_scalar(edge0: f32, edge1: f32, value: f32) -> f32 {
-    let t = clamp((value - edge0) / max(edge1 - edge0, 0.000001), 0.0, 1.0);
-    return t * t * (3.0 - 2.0 * t);
-}
-
-fn hue_precision_boost_oklch(color: vec3<f32>, palette_color: vec3<f32>) -> f32 {
-    let shared_hue_signal = smoothstep_scalar(0.002, 0.03, min(color.y, palette_color.y));
-    let low_chroma_boost = 1.0 - smoothstep_scalar(0.02, 0.12, min(color.y, palette_color.y));
-    let lightness_boost = 1.0 - min(
-        lightness_midpoint_relevance(color.x),
-        lightness_midpoint_relevance(palette_color.x),
-    );
-    return shared_hue_signal * max(low_chroma_boost, lightness_boost);
-}
-
-fn lightness_midpoint_relevance(lightness: f32) -> f32 {
-    return clamp(lightness * (1.0 - lightness) * 4.0, 0.0, 1.0);
+fn biased_distance_squared_oklab(color: vec3<f32>, palette_color: vec3<f32>) -> f32 {
+    let delta = color - palette_color;
+    let chromatic_weight = (palette_data.bias.y + palette_data.bias.z) * 0.5;
+    return palette_data.bias.x * delta.x * delta.x
+        + chromatic_weight * (delta.y * delta.y + delta.z * delta.z);
 }
 
 fn palette_index_for_entry(entry_index: u32) -> u32 {
@@ -355,6 +332,7 @@ fn palette_index_for_entry(entry_index: u32) -> u32 {
     if !direct {
         source = apply_input_offset(source);
     }
+    let source_oklab = oklch_to_oklab(source);
 
     let palette_count = min(u32(max(palette_data.bias.w, 1.0)), 256u);
     var best_index = 0u;
@@ -363,8 +341,8 @@ fn palette_index_for_entry(entry_index: u32) -> u32 {
         if index >= palette_count {
             break;
         }
-        let palette_color = oklab_to_oklch(rgb_to_oklab(palette_data.colors[index].rgb));
-        let distance = biased_distance_squared_oklch(source, palette_color);
+        let palette_color = rgb_to_oklab(palette_data.colors[index].rgb);
+        let distance = biased_distance_squared_oklab(source_oklab, palette_color);
         if distance < best_distance {
             best_distance = distance;
             best_index = index;

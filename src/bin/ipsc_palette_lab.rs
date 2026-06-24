@@ -593,40 +593,24 @@ fn palette_lab_html() -> String {
       };
     }
 
-    function hueDeltaRadians(a, b) {
-      let delta = Math.abs(a - b) % (Math.PI * 2);
-      return delta > Math.PI ? Math.PI * 2 - delta : delta;
+    function oklchToOklab(color) {
+      return {
+        l: color.l,
+        a: Math.cos(color.h) * color.c,
+        b: Math.sin(color.h) * color.c,
+      };
     }
 
     function clamp(value, min, max) {
       return Math.max(min, Math.min(max, value));
     }
 
-    function smoothstep(edge0, edge1, value) {
-      const t = clamp((value - edge0) / Math.max(edge1 - edge0, 0.000001), 0, 1);
-      return t * t * (3 - 2 * t);
-    }
-
-    function lightnessMidpointRelevance(lightness) {
-      return clamp(lightness * (1 - lightness) * 4, 0, 1);
-    }
-
-    function huePrecisionBoostOklch(a, b) {
-      const sharedHueSignal = smoothstep(0.002, 0.03, Math.min(a.c, b.c));
-      const lowChromaBoost = 1 - smoothstep(0.02, 0.12, Math.min(a.c, b.c));
-      const lightnessBoost = 1 - Math.min(lightnessMidpointRelevance(a.l), lightnessMidpointRelevance(b.l));
-      return sharedHueSignal * Math.max(lowChromaBoost, lightnessBoost);
-    }
-
-    function palettePreviewDistanceSquared(a, b, bias) {
+    function palettePreviewDistanceSquaredOklab(a, b, bias) {
       const dl = a.l - b.l;
-      const dc = a.c - b.c;
-      const angularHue = Math.sin(hueDeltaRadians(a.h, b.h) * 0.5) * 2;
-      const scaledHue = angularHue * Math.sqrt(Math.max(0, a.c * b.c));
-      const precisionBoost = huePrecisionBoostOklch(a, b);
-      return bias.lightness * dl * dl
-        + bias.chroma * dc * dc
-        + bias.hue * (scaledHue * scaledHue + precisionBoost * angularHue * angularHue);
+      const da = a.a - b.a;
+      const db = a.b - b.b;
+      const chromaticWeight = (bias.chroma + bias.hue) * 0.5;
+      return bias.lightness * dl * dl + chromaticWeight * (da * da + db * db);
     }
 
     function offsetInputOklch(color, offset) {
@@ -931,13 +915,14 @@ fn palette_lab_html() -> String {
       return { width: rendered.width, height: rendered.height, pixelColors: rendered.pixelColors };
     }
 
-    function nearestPaletteColor(color, paletteOklch, paletteColors, bias, offset) {
+    function nearestPaletteColor(color, paletteOklab, paletteColors, bias, offset) {
       const oklch = offsetInputOklch(oklabToOklch(rgbToOklab(color[0], color[1], color[2])), offset);
+      const oklab = oklchToOklab(oklch);
       let bestIndex = 0;
       let bestDistance = Number.POSITIVE_INFINITY;
 
-      for (let i = 0; i < paletteOklch.length; i++) {
-        const distance = palettePreviewDistanceSquared(oklch, paletteOklch[i], bias);
+      for (let i = 0; i < paletteOklab.length; i++) {
+        const distance = palettePreviewDistanceSquaredOklab(oklab, paletteOklab[i], bias);
         if (distance < bestDistance) {
           bestDistance = distance;
           bestIndex = i;
@@ -949,8 +934,8 @@ fn palette_lab_html() -> String {
 
     function drawRoundedSrgbComparison(srgbRendered, palette, bias, offset) {
       const paletteColors = palette.colors;
-      const paletteOklch = paletteColors.map(color => oklabToOklch(rgbToOklab(color[0], color[1], color[2])));
-      const roundedPixels = srgbRendered.pixelColors.map(color => nearestPaletteColor(color, paletteOklch, paletteColors, bias, offset));
+      const paletteOklab = paletteColors.map(color => rgbToOklab(color[0], color[1], color[2]));
+      const roundedPixels = srgbRendered.pixelColors.map(color => nearestPaletteColor(color, paletteOklab, paletteColors, bias, offset));
       drawDirect(roundedSrgbCanvas, roundedSrgbCtx, srgbRendered.width, srgbRendered.height, roundedPixels);
       return { width: srgbRendered.width, height: srgbRendered.height };
     }
@@ -1057,7 +1042,7 @@ fn palette_lab_html() -> String {
       const tableSize = 256 * 256 * 256;
       const alteredEntries = new Uint8Array(tableSize);
       const directEntries = new Uint8Array(tableSize);
-      const paletteOklch = artifact.colors.map(color => oklabToOklch(rgbToOklab(color[0], color[1], color[2])));
+      const paletteOklab = artifact.colors.map(color => rgbToOklab(color[0], color[1], color[2]));
       const matching = artifact.settings.bias;
       const offset = artifact.settings.offset;
       let cursor = 0;
@@ -1066,7 +1051,7 @@ fn palette_lab_html() -> String {
       for (let r = 0; r < 256; r++) {
         for (let g = 0; g < 256; g++) {
           for (let b = 0; b < 256; b++) {
-            alteredEntries[cursor++] = nearestPaletteIndexForMap(rgbToOklab(r, g, b), paletteOklch, matching, offset);
+            alteredEntries[cursor++] = nearestPaletteIndexForMap(rgbToOklab(r, g, b), paletteOklab, matching, offset);
           }
         }
         if (r % 4 === 0) {
@@ -1080,7 +1065,7 @@ fn palette_lab_html() -> String {
       for (let r = 0; r < 256; r++) {
         for (let g = 0; g < 256; g++) {
           for (let b = 0; b < 256; b++) {
-            directEntries[cursor++] = nearestPaletteIndexForMap(rgbToOklab(r, g, b), paletteOklch, matching, null);
+            directEntries[cursor++] = nearestPaletteIndexForMap(rgbToOklab(r, g, b), paletteOklab, matching, null);
           }
         }
         if (r % 4 === 0) {
@@ -1113,13 +1098,13 @@ fn palette_lab_html() -> String {
       return new Blob([header, paletteBytes, entries], { type: "application/octet-stream" });
     }
 
-    function nearestPaletteIndexForMap(oklab, paletteOklch, matching, offset) {
+    function nearestPaletteIndexForMap(oklab, paletteOklab, matching, offset) {
       const baseColor = oklabToOklch(oklab);
-      const color = offset ? offsetInputOklch(baseColor, offset) : baseColor;
+      const color = offset ? oklchToOklab(offsetInputOklch(baseColor, offset)) : oklab;
       let bestIndex = 0;
       let bestDistance = Number.POSITIVE_INFINITY;
-      for (let i = 0; i < Math.min(256, paletteOklch.length); i++) {
-        const distance = palettePreviewDistanceSquared(color, paletteOklch[i], matching);
+      for (let i = 0; i < Math.min(256, paletteOklab.length); i++) {
+        const distance = palettePreviewDistanceSquaredOklab(color, paletteOklab[i], matching);
         if (distance < bestDistance) {
           bestDistance = distance;
           bestIndex = i;
@@ -1135,7 +1120,7 @@ fn palette_lab_html() -> String {
         hash ^= BigInt(byte);
         hash = BigInt.asUintN(64, hash * prime);
       };
-      for (const byte of new TextEncoder().encode("oklch-hue-precision-v4")) feed(byte);
+      for (const byte of new TextEncoder().encode("delta-e-ok-v5")) feed(byte);
       for (const color of colors) {
         for (const byte of color) feed(byte);
       }

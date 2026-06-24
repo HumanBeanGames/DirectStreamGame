@@ -1474,6 +1474,36 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "rebuilds the full IPSMAP5 lookup"]
+    fn stale_runtime_lookup_rebuilds_in_place() {
+        let config = PaletteConfig {
+            colors: vec![[0, 0, 0, 255], [255, 0, 0, 255], [255, 255, 255, 255]],
+            matching: PaletteMatching::default(),
+        };
+        let entries = vec![0u8; crate::palette_lut::LUT_ENTRY_COUNT * 2];
+        let mut bytes = crate::palette_lut::encode_lookup(&config, &entries).expect("encodes");
+        bytes[8] ^= 0xff;
+        let path = std::env::temp_dir().join(format!(
+            "directstreamgame-stale-runtime-{}.ipsmap",
+            std::process::id()
+        ));
+        std::fs::write(&path, bytes).expect("writes stale lookup");
+
+        let lookup = load_palette_lookup_runtime(&path);
+        let rewritten = std::fs::read(&path).expect("reads rebuilt lookup");
+        let decoded =
+            crate::palette_lut::decode_lookup_bundle(&rewritten).expect("rebuilt lookup decodes");
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(lookup.config().colors, config.colors);
+        assert_eq!(decoded.config().colors, config.colors);
+        assert_eq!(
+            lookup.entries().len(),
+            crate::palette_lut::LUT_ENTRY_COUNT * 2
+        );
+    }
+
+    #[test]
     fn delta_span_roundtrip() {
         let mut previous = Framebuffer::new(128, 128);
         let mut current = previous.clone();

@@ -598,10 +598,22 @@ fn palette_lab_html() -> String {
       return delta > Math.PI ? Math.PI * 2 - delta : delta;
     }
 
+    function smoothstep(edge0, edge1, value) {
+      const t = clamp((value - edge0) / Math.max(edge1 - edge0, 0.000001), 0, 1);
+      return t * t * (3 - 2 * t);
+    }
+
+    function hueRelevanceOklch(color) {
+      const chromaRelevance = smoothstep(0.02, 0.12, color.c);
+      const lightnessRelevance = clamp(color.l * (1 - color.l) * 4, 0, 1);
+      return chromaRelevance * lightnessRelevance;
+    }
+
     function palettePreviewDistanceSquared(a, b, bias) {
       const dl = a.l - b.l;
       const dc = a.c - b.c;
-      const dh = Math.sin(hueDeltaRadians(a.h, b.h) * 0.5) * 2 * Math.sqrt(Math.max(0, a.c * b.c));
+      const hueRelevance = hueRelevanceOklch(a) * hueRelevanceOklch(b);
+      const dh = Math.sin(hueDeltaRadians(a.h, b.h) * 0.5) * 2 * Math.sqrt(Math.max(0, a.c * b.c)) * hueRelevance;
       return bias.lightness * dl * dl + bias.chroma * dc * dc + bias.hue * dh * dh;
     }
 
@@ -1111,7 +1123,7 @@ fn palette_lab_html() -> String {
         hash ^= BigInt(byte);
         hash = BigInt.asUintN(64, hash * prime);
       };
-      for (const byte of new TextEncoder().encode("oklch-gamut-clamped-v1")) feed(byte);
+      for (const byte of new TextEncoder().encode("oklch-adaptive-hue-v2")) feed(byte);
       for (const color of colors) {
         for (const byte of color) feed(byte);
       }

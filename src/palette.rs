@@ -1,6 +1,10 @@
 use crate::{
     frames::{RawFrame, RawFramePixels},
-    palette_lut::{PaletteLookup, PaletteMatching, load_lookup_bundle},
+    gpu_lookup::build_lookup_gpu_with_progress,
+    palette_lut::{
+        PaletteConfig, PaletteLookup, PaletteMatching, build_lookup_with_progress,
+        load_lookup_bundle, recover_lookup_config, write_lookup,
+    },
     stats::SharedStats,
     stream_control::CustomStreamState,
 };
@@ -73,8 +77,34 @@ pub(crate) fn load_palette_runtime(path: impl AsRef<Path>) -> (Vec<[u8; 4]>, Pal
 pub(crate) fn load_palette_lookup_runtime(path: &Path) -> PaletteLookup {
     match load_lookup_bundle(path) {
         Ok(lookup) => lookup,
+        Err(load_err) => {
+            match recover_lookup_config(path).and_then(|config| {
+                eprintln!(
+                    "Palette lookup {} is stale or invalid ({load_err}); regenerating IPSMAP5 from embedded palette colors.",
+                    path.display()
+                );
+                let entries = rebuild_runtime_lookup_entries(&config);
+                write_lookup(path, &config, &entries)?;
+                load_lookup_bundle(path)
+            }) {
+                Ok(lookup) => lookup,
+                Err(rebuild_err) => {
+                    panic!(
+                        "Could not load palette lookup {}: {load_err}; recovery failed: {rebuild_err}",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn rebuild_runtime_lookup_entries(config: &PaletteConfig) -> Vec<u8> {
+    match build_lookup_gpu_with_progress(config, |_| {}) {
+        Ok(entries) => entries,
         Err(err) => {
-            panic!("Could not load palette lookup {}: {err}", path.display());
+            eprintln!("GPU palette lookup rebuild failed ({err}); using CPU fallback.");
+            build_lookup_with_progress(config, |_| {})
         }
     }
 }

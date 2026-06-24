@@ -291,6 +291,21 @@ pub fn load_lookup_bundle(path: impl AsRef<Path>) -> Result<PaletteLookup, Strin
     decode_lookup_bundle(&bytes)
 }
 
+pub fn recover_lookup_config(path: impl AsRef<Path>) -> Result<PaletteConfig, String> {
+    let bytes = fs::read(path).map_err(|err| err.to_string())?;
+    decode_lookup_config_unchecked(&bytes)
+}
+
+pub fn decode_lookup_config_unchecked(bytes: &[u8]) -> Result<PaletteConfig, String> {
+    if bytes.len() >= LUT_MAGIC_V5.len() && &bytes[0..8] == LUT_MAGIC_V5 {
+        return decode_lookup_config_v4_or_v5(bytes, LUT_ENTRY_COUNT * 2);
+    }
+    if bytes.len() >= LUT_MAGIC_V4.len() && &bytes[0..8] == LUT_MAGIC_V4 {
+        return decode_lookup_config_v4_or_v5(bytes, LUT_ENTRY_COUNT);
+    }
+    Err("LUT is not a recoverable self-contained IPSMAP4/IPSMAP5 lookup".to_owned())
+}
+
 pub fn decode_lookup(bytes: &[u8], config: &PaletteConfig) -> Result<PaletteLookup, String> {
     if bytes.len() >= LUT_MAGIC_V5.len() && &bytes[0..8] == LUT_MAGIC_V5 {
         let lookup = decode_lookup_bundle(bytes)?;
@@ -438,6 +453,54 @@ fn decode_lookup_bundle_v4_or_v5(
         hash,
         entries,
         config,
+    })
+}
+
+fn decode_lookup_config_v4_or_v5(
+    bytes: &[u8],
+    expected_entry_count: usize,
+) -> Result<PaletteConfig, String> {
+    if bytes.len() < LUT_V4_HEADER_LEN {
+        return Err(format!(
+            "LUT has {} bytes, expected at least {LUT_V4_HEADER_LEN}",
+            bytes.len()
+        ));
+    }
+    let color_count =
+        u16::from_le_bytes(bytes[16..18].try_into().expect("header slice length")) as usize;
+    if color_count == 0 || color_count > 256 {
+        return Err(format!(
+            "LUT header declares {color_count} colors, expected 1-256"
+        ));
+    }
+    let entry_count =
+        u32::from_le_bytes(bytes[20..24].try_into().expect("header slice length")) as usize;
+    if entry_count != expected_entry_count {
+        return Err(format!(
+            "LUT header declares {entry_count} entries, expected {expected_entry_count}"
+        ));
+    }
+
+    let entries_start = LUT_V4_HEADER_LEN
+        .checked_add(color_count * std::mem::size_of::<[u8; 4]>())
+        .ok_or_else(|| "LUT palette length overflowed".to_owned())?;
+    let expected_len = entries_start
+        .checked_add(expected_entry_count)
+        .ok_or_else(|| "LUT entry length overflowed".to_owned())?;
+    if bytes.len() != expected_len {
+        return Err(format!(
+            "LUT has {} bytes, expected {expected_len} for binary palette and entries",
+            bytes.len()
+        ));
+    }
+
+    let colors = bytes[LUT_V4_HEADER_LEN..entries_start]
+        .chunks_exact(4)
+        .map(|color| [color[0], color[1], color[2], color[3]])
+        .collect::<Vec<_>>();
+    Ok(PaletteConfig {
+        colors,
+        matching: PaletteMatching::default(),
     })
 }
 
@@ -848,6 +911,27 @@ hue = 0.0
         assert_eq!(lookup.altered_entries()[12345], 0);
         assert_eq!(lookup.direct_entries().expect("direct entries")[12345], 1);
         assert_eq!(lookup.hash(), lookup_hash(&config.colors, &entries));
+    }
+
+    #[test]
+    fn stale_self_contained_lookup_can_recover_palette_config() {
+        let config = PaletteConfig {
+            colors: vec![[3, 5, 7, 255], [255, 240, 220, 255]],
+            matching: PaletteMatching::default(),
+        };
+        let entries = vec![0u8; LUT_ENTRY_COUNT * 2];
+        let mut bytes = encode_lookup(&config, &entries).expect("lookup encodes");
+        bytes[8] ^= 0xff;
+
+        assert!(decode_lookup_bundle(&bytes).is_err());
+        let recovered =
+            decode_lookup_config_unchecked(&bytes).expect("embedded palette can be recovered");
+
+        assert_eq!(recovered.colors, config.colors);
+        assert_eq!(
+            recovered.matching.lightness,
+            PaletteMatching::default().lightness
+        );
     }
 
     #[test]

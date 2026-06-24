@@ -155,8 +155,20 @@ fn biased_distance_squared_oklch(color: vec3<f32>, palette_color: vec3<f32>, bia
     if hue_delta > 3.14159265 {
         hue_delta = 2.0 * 3.14159265 - hue_delta;
     }
-    let dh = sin(hue_delta * 0.5) * 2.0 * sqrt(max(color.y * palette_color.y, 0.0));
+    let hue_relevance = hue_relevance_oklch(color) * hue_relevance_oklch(palette_color);
+    let dh = sin(hue_delta * 0.5) * 2.0 * sqrt(max(color.y * palette_color.y, 0.0)) * hue_relevance;
     return bias.x * dl * dl + bias.y * dc * dc + bias.z * dh * dh;
+}
+
+fn smoothstep_scalar(edge0: f32, edge1: f32, value: f32) -> f32 {
+    let t = clamp((value - edge0) / max(edge1 - edge0, 0.000001), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+fn hue_relevance_oklch(color: vec3<f32>) -> f32 {
+    let chroma_relevance = smoothstep_scalar(0.02, 0.12, color.y);
+    let lightness_relevance = clamp(color.x * (1.0 - color.x) * 4.0, 0.0, 1.0);
+    return chroma_relevance * lightness_relevance;
 }
 
 fn nearest_palette_index_direct(source: vec3<f32>) -> u32 {

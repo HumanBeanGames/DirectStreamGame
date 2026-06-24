@@ -31,6 +31,7 @@ pub struct DirectText {
     pub threshold: Option<f32>,
     pub color: Srgba,
     pub color_lookup: DirectColorLookup,
+    pub palette_index: Option<u8>,
 }
 
 impl DirectText {
@@ -43,6 +44,7 @@ impl DirectText {
             threshold: None,
             color: Srgba::WHITE,
             color_lookup: DirectColorLookup::Direct,
+            palette_index: None,
         }
     }
 
@@ -63,6 +65,16 @@ impl DirectText {
 
     pub fn with_color_lookup(mut self, color_lookup: DirectColorLookup) -> Self {
         self.color_lookup = color_lookup;
+        self
+    }
+
+    pub fn with_palette_index(mut self, palette_index: u8) -> Self {
+        self.palette_index = Some(palette_index);
+        self
+    }
+
+    pub fn without_palette_index(mut self) -> Self {
+        self.palette_index = None;
         self
     }
 }
@@ -100,6 +112,7 @@ impl From<&DirectText> for DirectTextLayoutKey {
 struct DirectTextOverlayState {
     layout: DirectTextLayoutKey,
     color: Srgba,
+    palette_index: Option<u8>,
 }
 
 #[derive(Resource, Default)]
@@ -142,7 +155,9 @@ fn sync_direct_text_overlays(
 
             if previous.layout != layout {
                 rebuild_owners.insert(owner);
-            } else if direct_text_color_changed(previous.color, text.color) {
+            } else if direct_text_color_changed(previous.color, text.color)
+                || previous.palette_index != text.palette_index
+            {
                 recolor_owners.insert(owner);
             }
         }
@@ -189,6 +204,7 @@ fn sync_direct_text_overlays(
                 && let Some(entry) = cache.entries.get_mut(&owner)
             {
                 entry.color = text.color;
+                entry.palette_index = text.palette_index;
             }
         }
     }
@@ -284,6 +300,7 @@ fn sync_direct_text_overlays(
             DirectTextOverlayState {
                 layout: DirectTextLayoutKey::from(text),
                 color: text.color,
+                palette_index: text.palette_index,
             },
         );
     }
@@ -350,8 +367,10 @@ fn indexed_overlay_color(
     if target.output_is_indexed
         && let Some(gpu_palette) = gpu_palette
     {
-        let palette_index =
-            lookup_palette_index(text.color, &gpu_palette.lookup_entries, true).unwrap_or(0);
+        let palette_index = text
+            .palette_index
+            .or_else(|| lookup_palette_index(text.color, &gpu_palette.lookup_entries, true))
+            .unwrap_or(0);
         let index_value = f32::from(palette_index) / 255.0;
         return Color::linear_rgba(index_value, 0.0, 0.0, text.color.alpha);
     }
@@ -509,6 +528,48 @@ mod tests {
 
         assert_eq!(lookup_palette_index(color, &entries, false), Some(7));
         assert_eq!(lookup_palette_index(color, &entries, true), Some(42));
+    }
+
+    #[test]
+    fn explicit_palette_index_overrides_direct_lookup_for_indexed_text() {
+        let target = DirectStreamTarget {
+            camera: Entity::PLACEHOLDER,
+            overlay_camera: Entity::PLACEHOLDER,
+            image: Handle::default(),
+            output_image: Handle::default(),
+            output_is_indexed: true,
+            overlay_layer: 0,
+            raw_overlay_layer: Some(1),
+            width: 16,
+            height: 16,
+            fps: 30,
+        };
+        let mut entries = vec![0u8; LUT_ENTRY_COUNT * 2];
+        entries[LUT_ENTRY_COUNT + (255usize << 16)] = 42;
+        let gpu_palette = GpuPalettePipeline {
+            material: Handle::default(),
+            source_copy_material: Handle::default(),
+            palette_texture: Handle::default(),
+            lookup_texture: Handle::default(),
+            source_copy_camera: Entity::PLACEHOLDER,
+            palette_camera: Entity::PLACEHOLDER,
+            raw_overlay_camera: Entity::PLACEHOLDER,
+            overlay_camera: Entity::PLACEHOLDER,
+            source_copy_quad_entity: Entity::PLACEHOLDER,
+            quad_entity: Entity::PLACEHOLDER,
+            source_images: Vec::new(),
+            output_images: Vec::new(),
+            current_output_index: 0,
+            palette_count: 0,
+            palette_colors: Vec::new(),
+            lookup_entries: std::sync::Arc::from(entries.into_boxed_slice()),
+        };
+        let text = DirectText::new("!", 0, 0)
+            .with_color(Srgba::RED)
+            .with_palette_index(9);
+
+        let color = indexed_overlay_color(&text, &target, Some(&gpu_palette)).to_linear();
+        assert!((color.red - (9.0 / 255.0)).abs() < 0.0001);
     }
 
     #[test]

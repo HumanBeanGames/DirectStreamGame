@@ -12,7 +12,7 @@ const LUT_MAGIC_V4: &[u8; 8] = b"IPSMAP4\0";
 const LUT_MAGIC_V5: &[u8; 8] = b"IPSMAP5\0";
 const LUT_V1_HEADER_LEN: usize = 30;
 const LUT_V4_HEADER_LEN: usize = 24;
-const PALETTE_MATCHING_ALGORITHM_VERSION: &[u8] = b"oklch-gamut-clamped-v1";
+const PALETTE_MATCHING_ALGORITHM_VERSION: &[u8] = b"oklch-adaptive-hue-v2";
 
 #[derive(Clone, Copy, Debug)]
 pub struct PaletteMatching {
@@ -663,8 +663,20 @@ fn in_srgb_gamut(r: f32, g: f32, b: f32) -> bool {
 fn biased_distance_squared(a: Oklch, b: Oklch, matching: PaletteMatching) -> f32 {
     let dl = a.l - b.l;
     let dc = a.c - b.c;
-    let dh = (hue_delta(a.h, b.h) * 0.5).sin() * 2.0 * (a.c * b.c).sqrt();
+    let hue_relevance = hue_relevance(a) * hue_relevance(b);
+    let dh = (hue_delta(a.h, b.h) * 0.5).sin() * 2.0 * (a.c * b.c).sqrt() * hue_relevance;
     matching.lightness * dl * dl + matching.chroma * dc * dc + matching.hue * dh * dh
+}
+
+fn hue_relevance(color: Oklch) -> f32 {
+    let chroma_relevance = smoothstep(0.02, 0.12, color.c);
+    let lightness_relevance = (color.l * (1.0 - color.l) * 4.0).clamp(0.0, 1.0);
+    chroma_relevance * lightness_relevance
+}
+
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    let t = ((value - edge0) / (edge1 - edge0).max(0.000_001)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 fn hue_delta(a: f32, b: f32) -> f32 {
@@ -854,6 +866,41 @@ hue = 0.0
         };
 
         assert_eq!(nearest_palette_index(source, &palette, matching), 0);
+    }
+
+    #[test]
+    fn hue_relevance_collapses_for_neutral_black_and_white() {
+        assert_eq!(
+            hue_relevance(Oklch {
+                l: 0.5,
+                c: 0.0,
+                h: std::f32::consts::PI,
+            }),
+            0.0
+        );
+        assert_eq!(
+            hue_relevance(Oklch {
+                l: 0.0,
+                c: 0.2,
+                h: std::f32::consts::PI,
+            }),
+            0.0
+        );
+        assert_eq!(
+            hue_relevance(Oklch {
+                l: 1.0,
+                c: 0.2,
+                h: std::f32::consts::PI,
+            }),
+            0.0
+        );
+        assert!(
+            hue_relevance(Oklch {
+                l: 0.5,
+                c: 0.2,
+                h: std::f32::consts::PI,
+            }) > 0.99
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@ const LUT_MAGIC_V4: &[u8; 8] = b"IPSMAP4\0";
 const LUT_MAGIC_V5: &[u8; 8] = b"IPSMAP5\0";
 const LUT_V1_HEADER_LEN: usize = 30;
 const LUT_V4_HEADER_LEN: usize = 24;
-const PALETTE_MATCHING_ALGORITHM_VERSION: &[u8] = b"oklch-adaptive-hue-v2";
+const PALETTE_MATCHING_ALGORITHM_VERSION: &[u8] = b"oklch-hue-precision-v4";
 
 #[derive(Clone, Copy, Debug)]
 pub struct PaletteMatching {
@@ -726,15 +726,24 @@ fn in_srgb_gamut(r: f32, g: f32, b: f32) -> bool {
 fn biased_distance_squared(a: Oklch, b: Oklch, matching: PaletteMatching) -> f32 {
     let dl = a.l - b.l;
     let dc = a.c - b.c;
-    let hue_relevance = hue_relevance(a) * hue_relevance(b);
-    let dh = (hue_delta(a.h, b.h) * 0.5).sin() * 2.0 * (a.c * b.c).sqrt() * hue_relevance;
-    matching.lightness * dl * dl + matching.chroma * dc * dc + matching.hue * dh * dh
+    let angular_hue = (hue_delta(a.h, b.h) * 0.5).sin() * 2.0;
+    let scaled_hue = angular_hue * (a.c * b.c).sqrt();
+    let precision_boost = hue_precision_boost(a, b);
+    matching.lightness * dl * dl
+        + matching.chroma * dc * dc
+        + matching.hue * (scaled_hue * scaled_hue + precision_boost * angular_hue * angular_hue)
 }
 
-fn hue_relevance(color: Oklch) -> f32 {
-    let chroma_relevance = smoothstep(0.02, 0.12, color.c);
-    let lightness_relevance = (color.l * (1.0 - color.l) * 4.0).clamp(0.0, 1.0);
-    chroma_relevance * lightness_relevance
+fn hue_precision_boost(a: Oklch, b: Oklch) -> f32 {
+    let shared_hue_signal = smoothstep(0.002, 0.03, a.c.min(b.c));
+    let low_chroma_boost = 1.0 - smoothstep(0.02, 0.12, a.c.min(b.c));
+    let lightness_boost =
+        1.0 - lightness_midpoint_relevance(a.l).min(lightness_midpoint_relevance(b.l));
+    shared_hue_signal * low_chroma_boost.max(lightness_boost)
+}
+
+fn lightness_midpoint_relevance(lightness: f32) -> f32 {
+    (lightness * (1.0 - lightness) * 4.0).clamp(0.0, 1.0)
 }
 
 fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
@@ -953,37 +962,64 @@ hue = 0.0
     }
 
     #[test]
-    fn hue_relevance_collapses_for_neutral_black_and_white() {
+    fn hue_precision_boost_rises_at_low_chroma_and_lightness_extremes() {
         assert_eq!(
-            hue_relevance(Oklch {
-                l: 0.5,
-                c: 0.0,
-                h: std::f32::consts::PI,
-            }),
-            0.0
-        );
-        assert_eq!(
-            hue_relevance(Oklch {
-                l: 0.0,
-                c: 0.2,
-                h: std::f32::consts::PI,
-            }),
-            0.0
-        );
-        assert_eq!(
-            hue_relevance(Oklch {
-                l: 1.0,
-                c: 0.2,
-                h: std::f32::consts::PI,
-            }),
+            hue_precision_boost(
+                Oklch {
+                    l: 0.5,
+                    c: 0.0,
+                    h: 0.0,
+                },
+                Oklch {
+                    l: 0.5,
+                    c: 0.02,
+                    h: std::f32::consts::PI,
+                },
+            ),
             0.0
         );
         assert!(
-            hue_relevance(Oklch {
-                l: 0.5,
-                c: 0.2,
-                h: std::f32::consts::PI,
-            }) > 0.99
+            hue_precision_boost(
+                Oklch {
+                    l: 0.08,
+                    c: 0.03,
+                    h: 0.0,
+                },
+                Oklch {
+                    l: 0.08,
+                    c: 0.03,
+                    h: std::f32::consts::PI,
+                },
+            ) > 0.9
+        );
+        assert!(
+            hue_precision_boost(
+                Oklch {
+                    l: 0.92,
+                    c: 0.03,
+                    h: 0.0,
+                },
+                Oklch {
+                    l: 0.92,
+                    c: 0.03,
+                    h: std::f32::consts::PI,
+                },
+            ) > 0.9
+        );
+        assert_eq!(
+            hue_precision_boost(
+                Oklch {
+                    l: 0.5,
+                    c: 0.2,
+                    h: 0.0,
+                },
+                Oklch {
+                    l: 0.5,
+                    c: 0.2,
+                    h: std::f32::consts::PI,
+                },
+            ),
+            0.0
         );
     }
 

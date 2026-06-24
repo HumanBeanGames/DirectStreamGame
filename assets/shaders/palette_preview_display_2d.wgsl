@@ -155,9 +155,12 @@ fn biased_distance_squared_oklch(color: vec3<f32>, palette_color: vec3<f32>, bia
     if hue_delta > 3.14159265 {
         hue_delta = 2.0 * 3.14159265 - hue_delta;
     }
-    let hue_relevance = hue_relevance_oklch(color) * hue_relevance_oklch(palette_color);
-    let dh = sin(hue_delta * 0.5) * 2.0 * sqrt(max(color.y * palette_color.y, 0.0)) * hue_relevance;
-    return bias.x * dl * dl + bias.y * dc * dc + bias.z * dh * dh;
+    let angular_hue = sin(hue_delta * 0.5) * 2.0;
+    let scaled_hue = angular_hue * sqrt(max(color.y * palette_color.y, 0.0));
+    let precision_boost = hue_precision_boost_oklch(color, palette_color);
+    return bias.x * dl * dl
+        + bias.y * dc * dc
+        + bias.z * (scaled_hue * scaled_hue + precision_boost * angular_hue * angular_hue);
 }
 
 fn smoothstep_scalar(edge0: f32, edge1: f32, value: f32) -> f32 {
@@ -165,10 +168,18 @@ fn smoothstep_scalar(edge0: f32, edge1: f32, value: f32) -> f32 {
     return t * t * (3.0 - 2.0 * t);
 }
 
-fn hue_relevance_oklch(color: vec3<f32>) -> f32 {
-    let chroma_relevance = smoothstep_scalar(0.02, 0.12, color.y);
-    let lightness_relevance = clamp(color.x * (1.0 - color.x) * 4.0, 0.0, 1.0);
-    return chroma_relevance * lightness_relevance;
+fn hue_precision_boost_oklch(color: vec3<f32>, palette_color: vec3<f32>) -> f32 {
+    let shared_hue_signal = smoothstep_scalar(0.002, 0.03, min(color.y, palette_color.y));
+    let low_chroma_boost = 1.0 - smoothstep_scalar(0.02, 0.12, min(color.y, palette_color.y));
+    let lightness_boost = 1.0 - min(
+        lightness_midpoint_relevance(color.x),
+        lightness_midpoint_relevance(palette_color.x),
+    );
+    return shared_hue_signal * max(low_chroma_boost, lightness_boost);
+}
+
+fn lightness_midpoint_relevance(lightness: f32) -> f32 {
+    return clamp(lightness * (1.0 - lightness) * 4.0, 0.0, 1.0);
 }
 
 fn nearest_palette_index_direct(source: vec3<f32>) -> u32 {

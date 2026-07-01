@@ -3083,10 +3083,15 @@ fn handle_preview_pixel_debug_readback(
             ));
         }
     }
-    if let (Some(raw), Some(quantized)) = (
-        debug_state.pixel_debug_raw.take(),
-        debug_state.pixel_debug_quantized.take(),
-    ) {
+    if debug_state.pixel_debug_raw.is_some() && debug_state.pixel_debug_quantized.is_some() {
+        let raw = debug_state
+            .pixel_debug_raw
+            .take()
+            .expect("raw pixel debug checked above");
+        let quantized = debug_state
+            .pixel_debug_quantized
+            .take()
+            .expect("quantized pixel debug checked above");
         debug_state.output = preview_pixel_pair_text(&raw, &quantized);
     }
     commands.entity(event.entity).despawn();

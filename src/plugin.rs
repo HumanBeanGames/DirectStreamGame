@@ -19,7 +19,8 @@ use crate::{
         handle_preview_palette_checkbox_changes, handle_preview_palette_editor_interactions,
         handle_preview_pixel_debug_clicks, process_preview_palette_rebake,
         process_preview_palette_save, request_preview_palette_validation,
-        setup_direct_stream_scene, sync_preview_palette_editor_ui, update_preview_layout,
+        setup_direct_stream_scene, sync_preview_palette_editor_ui,
+        sync_preview_palette_pipeline_materials, update_preview_layout,
         update_preview_pixel_debug_text, update_stats_window,
     },
     stream_control::{
@@ -110,6 +111,7 @@ impl Plugin for DirectStreamPlugin {
                     handle_preview_pixel_debug_clicks,
                     update_preview_pixel_debug_text,
                 ),
-            );
+            )
+            .add_systems(Update, sync_preview_palette_pipeline_materials);
     }
 }

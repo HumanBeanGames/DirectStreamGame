@@ -3,23 +3,37 @@ use crate::{
     public_types::{DirectColorLookup, DirectStreamTarget},
 };
 use bevy::{
-    asset::RenderAssetUsages,
+    asset::{RenderAssetUsages, load_internal_asset, uuid_handle},
     camera::visibility::RenderLayers,
+    light::{NotShadowCaster, NotShadowReceiver},
     mesh::Indices,
     prelude::*,
+    reflect::TypePath,
     render::{
         alpha::AlphaMode,
-        render_resource::{Face, PrimitiveTopology},
+        render_resource::{AsBindGroup, PrimitiveTopology},
     },
+    shader::{Shader, ShaderRef},
     transform::TransformSystems,
 };
 use std::collections::{HashMap, HashSet};
+
+const DIRECT_WORLD_SPRITE_SHADER_HANDLE: Handle<Shader> =
+    uuid_handle!("90a42887-6f03-4a30-b322-466a5b1b30e8");
 
 pub struct DirectWorldSpritePlugin;
 
 impl Plugin for DirectWorldSpritePlugin {
     fn build(&self, app: &mut App) {
+        load_internal_asset!(
+            app,
+            DIRECT_WORLD_SPRITE_SHADER_HANDLE,
+            "../assets/shaders/direct_world_sprite.wgsl",
+            Shader::from_wgsl
+        );
+
         app.init_resource::<DirectWorldSpriteSettings>()
+            .add_plugins(MaterialPlugin::<DirectWorldSpriteMaterial>::default())
             .add_systems(
                 PostUpdate,
                 sync_direct_world_sprites.after(TransformSystems::Propagate),
@@ -130,7 +144,7 @@ struct AtlasFrame {
 
 #[derive(Component)]
 struct DirectWorldSpriteRender {
-    material: Handle<StandardMaterial>,
+    material: Handle<DirectWorldSpriteMaterial>,
     mesh: Handle<Mesh>,
     image: Handle<Image>,
     atlas: Option<Handle<TextureAtlasLayout>>,
@@ -152,14 +166,14 @@ fn sync_direct_world_sprites(
         Query<(
             &mut DirectWorldSpriteRender,
             &mut Mesh3d,
-            &mut MeshMaterial3d<StandardMaterial>,
+            &mut MeshMaterial3d<DirectWorldSpriteMaterial>,
             &mut Transform,
             &mut Visibility,
         )>,
     )>,
     mut render_map: Local<DirectWorldSpriteRenderMap>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<DirectWorldSpriteMaterial>>,
     atlases: Res<Assets<TextureAtlasLayout>>,
     gpu_palette: Option<Res<GpuPalettePipeline>>,
 ) {
@@ -236,6 +250,8 @@ fn sync_direct_world_sprites(
                     render_transform,
                     Visibility::Visible,
                     render_layers.clone(),
+                    NotShadowCaster,
+                    NotShadowReceiver,
                     DirectWorldSpriteRender {
                         material,
                         mesh,
@@ -280,15 +296,15 @@ fn sync_direct_world_sprites(
             }
 
             if let Some(existing_material) = materials.get_mut(&render.material) {
-                existing_material.base_color = sprite_tint(
+                existing_material.tint = sprite_tint(
                     sprite,
                     sprite.tint,
                     target.output_is_indexed,
                     gpu_palette.as_deref(),
                 );
-                existing_material.base_color_texture = Some(sprite.image.clone());
+                existing_material.texture = sprite.image.clone();
                 existing_material.alpha_mode = alpha_mode(sprite, target.output_is_indexed);
-                existing_material.depth_bias = depth_bias(sprite);
+                existing_material.depth_bias = material_depth_bias(sprite);
             }
 
             *transform = render_transform;
@@ -327,11 +343,13 @@ fn project_world_sprite(
     let center_viewport = snapped_anchor + (Vec2::splat(0.5) - sprite.anchor) * pixel_size;
     let rotation = sprite_rotation(sprite.facing, anchor_world, camera_transform);
     let plane_normal = rotation * Vec3::Z;
+    let render_anchor_world =
+        anchor_world + camera_transform.forward().as_vec3() * world_depth_bias(sprite);
     let center_world = intersect_viewport_ray_with_plane(
         camera,
         camera_transform,
         center_viewport,
-        anchor_world,
+        render_anchor_world,
         plane_normal,
     )?;
     let half_size = pixel_size * 0.5;
@@ -339,28 +357,28 @@ fn project_world_sprite(
         camera,
         camera_transform,
         center_viewport - Vec2::X * half_size.x,
-        anchor_world,
+        render_anchor_world,
         plane_normal,
     )?;
     let right_world = intersect_viewport_ray_with_plane(
         camera,
         camera_transform,
         center_viewport + Vec2::X * half_size.x,
-        anchor_world,
+        render_anchor_world,
         plane_normal,
     )?;
     let top_world = intersect_viewport_ray_with_plane(
         camera,
         camera_transform,
         center_viewport - Vec2::Y * half_size.y,
-        anchor_world,
+        render_anchor_world,
         plane_normal,
     )?;
     let bottom_world = intersect_viewport_ray_with_plane(
         camera,
         camera_transform,
         center_viewport + Vec2::Y * half_size.y,
-        anchor_world,
+        render_anchor_world,
         plane_normal,
     )?;
 
@@ -468,16 +486,41 @@ fn sprite_material(
     sprite: &DirectWorldSprite,
     output_is_indexed: bool,
     gpu_palette: Option<&GpuPalettePipeline>,
-) -> StandardMaterial {
-    StandardMaterial {
-        base_color: sprite_tint(sprite, sprite.tint, output_is_indexed, gpu_palette),
-        base_color_texture: Some(sprite.image.clone()),
-        unlit: true,
-        double_sided: true,
-        cull_mode: None::<Face>,
+) -> DirectWorldSpriteMaterial {
+    DirectWorldSpriteMaterial {
+        tint: sprite_tint(sprite, sprite.tint, output_is_indexed, gpu_palette),
+        texture: sprite.image.clone(),
         alpha_mode: alpha_mode(sprite, output_is_indexed),
-        depth_bias: depth_bias(sprite),
-        ..default()
+        depth_bias: material_depth_bias(sprite),
+    }
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+struct DirectWorldSpriteMaterial {
+    #[uniform(0)]
+    tint: LinearRgba,
+    #[texture(1)]
+    #[sampler(2)]
+    texture: Handle<Image>,
+    alpha_mode: AlphaMode,
+    depth_bias: f32,
+}
+
+impl Material for DirectWorldSpriteMaterial {
+    fn fragment_shader() -> ShaderRef {
+        ShaderRef::Handle(DIRECT_WORLD_SPRITE_SHADER_HANDLE)
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        self.alpha_mode
+    }
+
+    fn depth_bias(&self) -> f32 {
+        self.depth_bias
+    }
+
+    fn enable_shadows() -> bool {
+        false
     }
 }
 
@@ -486,14 +529,14 @@ fn sprite_tint(
     tint: Color,
     output_is_indexed: bool,
     gpu_palette: Option<&GpuPalettePipeline>,
-) -> Color {
+) -> LinearRgba {
     if output_is_indexed
         && sprite.color_lookup == DirectColorLookup::Direct
         && let Some(_gpu_palette) = gpu_palette
     {
         let tint_srgba = tint.to_srgba();
         if tint_srgba.alpha >= 1.0 - (0.5 / 255.0) {
-            return Color::srgba(
+            return LinearRgba::new(
                 tint_srgba.red,
                 tint_srgba.green,
                 tint_srgba.blue,
@@ -502,7 +545,7 @@ fn sprite_tint(
         }
     }
 
-    tint
+    tint.into()
 }
 
 fn alpha_mode(sprite: &DirectWorldSprite, output_is_indexed: bool) -> AlphaMode {
@@ -521,9 +564,16 @@ fn alpha_mode(sprite: &DirectWorldSprite, output_is_indexed: bool) -> AlphaMode 
     }
 }
 
-fn depth_bias(sprite: &DirectWorldSprite) -> f32 {
+fn world_depth_bias(sprite: &DirectWorldSprite) -> f32 {
     match sprite.depth_mode {
-        SpriteDepthMode::AlwaysOnTopBeforeText => sprite.depth_bias.max(10_000.0),
+        SpriteDepthMode::AlwaysOnTopBeforeText => -sprite.depth_bias,
+        _ => 0.0,
+    }
+}
+
+fn material_depth_bias(sprite: &DirectWorldSprite) -> f32 {
+    match sprite.depth_mode {
+        SpriteDepthMode::AlwaysOnTopBeforeText => 0.0,
         _ => sprite.depth_bias,
     }
 }
@@ -548,11 +598,21 @@ mod tests {
             .with_tint(Color::srgba(1.0, 0.0, 0.0, 1.0))
             .with_color_lookup(DirectColorLookup::Direct);
 
-        let tint = sprite_tint(&sprite, sprite.tint, true, None).to_srgba();
+        let tint = sprite_tint(&sprite, sprite.tint, true, None);
         assert!((tint.alpha - 1.0).abs() < 0.0001);
 
-        let tint = sprite_tint(&sprite, sprite.tint, true, Some(&dummy_pipeline())).to_srgba();
+        let tint = sprite_tint(&sprite, sprite.tint, true, Some(&dummy_pipeline()));
         assert!((tint.alpha - 254.0 / 255.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn always_on_top_depth_bias_moves_toward_camera() {
+        let sprite = DirectWorldSprite::new(Handle::default(), UVec2::splat(4))
+            .with_depth_mode(SpriteDepthMode::AlwaysOnTopBeforeText)
+            .with_depth_bias(5.0);
+
+        assert_eq!(world_depth_bias(&sprite), -5.0);
+        assert_eq!(material_depth_bias(&sprite), 0.0);
     }
 
     fn dummy_pipeline() -> GpuPalettePipeline {

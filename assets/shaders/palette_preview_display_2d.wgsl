@@ -152,17 +152,15 @@ fn oklch_to_oklab(color: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(color.x, cos(color.z) * color.y, sin(color.z) * color.y);
 }
 
-fn biased_distance_squared_oklab(color: vec3<f32>, palette_color: vec3<f32>, bias: vec3<f32>) -> f32 {
+fn delta_e_ok_distance_squared(color: vec3<f32>, palette_color: vec3<f32>) -> f32 {
     let delta = color - palette_color;
-    let chromatic_weight = (bias.y + bias.z) * 0.5;
-    return bias.x * delta.x * delta.x + chromatic_weight * (delta.y * delta.y + delta.z * delta.z);
+    return dot(delta, delta);
 }
 
 fn nearest_palette_index_direct(source: vec3<f32>) -> u32 {
     let palette_width = textureDimensions(palette_texture).x;
     let palette_count = min(u32(max(palette_params.bias.w, 1.0)), palette_width);
     let source_oklab = oklch_to_oklab(apply_input_offset(oklab_to_oklch(rgb_to_oklab(srgb_to_linear(source)))));
-    let bias = palette_params.bias.xyz;
     var best_index = 0u;
     var best_distance = 3.4028234663852886e38;
     for (var index = 0u; index < 256u; index = index + 1u) {
@@ -171,7 +169,7 @@ fn nearest_palette_index_direct(source: vec3<f32>) -> u32 {
         }
         let palette_rgb = textureLoad(palette_texture, vec2<i32>(i32(index), 0), 0).rgb;
         let palette_oklab = rgb_to_oklab(srgb_to_linear(palette_rgb));
-        let distance = biased_distance_squared_oklab(source_oklab, palette_oklab, bias);
+        let distance = delta_e_ok_distance_squared(source_oklab, palette_oklab);
         if distance < best_distance {
             best_distance = distance;
             best_index = index;
@@ -184,7 +182,6 @@ fn nearest_palette_index_raw(source: vec3<f32>) -> u32 {
     let palette_width = textureDimensions(palette_texture).x;
     let palette_count = min(u32(max(palette_params.bias.w, 1.0)), palette_width);
     let source_oklab = rgb_to_oklab(srgb_to_linear(source));
-    let bias = palette_params.bias.xyz;
     var best_index = 0u;
     var best_distance = 3.4028234663852886e38;
     for (var index = 0u; index < 256u; index = index + 1u) {
@@ -193,7 +190,7 @@ fn nearest_palette_index_raw(source: vec3<f32>) -> u32 {
         }
         let palette_rgb = textureLoad(palette_texture, vec2<i32>(i32(index), 0), 0).rgb;
         let palette_oklab = rgb_to_oklab(srgb_to_linear(palette_rgb));
-        let distance = biased_distance_squared_oklab(source_oklab, palette_oklab, bias);
+        let distance = delta_e_ok_distance_squared(source_oklab, palette_oklab);
         if distance < best_distance {
             best_distance = distance;
             best_index = index;
@@ -287,6 +284,11 @@ fn lookup_has_direct_entries() -> bool {
     return textureDimensions(lookup_texture).y >= 8192u;
 }
 
+fn display_palette_color(index: u32) -> vec4<f32> {
+    let color = textureLoad(palette_texture, vec2<i32>(i32(index), 0), 0);
+    return vec4<f32>(srgb_to_linear(color.rgb), color.a);
+}
+
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let source_size = textureDimensions(source_image);
@@ -297,7 +299,7 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let palette_width = textureDimensions(palette_texture).x;
     if lookup_params.flags.y > 0.5 {
         let palette_index = min(u32(round(raw_source.r * 255.0)), palette_width - 1u);
-        return textureLoad(palette_texture, vec2<i32>(i32(palette_index), 0), 0);
+        return display_palette_color(palette_index);
     }
     let direct_index = abs(raw_sample.a - (254.0 / 255.0)) <= (0.5 / 255.0);
     let source = apply_dither(raw_source, source_coord);
@@ -313,5 +315,5 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
     palette_index = min(palette_index, palette_width - 1u);
-    return textureLoad(palette_texture, vec2<i32>(i32(palette_index), 0), 0);
+    return display_palette_color(palette_index);
 }

@@ -38,6 +38,8 @@ const PALETTE_PREVIEW_DISPLAY_SHADER_HANDLE: Handle<Shader> =
     uuid_handle!("8ac093df-eddb-44f3-96c7-435d6c7e00a9");
 const RAW_PREVIEW_COPY_SHADER_HANDLE: Handle<Shader> =
     uuid_handle!("2fe46520-bd33-4420-8c37-3961ce605e77");
+const RAW_PREVIEW_DISPLAY_SHADER_HANDLE: Handle<Shader> =
+    uuid_handle!("52f15af4-c6dd-4ed7-bb24-113c21f862e7");
 
 pub(crate) struct GpuPalettePlugin;
 
@@ -61,12 +63,19 @@ impl Plugin for GpuPalettePlugin {
             "../assets/shaders/raw_preview_copy_2d.wgsl",
             Shader::from_wgsl
         );
+        load_internal_asset!(
+            app,
+            RAW_PREVIEW_DISPLAY_SHADER_HANDLE,
+            "../assets/shaders/raw_preview_display_2d.wgsl",
+            Shader::from_wgsl
+        );
 
         app.init_resource::<DirectStreamDitherSettings>()
             .add_plugins((
                 Material2dPlugin::<PaletteMaterial>::default(),
                 Material2dPlugin::<PalettePreviewDisplayMaterial>::default(),
                 Material2dPlugin::<RawPreviewCopyMaterial>::default(),
+                Material2dPlugin::<RawPreviewDisplayMaterial>::default(),
             ))
             .add_systems(Update, sync_palette_material_bias)
             .add_systems(Update, sync_palette_material_dither)
@@ -150,6 +159,19 @@ impl Material2d for RawPreviewCopyMaterial {
     }
 }
 
+#[derive(AsBindGroup, Debug, Clone, Asset, TypePath)]
+pub(crate) struct RawPreviewDisplayMaterial {
+    #[texture(0)]
+    #[sampler(1)]
+    pub(crate) source_image: Handle<Image>,
+}
+
+impl Material2d for RawPreviewDisplayMaterial {
+    fn fragment_shader() -> ShaderRef {
+        ShaderRef::Handle(RAW_PREVIEW_DISPLAY_SHADER_HANDLE)
+    }
+}
+
 #[derive(Component)]
 pub(crate) struct PreviewRawDisplay;
 
@@ -180,6 +202,7 @@ pub(crate) struct PreviewPaletteThrottle {
     batch_size: usize,
     queued_output_indices: VecDeque<usize>,
     pub(crate) display_material: Handle<PalettePreviewDisplayMaterial>,
+    pub(crate) raw_display_material: Handle<RawPreviewDisplayMaterial>,
     delay_filled: bool,
 }
 
@@ -188,6 +211,7 @@ impl PreviewPaletteThrottle {
         fps: u32,
         batch_size: usize,
         display_material: Handle<PalettePreviewDisplayMaterial>,
+        raw_display_material: Handle<RawPreviewDisplayMaterial>,
     ) -> Self {
         let frame_interval = Duration::from_secs_f64(1.0 / fps.max(1) as f64);
         Self {
@@ -196,6 +220,7 @@ impl PreviewPaletteThrottle {
             batch_size: batch_size.max(1),
             queued_output_indices: VecDeque::with_capacity(batch_size.max(1)),
             display_material,
+            raw_display_material,
             delay_filled: false,
         }
     }
@@ -603,10 +628,10 @@ fn throttle_preview_palette_cameras(
     throttle: Option<ResMut<PreviewPaletteThrottle>>,
     mut palette_materials: ResMut<Assets<PaletteMaterial>>,
     mut display_materials: ResMut<Assets<PalettePreviewDisplayMaterial>>,
+    mut raw_display_materials: ResMut<Assets<RawPreviewDisplayMaterial>>,
     mut debug_state: Option<ResMut<PreviewPixelDebugState>>,
     mut camera_targets: Query<&mut RenderTarget>,
     mut cameras: Query<&mut Camera>,
-    mut raw_display: Query<&mut Sprite, With<PreviewRawDisplay>>,
     mut preview_visuals: Query<&mut Visibility, With<PreviewStreamVisual>>,
     mut loading_text: Query<
         &mut Visibility,
@@ -671,8 +696,10 @@ fn throttle_preview_palette_cameras(
             && let Some(display_material) = display_materials.get_mut(&throttle.display_material)
         {
             display_material.source_image = pipeline.output_images[display_index].clone();
-            for mut sprite in &mut raw_display {
-                sprite.image = pipeline.source_images[display_index].clone();
+            if let Some(raw_display_material) =
+                raw_display_materials.get_mut(&throttle.raw_display_material)
+            {
+                raw_display_material.source_image = pipeline.source_images[display_index].clone();
             }
             if let Some(debug_state) = debug_state.as_deref_mut() {
                 debug_state.raw_image = pipeline.source_images[display_index].clone();

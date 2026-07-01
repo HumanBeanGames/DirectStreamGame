@@ -778,7 +778,7 @@ impl IndexedPixelEncoder {
         let mut best_distance = f32::MAX;
 
         for (index, palette_color) in self.palette_oklab.iter().copied().take(256).enumerate() {
-            let distance = color.biased_distance_squared(Oklch::from(palette_color), bias);
+            let distance = color.delta_e_ok_distance_squared(Oklch::from(palette_color));
             if distance < best_distance {
                 best_distance = distance;
                 best_index = index as u8;
@@ -955,14 +955,13 @@ impl Oklch {
         adjusted
     }
 
-    fn biased_distance_squared(self, other: Self, bias: PaletteBias) -> f32 {
+    fn delta_e_ok_distance_squared(self, other: Self) -> f32 {
         let self_lab = oklch_to_oklab(self);
         let other_lab = oklch_to_oklab(other);
         let dl = self_lab.l - other_lab.l;
         let da = self_lab.a - other_lab.a;
         let db = self_lab.b - other_lab.b;
-        let chromatic_weight = (bias.chroma + bias.hue) * 0.5;
-        bias.lightness * dl * dl + chromatic_weight * (da * da + db * db)
+        dl * dl + da * da + db * db
     }
 }
 

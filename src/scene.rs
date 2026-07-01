@@ -8,10 +8,12 @@ use crate::{
     gpu_palette::{
         GPU_PREVIEW_DISPLAY_LAYER, PaletteMaterial, PalettePreviewDisplayMaterial,
         PreviewPaletteThrottle, PreviewRawDisplay, RawPreviewCopyMaterial,
-        make_stream_source_image, spawn_custom_host_pipeline,
+        RawPreviewDisplayMaterial, make_stream_source_image, spawn_custom_host_pipeline,
     },
     palette::load_palette_lookup_runtime,
-    palette_lut::{PaletteConfig, PaletteMatching, build_lookup_with_progress, write_lookup},
+    palette_lut::{
+        PaletteConfig, PaletteLookup, PaletteMatching, build_lookup_with_progress, write_lookup,
+    },
     public_types::{DirectStreamTarget, DirectStreamWindowLayout},
     stats::{SharedStats, StatsText},
     stream_control::{
@@ -219,6 +221,12 @@ pub(crate) struct PreviewPaletteRebakeResult {
 pub(crate) struct PreviewPaletteSave {
     receiver: Receiver<Result<PathBuf, String>>,
     progress: Arc<AtomicUsize>,
+}
+
+struct PreviewPaletteLoad {
+    config: PaletteConfig,
+    lookup: Option<PaletteLookup>,
+    path: PathBuf,
 }
 
 #[derive(Clone, Copy)]
@@ -465,6 +473,7 @@ pub(crate) fn setup_direct_stream_scene(
     mut palette_materials: ResMut<Assets<PaletteMaterial>>,
     mut preview_display_materials: ResMut<Assets<PalettePreviewDisplayMaterial>>,
     mut raw_copy_materials: ResMut<Assets<RawPreviewCopyMaterial>>,
+    mut raw_display_materials: ResMut<Assets<RawPreviewDisplayMaterial>>,
     config: Res<AppConfig>,
     window_layout: Res<DirectStreamWindowLayout>,
 ) {
@@ -540,11 +549,12 @@ pub(crate) fn setup_direct_stream_scene(
             true,
         );
         if config.window_mode == WindowMode::Preview {
-            let (display_material, debug_state) = spawn_preview_comparison(
+            let (display_material, raw_display_material, debug_state) = spawn_preview_comparison(
                 &mut commands,
                 &mut images,
                 &mut meshes,
                 &mut preview_display_materials,
+                &mut raw_display_materials,
                 &mut raw_copy_materials,
                 &stream_image,
                 &pipeline,
@@ -559,6 +569,7 @@ pub(crate) fn setup_direct_stream_scene(
                 config.stream_fps,
                 batch_size,
                 display_material,
+                raw_display_material,
             ));
         }
         let pipeline_clone = pipeline.clone();
@@ -593,6 +604,7 @@ fn spawn_preview_comparison(
     images: &mut Assets<Image>,
     meshes: &mut Assets<Mesh>,
     preview_display_materials: &mut Assets<PalettePreviewDisplayMaterial>,
+    raw_display_materials: &mut Assets<RawPreviewDisplayMaterial>,
     _raw_copy_materials: &mut Assets<RawPreviewCopyMaterial>,
     _stream_image: &Handle<Image>,
     pipeline: &crate::gpu_palette::GpuPalettePipeline,
@@ -603,6 +615,7 @@ fn spawn_preview_comparison(
     height: u32,
 ) -> (
     Handle<PalettePreviewDisplayMaterial>,
+    Handle<RawPreviewDisplayMaterial>,
     PreviewPixelDebugState,
 ) {
     let raw_output_images = pipeline.source_images.clone();
@@ -615,13 +628,17 @@ fn spawn_preview_comparison(
     let raw_center = Vec2::new(-x_offset * display_scale - reserved_panel_offset, preview_y);
     let quantized_center = Vec2::new(x_offset * display_scale - reserved_panel_offset, preview_y);
     let display_size = Vec2::new(width as f32 * display_scale, height as f32 * display_scale);
+    let raw_display_material = raw_display_materials.add(RawPreviewDisplayMaterial {
+        source_image: first_raw_output,
+    });
     commands.spawn((
-        Sprite {
-            image: first_raw_output,
-            custom_size: Some(Vec2::new(width as f32, height as f32)),
-            ..default()
-        },
-        Transform::from_xyz(raw_center.x, raw_center.y, 0.0).with_scale(Vec3::splat(display_scale)),
+        Mesh2d(meshes.add(Rectangle::default())),
+        MeshMaterial2d(raw_display_material.clone()),
+        Transform::from_xyz(raw_center.x, raw_center.y, 0.0).with_scale(Vec3::new(
+            display_size.x,
+            display_size.y,
+            1.0,
+        )),
         Visibility::Hidden,
         RenderLayers::layer(GPU_PREVIEW_DISPLAY_LAYER),
         PreviewRawDisplay,
@@ -658,6 +675,7 @@ fn spawn_preview_comparison(
     spawn_preview_palette_editor_ui(commands, images, &pipeline.palette_colors, window_layout);
     (
         display_material,
+        raw_display_material,
         PreviewPixelDebugState {
             raw_image: raw_output_images[0].clone(),
             quantized_image: pipeline.output_images[0].clone(),
@@ -716,7 +734,7 @@ pub(crate) fn update_preview_layout(
     for mut transform in &mut raw_display {
         transform.translation.x = raw_center.x;
         transform.translation.y = raw_center.y;
-        transform.scale = Vec3::splat(scale);
+        transform.scale = Vec3::new(display_size.x, display_size.y, 1.0);
     }
     for mut transform in &mut quantized_display {
         transform.translation.x = quantized_center.x;
@@ -1731,13 +1749,26 @@ pub(crate) fn handle_preview_palette_editor_interactions(
     for interaction in &mut load_buttons {
         if *interaction == Interaction::Pressed {
             match load_preview_palette_file() {
-                Ok(Some((config, path))) => {
-                    editor.lab_settings = editor.lab_settings.with_matching(config.matching);
-                    set_preview_palette_colors(
-                        editor,
-                        padded_preview_palette(config.colors),
-                        format!("Loaded {}", path.display()),
-                    );
+                Ok(Some(load)) => {
+                    let path = load.path.clone();
+                    editor.lab_settings = editor.lab_settings.with_matching(load.config.matching);
+                    if let Some(lookup) = load.lookup {
+                        commit_loaded_preview_lookup_to_pipeline(
+                            editor,
+                            &load.config,
+                            lookup,
+                            pipeline.as_deref_mut(),
+                            debug_state.as_deref_mut(),
+                            &mut images,
+                        );
+                        editor.status = format!("Loaded {}", path.display());
+                    } else {
+                        set_preview_palette_colors(
+                            editor,
+                            padded_preview_palette(load.config.colors),
+                            format!("Loaded {}", path.display()),
+                        );
+                    }
                 }
                 Ok(None) => editor.status = "Load cancelled".to_owned(),
                 Err(err) => editor.status = format!("Load failed: {err}"),
@@ -2013,6 +2044,43 @@ fn commit_preview_palette_to_pipeline(
     editor.status = "IPSMAP6 rebake queued".to_owned();
 }
 
+fn commit_loaded_preview_lookup_to_pipeline(
+    editor: &mut PreviewPaletteEditor,
+    config: &PaletteConfig,
+    lookup: PaletteLookup,
+    pipeline: Option<&mut crate::gpu_palette::GpuPalettePipeline>,
+    debug_state: Option<&mut PreviewPixelDebugState>,
+    images: &mut Assets<Image>,
+) {
+    let colors = padded_preview_palette(config.colors.clone());
+    editor.colors = colors.clone();
+    editor.selected = editor.selected.min(editor.colors.len().saturating_sub(1));
+    editor.committed_lab_settings = editor.lab_settings;
+    editor.dirty = false;
+
+    let lookup_entries = Arc::<[u8]>::from(lookup.entries().to_vec().into_boxed_slice());
+    if let Some(pipeline) = pipeline {
+        pipeline.palette_colors.clone_from(&colors);
+        pipeline.palette_count = colors.len();
+        pipeline.lookup_entries = lookup_entries.clone();
+        if let Some(image) = images.get_mut(&pipeline.palette_texture) {
+            *image = crate::gpu_palette::make_palette_texture(&colors);
+        }
+        if let Some(image) = images.get_mut(&pipeline.lookup_texture) {
+            *image = crate::gpu_palette::make_lookup_texture(&lookup);
+        }
+    }
+    if let Some(debug_state) = debug_state {
+        debug_state.palette_colors = colors;
+        debug_state.lookup_entries = lookup_entries;
+        debug_state.validation_pending = false;
+        debug_state.validation_warmup_updates = 0;
+        debug_state.validation_frames_checked = 0;
+        debug_state.validation_raw_data = None;
+        debug_state.validation_quantized_data = None;
+    }
+}
+
 fn start_preview_palette_rebake(
     commands: &mut Commands,
     colors: &[[u8; 4]],
@@ -2184,6 +2252,30 @@ fn update_preview_palette_materials_for_gpu(
         material.input_offset_a = input_offset_a;
         material.input_offset_b = input_offset_b;
     }
+}
+
+pub(crate) fn sync_preview_palette_pipeline_materials(
+    config: Res<AppConfig>,
+    editor: Option<Res<PreviewPaletteEditor>>,
+    pipeline: Option<Res<crate::gpu_palette::GpuPalettePipeline>>,
+    throttle: Option<Res<PreviewPaletteThrottle>>,
+    mut palette_materials: ResMut<Assets<PaletteMaterial>>,
+    mut display_materials: ResMut<Assets<PalettePreviewDisplayMaterial>>,
+) {
+    if config.window_mode != WindowMode::Preview {
+        return;
+    }
+    let (Some(editor), Some(pipeline)) = (editor.as_deref(), pipeline.as_deref()) else {
+        return;
+    };
+    update_preview_palette_materials_for_gpu(
+        pipeline,
+        throttle.as_deref(),
+        &mut palette_materials,
+        &mut display_materials,
+        editor.committed_lab_settings,
+        PreviewPaletteRebakeMode::Gpu,
+    );
 }
 
 fn padded_preview_palette(mut colors: Vec<[u8; 4]>) -> Vec<[u8; 4]> {
@@ -2669,7 +2761,7 @@ pub(crate) fn process_preview_palette_save(
     }
 }
 
-fn load_preview_palette_file() -> Result<Option<(PaletteConfig, PathBuf)>, String> {
+fn load_preview_palette_file() -> Result<Option<PreviewPaletteLoad>, String> {
     let Some(path) = rfd::FileDialog::new()
         .set_title("Load preview palette")
         .add_filter("Palette files", &["txt", "toml", "ipsmap"])
@@ -2677,21 +2769,28 @@ fn load_preview_palette_file() -> Result<Option<(PaletteConfig, PathBuf)>, Strin
     else {
         return Ok(None);
     };
-    let config = if path
+    let load = if path
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("ipsmap"))
     {
-        crate::palette_lut::load_lookup_bundle(&path)?
-            .config()
-            .clone()
+        let lookup = crate::palette_lut::load_lookup_bundle(&path)?;
+        PreviewPaletteLoad {
+            config: lookup.config().clone(),
+            lookup: Some(lookup),
+            path,
+        }
     } else {
-        PaletteConfig {
-            colors: load_preview_palette_text_file(&path)?,
-            matching: PaletteMatching::default(),
+        PreviewPaletteLoad {
+            config: PaletteConfig {
+                colors: load_preview_palette_text_file(&path)?,
+                matching: PaletteMatching::default(),
+            },
+            lookup: None,
+            path,
         }
     };
-    Ok(Some((config, path)))
+    Ok(Some(load))
 }
 
 fn load_preview_palette_text_file(path: &PathBuf) -> Result<Vec<[u8; 4]>, String> {
@@ -3178,21 +3277,21 @@ fn preview_pixel_pair_text(raw: &RawPixelDebug, quantized: &QuantizedPixelDebug)
         .expected_index
         .map(|index| index.to_string())
         .unwrap_or_else(|| "out of range".to_owned());
-    let raw_oklch = Oklch::from(rgb_to_oklab(raw.r, raw.g, raw.b));
-    let quantized_oklch = Oklch::from(rgb_to_oklab(
-        quantized.color[0],
-        quantized.color[1],
-        quantized.color[2],
-    ));
+    let raw_oklab = rgb_to_oklab(raw.r, raw.g, raw.b);
+    let quantized_oklab = rgb_to_oklab(quantized.color[0], quantized.color[1], quantized.color[2]);
+    let delta_l = raw_oklab.l - quantized_oklab.l;
+    let delta_a = raw_oklab.a - quantized_oklab.a;
+    let delta_b = raw_oklab.b - quantized_oklab.b;
+    let delta_e_ok = (delta_l * delta_l + delta_a * delta_a + delta_b * delta_b).sqrt();
+    let raw_oklch = Oklch::from(raw_oklab);
+    let quantized_oklch = Oklch::from(quantized_oklab);
     let dl = raw_oklch.l - quantized_oklch.l;
     let dc = raw_oklch.c - quantized_oklch.c;
     let dh_degrees = (raw_oklch.h.to_degrees() - quantized_oklch.h.to_degrees() + 180.0)
         .rem_euclid(360.0)
         - 180.0;
-    let dh_turns = dh_degrees / 360.0;
-    let total = (dl * dl + dc * dc + dh_turns * dh_turns).sqrt();
     format!(
-        "Preview sample ({}, {})\nbefore raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}\nafter palette: index {} #{:02X}{:02X}{:02X}\ndistance OKLCH L/C/H: {:.4} / {:.4} / {:.1}deg  total {:.4}\nlookup RGB key: {}  expected index: {}",
+        "Preview sample ({}, {})\nbefore raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}\nafter palette: index {} #{:02X}{:02X}{:02X}\nDelta E OK: {:.5}  OKLab dL/da/db: {:.4} / {:.4} / {:.4}\nOKLCH delta L/C/H: {:.4} / {:.4} / {:.1}deg\nlookup RGB key: {}  expected index: {}",
         raw.x,
         raw.y,
         raw.r,
@@ -3206,10 +3305,13 @@ fn preview_pixel_pair_text(raw: &RawPixelDebug, quantized: &QuantizedPixelDebug)
         quantized.color[0],
         quantized.color[1],
         quantized.color[2],
+        delta_e_ok,
+        delta_l.abs(),
+        delta_a.abs(),
+        delta_b.abs(),
         dl.abs(),
         dc.abs(),
         dh_degrees.abs(),
-        total,
         raw.lookup_key,
         expected_index,
     )

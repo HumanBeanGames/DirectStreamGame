@@ -315,11 +315,9 @@ fn oklch_to_oklab(color: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(color.x, cos(color.z) * color.y, sin(color.z) * color.y);
 }
 
-fn biased_distance_squared_oklab(color: vec3<f32>, palette_color: vec3<f32>) -> f32 {
+fn delta_e_ok_distance_squared(color: vec3<f32>, palette_color: vec3<f32>) -> f32 {
     let delta = color - palette_color;
-    let chromatic_weight = (palette_data.bias.y + palette_data.bias.z) * 0.5;
-    return palette_data.bias.x * delta.x * delta.x
-        + chromatic_weight * (delta.y * delta.y + delta.z * delta.z);
+    return dot(delta, delta);
 }
 
 fn palette_index_for_entry(entry_index: u32) -> u32 {
@@ -342,7 +340,7 @@ fn palette_index_for_entry(entry_index: u32) -> u32 {
             break;
         }
         let palette_color = rgb_to_oklab(palette_data.colors[index].rgb);
-        let distance = biased_distance_squared_oklab(source_oklab, palette_color);
+        let distance = delta_e_ok_distance_squared(source_oklab, palette_color);
         if distance < best_distance {
             best_distance = distance;
             best_index = index;

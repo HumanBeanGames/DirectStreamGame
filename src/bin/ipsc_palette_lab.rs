@@ -605,12 +605,11 @@ fn palette_lab_html() -> String {
       return Math.max(min, Math.min(max, value));
     }
 
-    function palettePreviewDistanceSquaredOklab(a, b, bias) {
+    function deltaEOkDistanceSquared(a, b) {
       const dl = a.l - b.l;
       const da = a.a - b.a;
       const db = a.b - b.b;
-      const chromaticWeight = (bias.chroma + bias.hue) * 0.5;
-      return bias.lightness * dl * dl + chromaticWeight * (da * da + db * db);
+      return dl * dl + da * da + db * db;
     }
 
     function offsetInputOklch(color, offset) {
@@ -922,7 +921,7 @@ fn palette_lab_html() -> String {
       let bestDistance = Number.POSITIVE_INFINITY;
 
       for (let i = 0; i < paletteOklab.length; i++) {
-        const distance = palettePreviewDistanceSquaredOklab(oklab, paletteOklab[i], bias);
+        const distance = deltaEOkDistanceSquared(oklab, paletteOklab[i]);
         if (distance < bestDistance) {
           bestDistance = distance;
           bestIndex = i;
@@ -1105,7 +1104,7 @@ fn palette_lab_html() -> String {
       let bestIndex = 0;
       let bestDistance = Number.POSITIVE_INFINITY;
       for (let i = 0; i < Math.min(256, paletteOklab.length); i++) {
-        const distance = palettePreviewDistanceSquaredOklab(color, paletteOklab[i], matching);
+        const distance = deltaEOkDistanceSquared(color, paletteOklab[i]);
         if (distance < bestDistance) {
           bestDistance = distance;
           bestIndex = i;
@@ -1139,7 +1138,7 @@ fn palette_lab_html() -> String {
         hash ^= BigInt(byte);
         hash = BigInt.asUintN(64, hash * prime);
       };
-      for (const byte of new TextEncoder().encode("delta-e-ok-v6")) feed(byte);
+      for (const byte of new TextEncoder().encode("delta-e-ok-v7")) feed(byte);
       for (const color of colors) {
         for (const byte of color) feed(byte);
       }

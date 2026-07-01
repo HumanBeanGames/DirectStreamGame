@@ -14,7 +14,7 @@ const LUT_MAGIC_V6: &[u8; 8] = b"IPSMAP6\0";
 const LUT_V1_HEADER_LEN: usize = 30;
 const LUT_V4_HEADER_LEN: usize = 24;
 const LUT_V6_MATCHING_LEN: usize = 9 * std::mem::size_of::<f32>();
-const PALETTE_MATCHING_ALGORITHM_VERSION: &[u8] = b"delta-e-ok-v6";
+const PALETTE_MATCHING_ALGORITHM_VERSION: &[u8] = b"delta-e-ok-v7";
 
 #[derive(Clone, Copy, Debug)]
 pub struct PaletteMatching {
@@ -230,7 +230,6 @@ pub fn build_lookup_with_progress(
                 direct_entries.push(nearest_palette_index_unaltered(
                     Oklch::from(rgb_to_oklab(r, g, b)),
                     &palette_oklch,
-                    config.matching,
                 ));
             }
         }
@@ -793,19 +792,15 @@ impl From<Oklab> for Oklch {
 
 fn nearest_palette_index(color: Oklch, palette: &[Oklch], matching: PaletteMatching) -> u8 {
     let color = apply_input_offset(color, matching);
-    nearest_palette_index_unaltered(color, palette, matching)
+    nearest_palette_index_unaltered(color, palette)
 }
 
-fn nearest_palette_index_unaltered(
-    color: Oklch,
-    palette: &[Oklch],
-    matching: PaletteMatching,
-) -> u8 {
+fn nearest_palette_index_unaltered(color: Oklch, palette: &[Oklch]) -> u8 {
     let mut best_index = 0;
     let mut best_distance = f32::MAX;
 
     for (index, palette_color) in palette.iter().copied().take(256).enumerate() {
-        let distance = biased_distance_squared(color, palette_color, matching);
+        let distance = delta_e_ok_distance_squared(color, palette_color);
         if distance < best_distance {
             best_distance = distance;
             best_index = index as u8;
@@ -891,14 +886,13 @@ fn in_srgb_gamut(r: f32, g: f32, b: f32) -> bool {
         && range.contains(&b)
 }
 
-fn biased_distance_squared(a: Oklch, b: Oklch, matching: PaletteMatching) -> f32 {
+fn delta_e_ok_distance_squared(a: Oklch, b: Oklch) -> f32 {
     let a = oklch_to_oklab(a);
     let b = oklch_to_oklab(b);
     let dl = a.l - b.l;
     let da = a.a - b.a;
     let db = a.b - b.b;
-    let chromatic_weight = (matching.chroma + matching.hue) * 0.5;
-    matching.lightness * dl * dl + chromatic_weight * (da * da + db * db)
+    dl * dl + da * da + db * db
 }
 
 fn oklch_to_oklab(color: Oklch) -> Oklab {
@@ -1135,10 +1129,8 @@ oklab_b = 0.0
             h: std::f32::consts::PI,
             ..redish
         };
-        let matching = PaletteMatching::default();
-
-        assert_eq!(biased_distance_squared(redish, same, matching), 0.0);
-        assert!(biased_distance_squared(redish, opposite_hue, matching) > 0.0);
+        assert_eq!(delta_e_ok_distance_squared(redish, same), 0.0);
+        assert!(delta_e_ok_distance_squared(redish, opposite_hue) > 0.0);
     }
 
     #[test]
@@ -1150,10 +1142,8 @@ oklab_b = 0.0
         };
         let lightness_shift = Oklch { l: 0.6, ..source };
         let chroma_shift = Oklch { c: 0.1, ..source };
-        let matching = PaletteMatching::default();
-
-        let lightness_distance = biased_distance_squared(source, lightness_shift, matching);
-        let chroma_distance = biased_distance_squared(source, chroma_shift, matching);
+        let lightness_distance = delta_e_ok_distance_squared(source, lightness_shift);
+        let chroma_distance = delta_e_ok_distance_squared(source, chroma_shift);
 
         assert!((lightness_distance - chroma_distance).abs() < 0.000_01);
     }

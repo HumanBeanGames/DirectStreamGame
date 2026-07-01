@@ -761,6 +761,15 @@ mod tests {
     }
 
     #[test]
+    fn direct_sprite_shader_premaps_opaque_texels_without_alpha_marker_gate() {
+        let shader = include_str!("../assets/shaders/direct_world_sprite.wgsl");
+
+        assert!(shader.contains("if direct_opaque_pixel {"));
+        assert!(shader.contains("return vec4<f32>(lookup_direct_palette_color(color.rgb), 1.0);"));
+        assert!(!shader.contains("direct_opaque_pixel && params.x"));
+    }
+
+    #[test]
     fn always_on_top_depth_bias_moves_toward_camera() {
         let sprite = DirectWorldSprite::new(Handle::default(), UVec2::splat(4))
             .with_depth_mode(SpriteDepthMode::AlwaysOnTopBeforeText)

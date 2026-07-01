@@ -447,8 +447,28 @@ pub(crate) struct PreviewPixelDebugState {
     validation_frames_checked: u32,
     validation_raw_data: Option<Vec<u8>>,
     validation_quantized_data: Option<Vec<u8>>,
+    pixel_debug_raw: Option<RawPixelDebug>,
+    pixel_debug_quantized: Option<QuantizedPixelDebug>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreviewLookupRoute {
+    ExactPalette,
+    DirectTable,
+    AlteredTable,
+}
+
+impl PreviewLookupRoute {
+    fn label(self) -> &'static str {
+        match self {
+            Self::ExactPalette => "exact palette bypass",
+            Self::DirectTable => "direct IPSMAP table",
+            Self::AlteredTable => "altered/prequantized IPSMAP table",
+        }
+    }
+}
+
+#[derive(Clone)]
 struct RawPixelDebug {
     x: u32,
     y: u32,
@@ -457,10 +477,12 @@ struct RawPixelDebug {
     r: u8,
     a: u8,
     lookup_key: usize,
+    lookup_route: PreviewLookupRoute,
     expected_index: Option<u8>,
     expected_color: [u8; 4],
 }
 
+#[derive(Clone)]
 struct QuantizedPixelDebug {
     palette_index: u8,
     color: [u8; 4],
@@ -692,6 +714,8 @@ fn spawn_preview_comparison(
             validation_frames_checked: 0,
             validation_raw_data: None,
             validation_quantized_data: None,
+            pixel_debug_raw: None,
+            pixel_debug_quantized: None,
         },
     )
 }
@@ -1515,6 +1539,7 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
     };
 
     let raw_image = debug_state.raw_image.clone();
+    let quantized_image = debug_state.quantized_image.clone();
 
     if let Some(mut palette_editor) = palette_editor
         && palette_editor.pick_raw_next_click
@@ -1560,6 +1585,15 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
         })
         .observe(handle_preview_pixel_debug_readback)
         .insert(Readback::texture(raw_image));
+    commands
+        .spawn(PreviewPixelDebugReadback {
+            source: PreviewPixelSource::Quantized,
+            x,
+            y,
+            width: config.stream_width,
+        })
+        .observe(handle_preview_pixel_debug_readback)
+        .insert(Readback::texture(quantized_image));
 }
 
 fn handle_preview_palette_pick_readback(
@@ -2078,6 +2112,8 @@ fn commit_loaded_preview_lookup_to_pipeline(
         debug_state.validation_frames_checked = 0;
         debug_state.validation_raw_data = None;
         debug_state.validation_quantized_data = None;
+        debug_state.pixel_debug_raw = None;
+        debug_state.pixel_debug_quantized = None;
     }
 }
 
@@ -2184,6 +2220,8 @@ pub(crate) fn process_preview_palette_rebake(
                 debug_state.validation_frames_checked = 0;
                 debug_state.validation_raw_data = None;
                 debug_state.validation_quantized_data = None;
+                debug_state.pixel_debug_raw = None;
+                debug_state.pixel_debug_quantized = None;
             }
         }
         update_preview_palette_materials_for_gpu(
@@ -3028,14 +3066,27 @@ fn handle_preview_pixel_debug_readback(
         return;
     };
 
-    if readback.source == PreviewPixelSource::Raw {
-        let raw = preview_raw_pixel_debug(
-            readback,
-            &event.data,
-            &debug_state.lookup_entries,
-            &debug_state.palette_colors,
-        );
-        let quantized = preview_quantized_pixel_debug_from_raw(&raw);
+    match readback.source {
+        PreviewPixelSource::Raw => {
+            debug_state.pixel_debug_raw = Some(preview_raw_pixel_debug(
+                readback,
+                &event.data,
+                &debug_state.lookup_entries,
+                &debug_state.palette_colors,
+            ));
+        }
+        PreviewPixelSource::Quantized => {
+            debug_state.pixel_debug_quantized = Some(preview_quantized_pixel_debug(
+                readback,
+                &event.data,
+                &debug_state.palette_colors,
+            ));
+        }
+    }
+    if let (Some(raw), Some(quantized)) = (
+        debug_state.pixel_debug_raw.take(),
+        debug_state.pixel_debug_quantized.take(),
+    ) {
         debug_state.output = preview_pixel_pair_text(&raw, &quantized);
     }
     commands.entity(event.entity).despawn();
@@ -3063,6 +3114,8 @@ pub(crate) fn request_preview_palette_validation(
     debug_state.validation_pending = true;
     debug_state.validation_raw_data = None;
     debug_state.validation_quantized_data = None;
+    debug_state.pixel_debug_raw = None;
+    debug_state.pixel_debug_quantized = None;
     let raw_image = debug_state.raw_image.clone();
     let quantized_image = debug_state.quantized_image.clone();
     commands
@@ -3161,10 +3214,8 @@ fn validate_preview_palette_frame(
             let r = raw[raw_offset + 2];
             let a = raw[raw_offset + 3];
             let lookup_key = (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b);
-            let expected_lookup_key = lookup_key_with_alpha(lookup_key, a, lookup_entries);
-            let expected_index = lookup_entries
-                .get(expected_lookup_key)
-                .copied()
+            let expected_index = expected_preview_index(r, g, b, a, lookup_entries, palette_colors)
+                .map(|(_, index)| index)
                 .unwrap_or(0);
             if palette_colors.get(expected_index as usize).is_none() {
                 return Some(format!(
@@ -3204,12 +3255,45 @@ fn validate_preview_palette_frame(
     None
 }
 
-fn lookup_key_with_alpha(lookup_key: usize, alpha: u8, lookup_entries: &[u8]) -> usize {
-    if alpha == 254 && lookup_entries.len() >= crate::palette_lut::LUT_ENTRY_COUNT * 2 {
+fn expected_preview_index(
+    r: u8,
+    g: u8,
+    b: u8,
+    alpha: u8,
+    lookup_entries: &[u8],
+    palette_colors: &[[u8; 4]],
+) -> Option<(PreviewLookupRoute, u8)> {
+    if let Some(index) = exact_palette_index(r, g, b, palette_colors) {
+        return Some((PreviewLookupRoute::ExactPalette, index));
+    }
+    let lookup_key = (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b);
+    let direct = alpha == 254 && lookup_entries.len() >= crate::palette_lut::LUT_ENTRY_COUNT * 2;
+    let expected_lookup_key = if direct {
         lookup_key + crate::palette_lut::LUT_ENTRY_COUNT
     } else {
         lookup_key
-    }
+    };
+    lookup_entries
+        .get(expected_lookup_key)
+        .copied()
+        .map(|index| {
+            (
+                if direct {
+                    PreviewLookupRoute::DirectTable
+                } else {
+                    PreviewLookupRoute::AlteredTable
+                },
+                index,
+            )
+        })
+}
+
+fn exact_palette_index(r: u8, g: u8, b: u8, palette_colors: &[[u8; 4]]) -> Option<u8> {
+    palette_colors
+        .iter()
+        .take(256)
+        .position(|color| color[0] == r && color[1] == g && color[2] == b)
+        .map(|index| index as u8)
 }
 
 fn preview_raw_pixel_debug(
@@ -3230,8 +3314,11 @@ fn preview_raw_pixel_debug(
     let r = data[offset + 2];
     let a = data[offset + 3];
     let lookup_key = (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b);
-    let expected_lookup_key = lookup_key_with_alpha(lookup_key, a, lookup_entries);
-    let expected_index = lookup_entries.get(expected_lookup_key).copied();
+    let expected = expected_preview_index(r, g, b, a, lookup_entries, palette_colors);
+    let lookup_route = expected
+        .map(|(route, _)| route)
+        .unwrap_or(PreviewLookupRoute::AlteredTable);
+    let expected_index = expected.map(|(_, index)| index);
     let expected_color = expected_index
         .and_then(|index| palette_colors.get(index as usize).copied())
         .unwrap_or([0, 0, 0, 255]);
@@ -3243,6 +3330,7 @@ fn preview_raw_pixel_debug(
         r,
         a,
         lookup_key,
+        lookup_route,
         expected_index,
         expected_color,
     }
@@ -3258,17 +3346,30 @@ impl RawPixelDebug {
             r: 0,
             a: 0,
             lookup_key: 0,
+            lookup_route: PreviewLookupRoute::AlteredTable,
             expected_index: None,
             expected_color: [0, 0, 0, 255],
         }
     }
 }
 
-fn preview_quantized_pixel_debug_from_raw(raw: &RawPixelDebug) -> QuantizedPixelDebug {
-    let palette_index = raw.expected_index.unwrap_or(0);
+fn preview_quantized_pixel_debug(
+    readback: &PreviewPixelDebugReadback,
+    data: &[u8],
+    palette_colors: &[[u8; 4]],
+) -> QuantizedPixelDebug {
+    let row_bytes = readback.width as usize * 4;
+    let aligned_row_bytes =
+        bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(row_bytes);
+    let offset = readback.y as usize * aligned_row_bytes + readback.x as usize * 4;
+    let palette_index = data.get(offset).copied().unwrap_or(0);
+    let color = palette_colors
+        .get(palette_index as usize)
+        .copied()
+        .unwrap_or([0, 0, 0, 255]);
     QuantizedPixelDebug {
         palette_index,
-        color: raw.expected_color,
+        color,
     }
 }
 
@@ -3277,6 +3378,7 @@ fn preview_pixel_pair_text(raw: &RawPixelDebug, quantized: &QuantizedPixelDebug)
         .expected_index
         .map(|index| index.to_string())
         .unwrap_or_else(|| "out of range".to_owned());
+    let expected_color = raw.expected_color;
     let raw_oklab = rgb_to_oklab(raw.r, raw.g, raw.b);
     let quantized_oklab = rgb_to_oklab(quantized.color[0], quantized.color[1], quantized.color[2]);
     let delta_l = raw_oklab.l - quantized_oklab.l;
@@ -3291,7 +3393,7 @@ fn preview_pixel_pair_text(raw: &RawPixelDebug, quantized: &QuantizedPixelDebug)
         .rem_euclid(360.0)
         - 180.0;
     format!(
-        "Preview sample ({}, {})\nbefore raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}\nafter palette: index {} #{:02X}{:02X}{:02X}\nDelta E OK: {:.5}  OKLab dL/da/db: {:.4} / {:.4} / {:.4}\nOKLCH delta L/C/H: {:.4} / {:.4} / {:.1}deg\nlookup RGB key: {}  expected index: {}",
+        "Preview sample ({}, {})\nbefore raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}\nafter actual: index {} #{:02X}{:02X}{:02X}\nexpected: {} index {} #{:02X}{:02X}{:02X}\nDelta E OK: {:.5}  OKLab dL/da/db: {:.4} / {:.4} / {:.4}\nOKLCH delta L/C/H: {:.4} / {:.4} / {:.1}deg\nlookup RGB key: {}",
         raw.x,
         raw.y,
         raw.r,
@@ -3305,6 +3407,11 @@ fn preview_pixel_pair_text(raw: &RawPixelDebug, quantized: &QuantizedPixelDebug)
         quantized.color[0],
         quantized.color[1],
         quantized.color[2],
+        raw.lookup_route.label(),
+        expected_index,
+        expected_color[0],
+        expected_color[1],
+        expected_color[2],
         delta_e_ok,
         delta_l.abs(),
         delta_a.abs(),
@@ -3313,7 +3420,6 @@ fn preview_pixel_pair_text(raw: &RawPixelDebug, quantized: &QuantizedPixelDebug)
         dc.abs(),
         dh_degrees.abs(),
         raw.lookup_key,
-        expected_index,
     )
 }
 

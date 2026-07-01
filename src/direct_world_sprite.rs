@@ -1,4 +1,7 @@
-use crate::public_types::{DirectColorLookup, DirectStreamTarget};
+use crate::{
+    gpu_palette::{GpuPalettePipeline, make_lookup_texture_from_entries, make_palette_texture},
+    public_types::{DirectColorLookup, DirectStreamTarget},
+};
 use bevy::{
     asset::{RenderAssetUsages, load_internal_asset, uuid_handle},
     camera::visibility::RenderLayers,
@@ -30,6 +33,7 @@ impl Plugin for DirectWorldSpritePlugin {
         );
 
         app.init_resource::<DirectWorldSpriteSettings>()
+            .init_resource::<DirectWorldSpriteFallbackTextures>()
             .add_plugins(MaterialPlugin::<DirectWorldSpriteMaterial>::default())
             .add_systems(
                 PostUpdate,
@@ -172,6 +176,8 @@ fn sync_direct_world_sprites(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<DirectWorldSpriteMaterial>>,
     atlases: Res<Assets<TextureAtlasLayout>>,
+    gpu_palette: Option<Res<GpuPalettePipeline>>,
+    fallback_textures: Res<DirectWorldSpriteFallbackTextures>,
 ) {
     let (camera, camera_transform, camera_layers) = {
         let camera_query = queries.p0();
@@ -234,7 +240,12 @@ fn sync_direct_world_sprites(
             render_entity
         } else {
             let mesh = meshes.add(sprite_mesh(atlas_frame));
-            let material = materials.add(sprite_material(sprite, target.output_is_indexed));
+            let material = materials.add(sprite_material(
+                sprite,
+                target.output_is_indexed,
+                gpu_palette.as_deref(),
+                &fallback_textures,
+            ));
             let render_entity = commands
                 .spawn((
                     Mesh3d(mesh.clone()),
@@ -290,6 +301,16 @@ fn sync_direct_world_sprites(
             if let Some(existing_material) = materials.get_mut(&render.material) {
                 existing_material.tint = sprite_tint(sprite, sprite.tint, target.output_is_indexed);
                 existing_material.texture = sprite.image.clone();
+                existing_material.params =
+                    sprite_params(sprite, target.output_is_indexed, gpu_palette.as_deref());
+                existing_material.palette_texture = gpu_palette
+                    .as_deref()
+                    .map(|pipeline| pipeline.palette_texture.clone())
+                    .unwrap_or_else(|| fallback_textures.palette_texture.clone());
+                existing_material.lookup_texture = gpu_palette
+                    .as_deref()
+                    .map(|pipeline| pipeline.lookup_texture.clone())
+                    .unwrap_or_else(|| fallback_textures.lookup_texture.clone());
                 existing_material.alpha_mode = alpha_mode(sprite, target.output_is_indexed);
                 existing_material.depth_bias = material_depth_bias(sprite);
             }
@@ -472,12 +493,37 @@ fn sprite_mesh(atlas_frame: Option<AtlasFrame>) -> Mesh {
 fn sprite_material(
     sprite: &DirectWorldSprite,
     output_is_indexed: bool,
+    gpu_palette: Option<&GpuPalettePipeline>,
+    fallback_textures: &DirectWorldSpriteFallbackTextures,
 ) -> DirectWorldSpriteMaterial {
     DirectWorldSpriteMaterial {
         tint: sprite_tint(sprite, sprite.tint, output_is_indexed),
         texture: sprite.image.clone(),
+        params: sprite_params(sprite, output_is_indexed, gpu_palette),
+        palette_texture: gpu_palette
+            .map(|pipeline| pipeline.palette_texture.clone())
+            .unwrap_or_else(|| fallback_textures.palette_texture.clone()),
+        lookup_texture: gpu_palette
+            .map(|pipeline| pipeline.lookup_texture.clone())
+            .unwrap_or_else(|| fallback_textures.lookup_texture.clone()),
         alpha_mode: alpha_mode(sprite, output_is_indexed),
         depth_bias: material_depth_bias(sprite),
+    }
+}
+
+#[derive(Resource, Clone)]
+struct DirectWorldSpriteFallbackTextures {
+    palette_texture: Handle<Image>,
+    lookup_texture: Handle<Image>,
+}
+
+impl FromWorld for DirectWorldSpriteFallbackTextures {
+    fn from_world(world: &mut World) -> Self {
+        let mut images = world.resource_mut::<Assets<Image>>();
+        Self {
+            palette_texture: images.add(make_palette_texture(&[[0, 0, 0, 255]])),
+            lookup_texture: images.add(make_lookup_texture_from_entries(&[0])),
+        }
     }
 }
 
@@ -488,6 +534,12 @@ struct DirectWorldSpriteMaterial {
     #[texture(1)]
     #[sampler(2)]
     texture: Handle<Image>,
+    #[uniform(3)]
+    params: Vec4,
+    #[texture(4)]
+    palette_texture: Handle<Image>,
+    #[texture(5, sample_type = "u_int")]
+    lookup_texture: Handle<Image>,
     alpha_mode: AlphaMode,
     depth_bias: f32,
 }
@@ -524,6 +576,21 @@ fn sprite_tint(sprite: &DirectWorldSprite, tint: Color, output_is_indexed: bool)
     }
 
     tint.into()
+}
+
+fn sprite_params(
+    sprite: &DirectWorldSprite,
+    output_is_indexed: bool,
+    gpu_palette: Option<&GpuPalettePipeline>,
+) -> Vec4 {
+    let direct_lookup = output_is_indexed
+        && sprite.color_lookup == DirectColorLookup::Direct
+        && sprite.tint.to_srgba().alpha >= 1.0 - (0.5 / 255.0)
+        && gpu_palette.is_some();
+    let palette_count = gpu_palette
+        .map(|pipeline| pipeline.palette_count.max(1) as f32)
+        .unwrap_or(1.0);
+    Vec4::new(f32::from(direct_lookup), palette_count, 0.0, 0.0)
 }
 
 fn alpha_mode(sprite: &DirectWorldSprite, output_is_indexed: bool) -> AlphaMode {

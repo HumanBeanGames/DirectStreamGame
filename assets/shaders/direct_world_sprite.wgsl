@@ -90,8 +90,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
 
-    if direct_lookup && params.x > 0.5 {
-        return vec4<f32>(lookup_direct_palette_color(color.rgb), 1.0);
+    let direct_opaque_pixel = direct_lookup && abs(color.a - (254.0 / 255.0)) <= (0.5 / 255.0);
+    if direct_opaque_pixel && params.x > 0.5 {
+        return vec4<f32>(lookup_direct_palette_color(color.rgb), 254.0 / 255.0);
     }
 
     return color;

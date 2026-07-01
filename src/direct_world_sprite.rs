@@ -1,7 +1,4 @@
-use crate::{
-    gpu_palette::GpuPalettePipeline,
-    public_types::{DirectColorLookup, DirectStreamTarget},
-};
+use crate::public_types::{DirectColorLookup, DirectStreamTarget};
 use bevy::{
     asset::{RenderAssetUsages, load_internal_asset, uuid_handle},
     camera::visibility::RenderLayers,
@@ -175,7 +172,6 @@ fn sync_direct_world_sprites(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<DirectWorldSpriteMaterial>>,
     atlases: Res<Assets<TextureAtlasLayout>>,
-    gpu_palette: Option<Res<GpuPalettePipeline>>,
 ) {
     let (camera, camera_transform, camera_layers) = {
         let camera_query = queries.p0();
@@ -238,11 +234,7 @@ fn sync_direct_world_sprites(
             render_entity
         } else {
             let mesh = meshes.add(sprite_mesh(atlas_frame));
-            let material = materials.add(sprite_material(
-                sprite,
-                target.output_is_indexed,
-                gpu_palette.as_deref(),
-            ));
+            let material = materials.add(sprite_material(sprite, target.output_is_indexed));
             let render_entity = commands
                 .spawn((
                     Mesh3d(mesh.clone()),
@@ -296,12 +288,7 @@ fn sync_direct_world_sprites(
             }
 
             if let Some(existing_material) = materials.get_mut(&render.material) {
-                existing_material.tint = sprite_tint(
-                    sprite,
-                    sprite.tint,
-                    target.output_is_indexed,
-                    gpu_palette.as_deref(),
-                );
+                existing_material.tint = sprite_tint(sprite, sprite.tint, target.output_is_indexed);
                 existing_material.texture = sprite.image.clone();
                 existing_material.alpha_mode = alpha_mode(sprite, target.output_is_indexed);
                 existing_material.depth_bias = material_depth_bias(sprite);
@@ -485,10 +472,9 @@ fn sprite_mesh(atlas_frame: Option<AtlasFrame>) -> Mesh {
 fn sprite_material(
     sprite: &DirectWorldSprite,
     output_is_indexed: bool,
-    gpu_palette: Option<&GpuPalettePipeline>,
 ) -> DirectWorldSpriteMaterial {
     DirectWorldSpriteMaterial {
-        tint: sprite_tint(sprite, sprite.tint, output_is_indexed, gpu_palette),
+        tint: sprite_tint(sprite, sprite.tint, output_is_indexed),
         texture: sprite.image.clone(),
         alpha_mode: alpha_mode(sprite, output_is_indexed),
         depth_bias: material_depth_bias(sprite),
@@ -524,16 +510,8 @@ impl Material for DirectWorldSpriteMaterial {
     }
 }
 
-fn sprite_tint(
-    sprite: &DirectWorldSprite,
-    tint: Color,
-    output_is_indexed: bool,
-    gpu_palette: Option<&GpuPalettePipeline>,
-) -> LinearRgba {
-    if output_is_indexed
-        && sprite.color_lookup == DirectColorLookup::Direct
-        && let Some(_gpu_palette) = gpu_palette
-    {
+fn sprite_tint(sprite: &DirectWorldSprite, tint: Color, output_is_indexed: bool) -> LinearRgba {
+    if output_is_indexed && sprite.color_lookup == DirectColorLookup::Direct {
         let tint_srgba = tint.to_srgba();
         if tint_srgba.alpha >= 1.0 - (0.5 / 255.0) {
             return LinearRgba::new(
@@ -598,10 +576,10 @@ mod tests {
             .with_tint(Color::srgba(1.0, 0.0, 0.0, 1.0))
             .with_color_lookup(DirectColorLookup::Direct);
 
-        let tint = sprite_tint(&sprite, sprite.tint, true, None);
+        let tint = sprite_tint(&sprite, sprite.tint, false);
         assert!((tint.alpha - 1.0).abs() < 0.0001);
 
-        let tint = sprite_tint(&sprite, sprite.tint, true, Some(&dummy_pipeline()));
+        let tint = sprite_tint(&sprite, sprite.tint, true);
         assert!((tint.alpha - 254.0 / 255.0).abs() < 0.0001);
     }
 
@@ -613,26 +591,5 @@ mod tests {
 
         assert_eq!(world_depth_bias(&sprite), -5.0);
         assert_eq!(material_depth_bias(&sprite), 0.0);
-    }
-
-    fn dummy_pipeline() -> GpuPalettePipeline {
-        GpuPalettePipeline {
-            material: Handle::default(),
-            source_copy_material: Handle::default(),
-            palette_texture: Handle::default(),
-            lookup_texture: Handle::default(),
-            source_copy_camera: Entity::PLACEHOLDER,
-            palette_camera: Entity::PLACEHOLDER,
-            raw_overlay_camera: Entity::PLACEHOLDER,
-            overlay_camera: Entity::PLACEHOLDER,
-            source_copy_quad_entity: Entity::PLACEHOLDER,
-            quad_entity: Entity::PLACEHOLDER,
-            source_images: Vec::new(),
-            output_images: Vec::new(),
-            current_output_index: 0,
-            palette_count: 0,
-            palette_colors: Vec::new(),
-            lookup_entries: std::sync::Arc::from(Vec::new().into_boxed_slice()),
-        }
     }
 }

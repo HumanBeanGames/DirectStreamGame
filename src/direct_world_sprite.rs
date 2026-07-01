@@ -176,6 +176,7 @@ fn sync_direct_world_sprites(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<DirectWorldSpriteMaterial>>,
     atlases: Res<Assets<TextureAtlasLayout>>,
+    images: Res<Assets<Image>>,
     gpu_palette: Option<Res<GpuPalettePipeline>>,
     fallback_textures: Res<DirectWorldSpriteFallbackTextures>,
 ) {
@@ -219,8 +220,17 @@ fn sync_direct_world_sprites(
 
     let mut visible_count = 0usize;
     for (owner, sprite, owner_transform) in &source_sprites {
+        let atlas_frame = atlas_frame(sprite, &atlases);
+        let pixel_size = integer_scaled_pixel_size(sprite, atlas_frame, &images);
         let render_transform = if visible_count < settings.max_sprites {
-            project_world_sprite(sprite, owner_transform, &camera, &camera_transform, &target)
+            project_world_sprite(
+                sprite,
+                pixel_size,
+                owner_transform,
+                &camera,
+                &camera_transform,
+                &target,
+            )
         } else {
             None
         };
@@ -235,7 +245,6 @@ fn sync_direct_world_sprites(
         };
 
         visible_count += 1;
-        let atlas_frame = atlas_frame(sprite, &atlases);
         let render_entity = if let Some(render_entity) = render_map.0.get(owner).copied() {
             render_entity
         } else {
@@ -324,12 +333,13 @@ fn sync_direct_world_sprites(
 
 fn project_world_sprite(
     sprite: &DirectWorldSprite,
+    pixel_size: UVec2,
     owner_transform: &GlobalTransform,
     camera: &Camera,
     camera_transform: &GlobalTransform,
     target: &DirectStreamTarget,
 ) -> Option<Transform> {
-    if sprite.pixel_size.x == 0 || sprite.pixel_size.y == 0 {
+    if pixel_size.x == 0 || pixel_size.y == 0 {
         return None;
     }
 
@@ -347,7 +357,7 @@ fn project_world_sprite(
     }
 
     let snapped_anchor = Vec2::new(projected.x.floor(), projected.y.floor()) + Vec2::splat(0.5);
-    let pixel_size = sprite.pixel_size.as_vec2();
+    let pixel_size = pixel_size.as_vec2();
     let center_viewport = snapped_anchor + (Vec2::splat(0.5) - sprite.anchor) * pixel_size;
     let rotation = sprite_rotation(sprite.facing, anchor_world, camera_transform);
     let plane_normal = rotation * Vec3::Z;
@@ -452,6 +462,43 @@ fn atlas_frame(
         rect,
         size: layout.size,
     })
+}
+
+fn integer_scaled_pixel_size(
+    sprite: &DirectWorldSprite,
+    atlas_frame: Option<AtlasFrame>,
+    images: &Assets<Image>,
+) -> UVec2 {
+    let Some(base_size) = sprite_base_pixel_size(sprite, atlas_frame, images) else {
+        return sprite.pixel_size;
+    };
+    if base_size.x == 0 || base_size.y == 0 {
+        return sprite.pixel_size;
+    }
+
+    let requested = sprite.pixel_size.max(UVec2::ONE).as_vec2();
+    let base = base_size.as_vec2();
+    let scale = ((requested.x / base.x + requested.y / base.y) * 0.5)
+        .round()
+        .max(1.0) as u32;
+    base_size * scale
+}
+
+fn sprite_base_pixel_size(
+    sprite: &DirectWorldSprite,
+    atlas_frame: Option<AtlasFrame>,
+    images: &Assets<Image>,
+) -> Option<UVec2> {
+    if let Some(frame) = atlas_frame {
+        let size = frame.rect.size();
+        if size.x > 0 && size.y > 0 {
+            return Some(size);
+        }
+    }
+
+    let image = images.get(&sprite.image)?;
+    let size = image.texture_descriptor.size;
+    (size.width > 0 && size.height > 0).then_some(UVec2::new(size.width, size.height))
 }
 
 fn sprite_mesh(atlas_frame: Option<AtlasFrame>) -> Mesh {
@@ -626,6 +673,60 @@ fn material_depth_bias(sprite: &DirectWorldSprite) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+
+    fn test_image(width: u32, height: u32) -> Image {
+        Image::new_fill(
+            Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            &[0, 0, 0, 0],
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::default(),
+        )
+    }
+
+    #[test]
+    fn world_sprite_sub_native_request_uses_native_integer_size() {
+        let mut images = Assets::<Image>::default();
+        let handle = images.add(test_image(64, 33));
+        let sprite = DirectWorldSprite::new(handle, UVec2::new(40, 21));
+
+        assert_eq!(
+            integer_scaled_pixel_size(&sprite, None, &images),
+            UVec2::new(64, 33)
+        );
+    }
+
+    #[test]
+    fn world_sprite_request_snaps_to_nearest_integer_scale() {
+        let mut images = Assets::<Image>::default();
+        let handle = images.add(test_image(64, 33));
+        let sprite = DirectWorldSprite::new(handle, UVec2::new(130, 70));
+
+        assert_eq!(
+            integer_scaled_pixel_size(&sprite, None, &images),
+            UVec2::new(128, 66)
+        );
+    }
+
+    #[test]
+    fn world_sprite_atlas_frame_is_integer_scale_base() {
+        let images = Assets::<Image>::default();
+        let sprite = DirectWorldSprite::new(Handle::default(), UVec2::new(42, 30));
+        let frame = AtlasFrame {
+            rect: URect::from_corners(UVec2::new(8, 8), UVec2::new(29, 23)),
+            size: UVec2::new(128, 128),
+        };
+
+        assert_eq!(
+            integer_scaled_pixel_size(&sprite, Some(frame), &images),
+            UVec2::new(42, 30)
+        );
+    }
 
     #[test]
     fn transparent_direct_sprite_uses_blended_alpha_mode() {

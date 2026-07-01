@@ -18,6 +18,13 @@ var palette_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(5)
 var lookup_texture: texture_2d<u32>;
 
+fn sample_sprite_texture(uv: vec2<f32>) -> vec4<f32> {
+    let dimensions = textureDimensions(sprite_texture);
+    let clamped_uv = clamp(uv, vec2<f32>(0.0), vec2<f32>(0.999999));
+    let texel = vec2<i32>(floor(clamped_uv * vec2<f32>(dimensions)));
+    return textureLoad(sprite_texture, texel, 0);
+}
+
 fn linear_to_srgb_channel(value: f32) -> f32 {
     let clamped = clamp(value, 0.0, 1.0);
     if clamped <= 0.0031308 {
@@ -74,7 +81,7 @@ fn lookup_direct_palette_color(source_linear: vec3<f32>) -> vec3<f32> {
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let direct_lookup = abs(tint.a - (254.0 / 255.0)) <= (0.5 / 255.0);
 #ifdef VERTEX_UVS_A
-    let color = textureSample(sprite_texture, sprite_sampler, in.uv) * tint;
+    let color = sample_sprite_texture(in.uv) * tint;
 #else
     let color = tint;
 #endif

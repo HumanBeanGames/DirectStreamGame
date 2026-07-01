@@ -609,8 +609,8 @@ impl Material for DirectWorldSpriteMaterial {
     }
 }
 
-fn sprite_tint(sprite: &DirectWorldSprite, tint: Color, output_is_indexed: bool) -> LinearRgba {
-    if output_is_indexed && sprite.color_lookup == DirectColorLookup::Direct {
+fn sprite_tint(sprite: &DirectWorldSprite, tint: Color, _output_is_indexed: bool) -> LinearRgba {
+    if sprite.color_lookup == DirectColorLookup::Direct {
         let tint_srgba = tint.to_srgba();
         if tint_srgba.alpha >= 1.0 - (0.5 / 255.0) {
             return LinearRgba::new(
@@ -627,11 +627,10 @@ fn sprite_tint(sprite: &DirectWorldSprite, tint: Color, output_is_indexed: bool)
 
 fn sprite_params(
     sprite: &DirectWorldSprite,
-    output_is_indexed: bool,
+    _output_is_indexed: bool,
     gpu_palette: Option<&GpuPalettePipeline>,
 ) -> Vec4 {
-    let direct_lookup = output_is_indexed
-        && sprite.color_lookup == DirectColorLookup::Direct
+    let direct_lookup = sprite.color_lookup == DirectColorLookup::Direct
         && sprite.tint.to_srgba().alpha >= 1.0 - (0.5 / 255.0)
         && gpu_palette.is_some();
     let palette_count = gpu_palette
@@ -640,9 +639,8 @@ fn sprite_params(
     Vec4::new(f32::from(direct_lookup), palette_count, 0.0, 0.0)
 }
 
-fn alpha_mode(sprite: &DirectWorldSprite, output_is_indexed: bool) -> AlphaMode {
-    if output_is_indexed
-        && sprite.color_lookup == DirectColorLookup::Direct
+fn alpha_mode(sprite: &DirectWorldSprite, _output_is_indexed: bool) -> AlphaMode {
+    if sprite.color_lookup == DirectColorLookup::Direct
         && sprite.tint.to_srgba().alpha >= 1.0 - (0.5 / 255.0)
     {
         return AlphaMode::Mask(0.01);
@@ -745,10 +743,21 @@ mod tests {
             .with_color_lookup(DirectColorLookup::Direct);
 
         let tint = sprite_tint(&sprite, sprite.tint, false);
-        assert!((tint.alpha - 1.0).abs() < 0.0001);
+        assert!((tint.alpha - 254.0 / 255.0).abs() < 0.0001);
 
         let tint = sprite_tint(&sprite, sprite.tint, true);
         assert!((tint.alpha - 254.0 / 255.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn opaque_direct_sprite_uses_masked_alpha_independent_of_output_mode() {
+        let sprite = DirectWorldSprite::new(Handle::default(), UVec2::splat(4))
+            .with_tint(Color::srgba(1.0, 0.0, 0.0, 1.0))
+            .with_color_lookup(DirectColorLookup::Direct)
+            .with_depth_mode(SpriteDepthMode::TestAgainstScene);
+
+        assert!(matches!(alpha_mode(&sprite, false), AlphaMode::Mask(_)));
+        assert!(matches!(alpha_mode(&sprite, true), AlphaMode::Mask(_)));
     }
 
     #[test]

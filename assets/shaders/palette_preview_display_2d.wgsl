@@ -302,13 +302,13 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
         return display_palette_color(palette_index);
     }
     let direct_index = abs(raw_sample.a - (254.0 / 255.0)) <= (0.5 / 255.0);
-    let source = apply_dither(raw_source, source_coord);
     var palette_index = nearest_palette_index_raw(raw_source);
     if direct_index {
         if lookup_params.flags.x > 0.5 && lookup_has_direct_entries() {
             palette_index = lookup_palette_index(raw_source, true);
         }
     } else {
+        let source = apply_dither(raw_source, source_coord);
         palette_index = nearest_palette_index_direct(source);
         if lookup_params.flags.x > 0.5 {
             palette_index = lookup_palette_index(source, false);

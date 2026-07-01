@@ -3268,11 +3268,11 @@ fn expected_preview_index(
     lookup_entries: &[u8],
     palette_colors: &[[u8; 4]],
 ) -> Option<(PreviewLookupRoute, u8)> {
-    if let Some(index) = exact_palette_index(r, g, b, palette_colors) {
-        return Some((PreviewLookupRoute::ExactPalette, index));
-    }
     let lookup_key = (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b);
     let direct = alpha == 254 && lookup_entries.len() >= crate::palette_lut::LUT_ENTRY_COUNT * 2;
+    if !direct && let Some(index) = exact_palette_index(r, g, b, palette_colors) {
+        return Some((PreviewLookupRoute::ExactPalette, index));
+    }
     let expected_lookup_key = if direct {
         lookup_key + crate::palette_lut::LUT_ENTRY_COUNT
     } else {

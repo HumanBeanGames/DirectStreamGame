@@ -307,10 +307,6 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let source_coord = vec2<i32>(floor(source_uv * vec2<f32>(source_size)));
     let raw_sample = textureLoad(source_image, source_coord, 0);
     let raw_source = clamp(raw_sample.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
-    let exact_index = exact_palette_index(raw_source);
-    if exact_index < 256u {
-        return vec4<f32>(f32(exact_index) / 255.0, 0.0, 0.0, 1.0);
-    }
     let direct_alpha_flag = abs(raw_sample.a - (254.0 / 255.0)) <= (0.5 / 255.0);
     if direct_alpha_flag {
         var palette_index = nearest_palette_index_raw(raw_source);
@@ -318,6 +314,10 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
             palette_index = lookup_palette_index(raw_source, true);
         }
         return vec4<f32>(f32(palette_index) / 255.0, 0.0, 0.0, 1.0);
+    }
+    let exact_index = exact_palette_index(raw_source);
+    if exact_index < 256u {
+        return vec4<f32>(f32(exact_index) / 255.0, 0.0, 0.0, 1.0);
     }
     let source = apply_dither(raw_source, source_coord);
     var palette_index = nearest_palette_index_direct(source);

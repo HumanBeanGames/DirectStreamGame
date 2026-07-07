@@ -13,8 +13,7 @@ use bevy::{
 };
 use std::collections::{HashMap, HashSet};
 
-const DIRECT_ALPHA_SENTINEL: u8 = 254;
-const OPAQUE_ALPHA_THRESHOLD: u8 = 254;
+const SPRITE_ON_ALPHA_THRESHOLD: u8 = 1;
 const SPRITE_TEXT_Z_CEILING: f32 = -0.1;
 const SPRITE_BASE_Z: f32 = -100.0;
 const ALWAYS_ON_TOP_BASE_Z: f32 = -10.0;
@@ -138,10 +137,8 @@ struct DirectWorldSpriteOverlay;
 
 #[derive(Clone)]
 struct DirectWorldSpriteOverlayState {
-    raw_entity: Entity,
-    indexed_entity: Option<Entity>,
-    raw_image: Handle<Image>,
-    indexed_image: Option<Handle<Image>>,
+    entity: Entity,
+    image: Handle<Image>,
 }
 
 #[derive(Resource, Default)]
@@ -150,8 +147,7 @@ struct DirectWorldSpriteOverlayCache {
 }
 
 struct BuiltSpriteImages {
-    raw_image: Handle<Image>,
-    indexed_image: Option<Handle<Image>>,
+    image: Handle<Image>,
     source_size: UVec2,
 }
 
@@ -200,7 +196,6 @@ fn sync_direct_world_sprites(
         .map(|pipeline| pipeline.is_changed())
         .unwrap_or(false);
     let overlay_layer = RenderLayers::layer(target.overlay_layer);
-    let raw_overlay_layer = target.raw_overlay_layer.map(RenderLayers::layer);
     let mut visible_count = 0usize;
 
     for (owner, sprite, owner_transform) in &sprites {
@@ -243,29 +238,18 @@ fn sync_direct_world_sprites(
             };
             let render_size = integer_scaled_size_for_source(&sprite, built_images.source_size);
             let transform = projected.transform();
-            let raw_entity = spawn_overlay_sprite(
+            let entity = spawn_overlay_sprite(
                 &mut commands,
-                built_images.raw_image.clone(),
-                raw_overlay_layer.as_ref().unwrap_or(&overlay_layer),
+                built_images.image.clone(),
+                &overlay_layer,
                 transform,
                 render_size,
             );
-            let indexed_entity = built_images.indexed_image.as_ref().map(|indexed_image| {
-                spawn_overlay_sprite(
-                    &mut commands,
-                    indexed_image.clone(),
-                    &overlay_layer,
-                    transform,
-                    render_size,
-                )
-            });
             cache.entries.insert(
                 owner,
                 DirectWorldSpriteOverlayState {
-                    raw_entity,
-                    indexed_entity,
-                    raw_image: built_images.raw_image,
-                    indexed_image: built_images.indexed_image,
+                    entity,
+                    image: built_images.image,
                 },
             );
         } else if let Some(state) = cache.entries.get(&owner) {
@@ -317,24 +301,15 @@ fn despawn_overlay_state(
     let Some(state) = state else {
         return;
     };
-    commands.entity(state.raw_entity).despawn();
-    images.remove(&state.raw_image);
-    if let Some(indexed_entity) = state.indexed_entity {
-        commands.entity(indexed_entity).despawn();
-    }
-    if let Some(indexed_image) = state.indexed_image {
-        images.remove(&indexed_image);
-    }
+    commands.entity(state.entity).despawn();
+    images.remove(&state.image);
 }
 
 fn hide_overlay_state(commands: &mut Commands, state: Option<&DirectWorldSpriteOverlayState>) {
     let Some(state) = state else {
         return;
     };
-    commands.entity(state.raw_entity).insert(Visibility::Hidden);
-    if let Some(indexed_entity) = state.indexed_entity {
-        commands.entity(indexed_entity).insert(Visibility::Hidden);
-    }
+    commands.entity(state.entity).insert(Visibility::Hidden);
 }
 
 fn show_overlay_state(
@@ -343,13 +318,8 @@ fn show_overlay_state(
     transform: Transform,
 ) {
     commands
-        .entity(state.raw_entity)
+        .entity(state.entity)
         .insert((transform, Visibility::Visible));
-    if let Some(indexed_entity) = state.indexed_entity {
-        commands
-            .entity(indexed_entity)
-            .insert((transform, Visibility::Visible));
-    }
 }
 
 struct ProjectedOverlaySprite {
@@ -426,15 +396,19 @@ fn build_overlay_images(
     }
 
     let pixel_count = source_size.x as usize * source_size.y as usize;
-    let mut raw_data = vec![0u8; pixel_count * 4];
-    let mut indexed_data = vec![0u8; pixel_count * 4];
-    let mut has_indexed_pixels = false;
+    let mut data = vec![0u8; pixel_count * 4];
+    let mut has_on_pixels = false;
     let tint = sprite.tint.to_srgba();
-    let direct_lookup = target.output_is_indexed
-        && sprite.color_lookup == DirectColorLookup::Direct
-        && gpu_palette
-            .map(|pipeline| pipeline.lookup_entries.len() >= LUT_ENTRY_COUNT.saturating_mul(2))
-            .unwrap_or(false);
+    let direct_entries = if target.output_is_indexed {
+        gpu_palette
+            .map(|pipeline| pipeline.lookup_entries.as_ref())
+            .filter(|entries| entries.len() >= LUT_ENTRY_COUNT.saturating_mul(2))
+    } else {
+        None
+    };
+    if target.output_is_indexed && direct_entries.is_none() {
+        return None;
+    }
 
     for y in 0..source_size.y {
         for x in 0..source_size.x {
@@ -444,49 +418,33 @@ fn build_overlay_images(
                 continue;
             };
             let pixel = tint_pixel(source_pixel, tint);
-            let offset = ((y as usize * source_size.x as usize) + x as usize) * 4;
-            let raw_alpha = if direct_lookup && pixel[3] >= OPAQUE_ALPHA_THRESHOLD {
-                DIRECT_ALPHA_SENTINEL
-            } else {
-                pixel[3]
-            };
-            raw_data[offset..offset + 4]
-                .copy_from_slice(&[pixel[0], pixel[1], pixel[2], raw_alpha]);
-
-            if direct_lookup
-                && pixel[3] >= OPAQUE_ALPHA_THRESHOLD
-                && let Some(pipeline) = gpu_palette
-                && let Some(index) = lookup_direct_palette_index(
-                    pixel[0],
-                    pixel[1],
-                    pixel[2],
-                    &pipeline.lookup_entries,
-                )
-            {
-                indexed_data[offset..offset + 4].copy_from_slice(&[index, 0, 0, 255]);
-                has_indexed_pixels = true;
+            if pixel[3] < SPRITE_ON_ALPHA_THRESHOLD {
+                continue;
             }
+            let offset = ((y as usize * source_size.x as usize) + x as usize) * 4;
+
+            if let Some(entries) = direct_entries {
+                let index = lookup_direct_palette_index(pixel[0], pixel[1], pixel[2], entries)?;
+                data[offset..offset + 4].copy_from_slice(&[index, 0, 0, 255]);
+            } else {
+                data[offset..offset + 4].copy_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
+            }
+            has_on_pixels = true;
         }
     }
 
-    let raw_image = images.add(make_overlay_image(
-        source_size,
-        raw_data,
-        TextureFormat::Rgba8UnormSrgb,
-    ));
-    let indexed_image = has_indexed_pixels.then(|| {
-        images.add(make_overlay_image(
-            source_size,
-            indexed_data,
-            TextureFormat::Rgba8Unorm,
-        ))
-    });
+    if !has_on_pixels {
+        return None;
+    }
 
-    Some(BuiltSpriteImages {
-        raw_image,
-        indexed_image,
-        source_size,
-    })
+    let image_format = if target.output_is_indexed {
+        TextureFormat::Rgba8Unorm
+    } else {
+        TextureFormat::Rgba8UnormSrgb
+    };
+    let image = images.add(make_overlay_image(source_size, data, image_format));
+
+    Some(BuiltSpriteImages { image, source_size })
 }
 
 fn make_overlay_image(size: UVec2, data: Vec<u8>, format: TextureFormat) -> Image {
@@ -683,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn opaque_direct_sprite_builds_indexed_output_texture() {
+    fn opaque_direct_sprite_builds_binary_indexed_output_texture() {
         let mut images = Assets::<Image>::default();
         let source = images.add(test_image(
             1,
@@ -700,23 +658,41 @@ mod tests {
 
         let built = build_overlay_images(&sprite, None, &target, Some(&pipeline), &mut images)
             .expect("sprite image should build");
-        let raw = images.get(&built.raw_image).unwrap();
-        let indexed = images.get(&built.indexed_image.unwrap()).unwrap();
+        let indexed = images.get(&built.image).unwrap();
 
-        assert_eq!(
-            raw.data.as_ref().unwrap(),
-            &[1, 2, 3, DIRECT_ALPHA_SENTINEL]
-        );
         assert_eq!(indexed.data.as_ref().unwrap(), &[42, 0, 0, 255]);
     }
 
     #[test]
-    fn transparent_direct_sprite_does_not_build_indexed_output_texture() {
+    fn semi_alpha_sprite_pixel_is_binary_on() {
         let mut images = Assets::<Image>::default();
         let source = images.add(test_image(
             1,
             1,
             [1, 2, 3, 128],
+            TextureFormat::Rgba8UnormSrgb,
+        ));
+        let mut entries = vec![0u8; LUT_ENTRY_COUNT * 2];
+        entries[LUT_ENTRY_COUNT + (1usize << 16) + (2usize << 8) + 3] = 12;
+        let pipeline = test_palette_pipeline(entries);
+        let target = test_target(true, Some(5));
+        let sprite =
+            DirectWorldSprite::new(source, UVec2::ONE).with_color_lookup(DirectColorLookup::Direct);
+
+        let built = build_overlay_images(&sprite, None, &target, Some(&pipeline), &mut images)
+            .expect("sprite image should build");
+        let indexed = images.get(&built.image).unwrap();
+
+        assert_eq!(indexed.data.as_ref().unwrap(), &[12, 0, 0, 255]);
+    }
+
+    #[test]
+    fn fully_transparent_sprite_pixel_is_binary_off() {
+        let mut images = Assets::<Image>::default();
+        let source = images.add(test_image(
+            1,
+            1,
+            [1, 2, 3, 0],
             TextureFormat::Rgba8UnormSrgb,
         ));
         let entries = vec![0u8; LUT_ENTRY_COUNT * 2];
@@ -725,16 +701,13 @@ mod tests {
         let sprite =
             DirectWorldSprite::new(source, UVec2::ONE).with_color_lookup(DirectColorLookup::Direct);
 
-        let built = build_overlay_images(&sprite, None, &target, Some(&pipeline), &mut images)
-            .expect("sprite image should build");
-        let raw = images.get(&built.raw_image).unwrap();
-
-        assert_eq!(raw.data.as_ref().unwrap(), &[1, 2, 3, 128]);
-        assert!(built.indexed_image.is_none());
+        assert!(
+            build_overlay_images(&sprite, None, &target, Some(&pipeline), &mut images).is_none()
+        );
     }
 
     #[test]
-    fn altered_sprite_does_not_build_indexed_output_texture() {
+    fn color_lookup_altered_still_uses_the_direct_sprite_output_route() {
         let mut images = Assets::<Image>::default();
         let source = images.add(test_image(
             1,
@@ -742,7 +715,8 @@ mod tests {
             [1, 2, 3, 255],
             TextureFormat::Rgba8UnormSrgb,
         ));
-        let entries = vec![0u8; LUT_ENTRY_COUNT * 2];
+        let mut entries = vec![0u8; LUT_ENTRY_COUNT * 2];
+        entries[LUT_ENTRY_COUNT + (1usize << 16) + (2usize << 8) + 3] = 33;
         let pipeline = test_palette_pipeline(entries);
         let target = test_target(true, Some(5));
         let sprite = DirectWorldSprite::new(source, UVec2::ONE)
@@ -750,10 +724,9 @@ mod tests {
 
         let built = build_overlay_images(&sprite, None, &target, Some(&pipeline), &mut images)
             .expect("sprite image should build");
-        let raw = images.get(&built.raw_image).unwrap();
+        let indexed = images.get(&built.image).unwrap();
 
-        assert_eq!(raw.data.as_ref().unwrap(), &[1, 2, 3, 255]);
-        assert!(built.indexed_image.is_none());
+        assert_eq!(indexed.data.as_ref().unwrap(), &[33, 0, 0, 255]);
     }
 
     #[test]

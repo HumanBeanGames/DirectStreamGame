@@ -1524,7 +1524,7 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
     if config.window_mode != WindowMode::Preview || !buttons.just_pressed(MouseButton::Left) {
         return;
     }
-    let Some(debug_state) = debug_state else {
+    let Some(mut debug_state) = debug_state else {
         return;
     };
     let Ok(window) = windows.single() else {
@@ -1577,13 +1577,9 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
     ) else {
         return;
     };
-    commands.queue(move |world: &mut World| {
-        if let Some(mut debug_state) = world.get_resource_mut::<PreviewPixelDebugState>() {
-            debug_state.pixel_debug_clicked_source = Some(source);
-            debug_state.pixel_debug_raw = None;
-            debug_state.pixel_debug_quantized = None;
-        }
-    });
+    debug_state.pixel_debug_clicked_source = Some(source);
+    debug_state.pixel_debug_raw = None;
+    debug_state.pixel_debug_quantized = None;
 
     commands
         .spawn(PreviewPixelDebugReadback {
@@ -3399,24 +3395,8 @@ fn preview_pixel_pair_text(
     quantized: &QuantizedPixelDebug,
     clicked_source: PreviewPixelSource,
 ) -> String {
-    let clicked_after = clicked_source == PreviewPixelSource::Quantized;
-    let expected_index = if clicked_after {
-        quantized.palette_index.to_string()
-    } else {
-        raw.expected_index
-            .map(|index| index.to_string())
-            .unwrap_or_else(|| "out of range".to_owned())
-    };
-    let expected_color = if clicked_after {
-        quantized.color
-    } else {
-        raw.expected_color
-    };
-    let lookup_route = if clicked_after {
-        "actual after/output index"
-    } else {
-        raw.lookup_route.label()
-    };
+    let (lookup_route, expected_index, expected_color) =
+        preview_expected_readout(raw, quantized, clicked_source);
     let raw_oklab = rgb_to_oklab(raw.r, raw.g, raw.b);
     let quantized_oklab = rgb_to_oklab(quantized.color[0], quantized.color[1], quantized.color[2]);
     let delta_l = raw_oklab.l - quantized_oklab.l;
@@ -3459,6 +3439,97 @@ fn preview_pixel_pair_text(
         dh_degrees.abs(),
         raw.lookup_key,
     )
+}
+
+fn preview_expected_readout(
+    raw: &RawPixelDebug,
+    quantized: &QuantizedPixelDebug,
+    clicked_source: PreviewPixelSource,
+) -> (&'static str, String, [u8; 4]) {
+    if clicked_source == PreviewPixelSource::Quantized
+        && raw.lookup_route != PreviewLookupRoute::DirectTable
+        && raw.expected_index != Some(quantized.palette_index)
+    {
+        return (
+            "direct output overlay",
+            quantized.palette_index.to_string(),
+            quantized.color,
+        );
+    }
+
+    (
+        raw.lookup_route.label(),
+        raw.expected_index
+            .map(|index| index.to_string())
+            .unwrap_or_else(|| "out of range".to_owned()),
+        raw.expected_color,
+    )
+}
+
+#[cfg(test)]
+mod preview_pixel_debug_tests {
+    use super::*;
+
+    fn raw_debug(route: PreviewLookupRoute, expected_index: Option<u8>) -> RawPixelDebug {
+        RawPixelDebug {
+            x: 0,
+            y: 0,
+            b: 0,
+            g: 0,
+            r: 0,
+            a: 255,
+            lookup_key: 0,
+            lookup_route: route,
+            expected_index,
+            expected_color: [1, 2, 3, 255],
+        }
+    }
+
+    fn quantized_debug(index: u8) -> QuantizedPixelDebug {
+        QuantizedPixelDebug {
+            palette_index: index,
+            color: [4, 5, 6, 255],
+        }
+    }
+
+    #[test]
+    fn after_click_keeps_altered_label_when_after_matches_altered_expectation() {
+        let raw = raw_debug(PreviewLookupRoute::AlteredTable, Some(9));
+        let quantized = quantized_debug(9);
+
+        let (label, index, color) =
+            preview_expected_readout(&raw, &quantized, PreviewPixelSource::Quantized);
+
+        assert_eq!(label, "altered/prequantized IPSMAP table");
+        assert_eq!(index, "9");
+        assert_eq!(color, [1, 2, 3, 255]);
+    }
+
+    #[test]
+    fn after_click_reports_direct_overlay_when_after_differs_from_altered_expectation() {
+        let raw = raw_debug(PreviewLookupRoute::AlteredTable, Some(9));
+        let quantized = quantized_debug(42);
+
+        let (label, index, color) =
+            preview_expected_readout(&raw, &quantized, PreviewPixelSource::Quantized);
+
+        assert_eq!(label, "direct output overlay");
+        assert_eq!(index, "42");
+        assert_eq!(color, [4, 5, 6, 255]);
+    }
+
+    #[test]
+    fn after_click_preserves_direct_table_label_for_raw_direct_text() {
+        let raw = raw_debug(PreviewLookupRoute::DirectTable, Some(12));
+        let quantized = quantized_debug(12);
+
+        let (label, index, color) =
+            preview_expected_readout(&raw, &quantized, PreviewPixelSource::Quantized);
+
+        assert_eq!(label, "direct IPSMAP table");
+        assert_eq!(index, "12");
+        assert_eq!(color, [1, 2, 3, 255]);
+    }
 }
 
 pub(crate) fn update_preview_pixel_debug_text(

@@ -7,7 +7,6 @@ use bevy::{camera::visibility::RenderLayers, prelude::*, render::render_resource
 use std::collections::{HashMap, HashSet};
 
 const SPRITE_ON_ALPHA_THRESHOLD: u8 = 1;
-const DIRECT_RAW_ALPHA: f32 = 254.0 / 255.0;
 const SPRITE_TEXT_Z_CEILING: f32 = -0.1;
 const SPRITE_BASE_Z: f32 = -100.0;
 const ALWAYS_ON_TOP_BASE_Z: f32 = -10.0;
@@ -196,11 +195,6 @@ fn sync_direct_world_sprites(
         .map(|pipeline| pipeline.is_changed())
         .unwrap_or(false);
     let overlay_layer = RenderLayers::layer(target.overlay_layer);
-    let raw_direct_layer = if target.output_is_indexed {
-        target.raw_overlay_layer.map(RenderLayers::layer)
-    } else {
-        None
-    };
     let mut visible_count = 0usize;
 
     for (owner, sprite, owner_transform) in &sprites {
@@ -244,11 +238,10 @@ fn sync_direct_world_sprites(
             };
             let render_size = integer_scaled_size_for_source(&sprite, built_pixels.source_size);
             let transform = projected.transform();
-            let sprite_layer = raw_direct_layer.as_ref().unwrap_or(&overlay_layer);
             let state = spawn_overlay_sprite(
                 &mut commands,
                 &built_pixels,
-                sprite_layer,
+                &overlay_layer,
                 transform,
                 render_size,
             );
@@ -421,15 +414,14 @@ fn build_overlay_pixels(
 
     let mut pixels = Vec::new();
     let tint = sprite.tint.to_srgba();
-    let use_raw_direct_overlay = target.output_is_indexed && target.raw_overlay_layer.is_some();
-    let direct_entries = if target.output_is_indexed && !use_raw_direct_overlay {
+    let direct_entries = if target.output_is_indexed {
         gpu_palette
             .map(|pipeline| pipeline.lookup_entries.as_ref())
             .filter(|entries| entries.len() >= LUT_ENTRY_COUNT.saturating_mul(2))
     } else {
         None
     };
-    if target.output_is_indexed && !use_raw_direct_overlay && direct_entries.is_none() {
+    if target.output_is_indexed && direct_entries.is_none() {
         return None;
     }
 
@@ -444,15 +436,9 @@ fn build_overlay_pixels(
             if pixel[3] < SPRITE_ON_ALPHA_THRESHOLD {
                 continue;
             }
-            let color = if use_raw_direct_overlay {
-                Color::srgba(
-                    f32::from(pixel[0]) / 255.0,
-                    f32::from(pixel[1]) / 255.0,
-                    f32::from(pixel[2]) / 255.0,
-                    DIRECT_RAW_ALPHA,
-                )
-            } else if let Some(entries) = direct_entries {
-                let index = lookup_direct_palette_index(pixel[0], pixel[1], pixel[2], entries)?;
+            let color = if let Some(entries) = direct_entries {
+                let index =
+                    sprite_palette_index_at(source_image, source_rect, x, y, tint, entries)?;
                 Color::linear_rgba(f32::from(index) / 255.0, 0.0, 0.0, 1.0)
             } else {
                 Color::srgba(
@@ -520,6 +506,19 @@ fn multiply_u8(value: u8, factor: f32) -> u8 {
 fn lookup_direct_palette_index(r: u8, g: u8, b: u8, lookup_entries: &[u8]) -> Option<u8> {
     let offset = ((r as usize) << 16) | ((g as usize) << 8) | b as usize;
     lookup_entries.get(LUT_ENTRY_COUNT + offset).copied()
+}
+
+fn sprite_palette_index_at(
+    image: &Image,
+    source_rect: URect,
+    x: u32,
+    y: u32,
+    tint: Srgba,
+    lookup_entries: &[u8],
+) -> Option<u8> {
+    let source_pixel = read_image_pixel(image, source_rect.min.x + x, source_rect.min.y + y)?;
+    let pixel = tint_pixel(source_pixel, tint);
+    lookup_direct_palette_index(pixel[0], pixel[1], pixel[2], lookup_entries)
 }
 
 fn atlas_frame(
@@ -656,7 +655,7 @@ mod tests {
     }
 
     #[test]
-    fn opaque_direct_sprite_uses_raw_direct_sentinel_when_available() {
+    fn opaque_direct_sprite_uses_direct_ipsmap_index_when_raw_overlay_exists() {
         let mut images = Assets::<Image>::default();
         let source = images.add(test_image(
             1,
@@ -673,18 +672,49 @@ mod tests {
 
         let built = build_overlay_pixels(&sprite, None, &target, Some(&pipeline), &images)
             .expect("sprite pixels should build");
-        let color = built.pixels[0].color.to_srgba();
+        let color = built.pixels[0].color.to_linear();
 
         assert_eq!(built.pixels.len(), 1);
         assert_eq!((built.pixels[0].x, built.pixels[0].y), (0, 0));
-        assert!((color.red - (1.0 / 255.0)).abs() < 0.0001);
-        assert!((color.green - (2.0 / 255.0)).abs() < 0.0001);
-        assert!((color.blue - (3.0 / 255.0)).abs() < 0.0001);
-        assert!((color.alpha - DIRECT_RAW_ALPHA).abs() < 0.0001);
+        assert!((color.red - (42.0 / 255.0)).abs() < 0.0001);
+        assert_eq!(color.green, 0.0);
+        assert_eq!(color.blue, 0.0);
+        assert_eq!(color.alpha, 1.0);
     }
 
     #[test]
-    fn opaque_direct_sprite_falls_back_to_output_index_without_raw_overlay() {
+    fn sprite_palette_index_at_uses_source_coordinates_and_direct_table() {
+        let mut images = Assets::<Image>::default();
+        let source = images.add(Image::new(
+            Extent3d {
+                width: 2,
+                height: 2,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            vec![1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255],
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::default(),
+        ));
+        let image = images.get(&source).expect("test image");
+        let mut entries = vec![0u8; LUT_ENTRY_COUNT * 2];
+        entries[LUT_ENTRY_COUNT + (10usize << 16) + (11usize << 8) + 12] = 88;
+
+        assert_eq!(
+            sprite_palette_index_at(
+                image,
+                URect::from_corners(UVec2::ZERO, UVec2::new(2, 2)),
+                1,
+                1,
+                Color::WHITE.to_srgba(),
+                &entries,
+            ),
+            Some(88)
+        );
+    }
+
+    #[test]
+    fn opaque_direct_sprite_uses_direct_ipsmap_index_without_raw_overlay() {
         let mut images = Assets::<Image>::default();
         let source = images.add(test_image(
             1,
@@ -727,13 +757,13 @@ mod tests {
 
         let built = build_overlay_pixels(&sprite, None, &target, Some(&pipeline), &images)
             .expect("sprite pixels should build");
-        let color = built.pixels[0].color.to_srgba();
+        let color = built.pixels[0].color.to_linear();
 
         assert_eq!(built.pixels.len(), 1);
-        assert!((color.red - (1.0 / 255.0)).abs() < 0.0001);
-        assert!((color.green - (2.0 / 255.0)).abs() < 0.0001);
-        assert!((color.blue - (3.0 / 255.0)).abs() < 0.0001);
-        assert!((color.alpha - DIRECT_RAW_ALPHA).abs() < 0.0001);
+        assert!((color.red - (12.0 / 255.0)).abs() < 0.0001);
+        assert_eq!(color.green, 0.0);
+        assert_eq!(color.blue, 0.0);
+        assert_eq!(color.alpha, 1.0);
     }
 
     #[test]
@@ -755,7 +785,7 @@ mod tests {
     }
 
     #[test]
-    fn color_lookup_altered_still_uses_the_raw_direct_sprite_route() {
+    fn color_lookup_altered_still_uses_the_direct_ipsmap_sprite_route() {
         let mut images = Assets::<Image>::default();
         let source = images.add(test_image(
             1,
@@ -772,13 +802,13 @@ mod tests {
 
         let built = build_overlay_pixels(&sprite, None, &target, Some(&pipeline), &images)
             .expect("sprite pixels should build");
-        let color = built.pixels[0].color.to_srgba();
+        let color = built.pixels[0].color.to_linear();
 
         assert_eq!(built.pixels.len(), 1);
-        assert!((color.red - (1.0 / 255.0)).abs() < 0.0001);
-        assert!((color.green - (2.0 / 255.0)).abs() < 0.0001);
-        assert!((color.blue - (3.0 / 255.0)).abs() < 0.0001);
-        assert!((color.alpha - DIRECT_RAW_ALPHA).abs() < 0.0001);
+        assert!((color.red - (33.0 / 255.0)).abs() < 0.0001);
+        assert_eq!(color.green, 0.0);
+        assert_eq!(color.blue, 0.0);
+        assert_eq!(color.alpha, 1.0);
     }
 
     #[test]

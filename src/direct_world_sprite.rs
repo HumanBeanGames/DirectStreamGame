@@ -3,14 +3,7 @@ use crate::{
     palette_lut::LUT_ENTRY_COUNT,
     public_types::{DirectColorLookup, DirectStreamTarget},
 };
-use bevy::{
-    asset::RenderAssetUsages,
-    camera::visibility::RenderLayers,
-    image::ImageSampler,
-    prelude::*,
-    render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
-    transform::TransformSystems,
-};
+use bevy::{camera::visibility::RenderLayers, prelude::*, render::render_resource::TextureFormat};
 use std::collections::{HashMap, HashSet};
 
 const SPRITE_ON_ALPHA_THRESHOLD: u8 = 1;
@@ -24,10 +17,7 @@ impl Plugin for DirectWorldSpritePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DirectWorldSpriteSettings>()
             .init_resource::<DirectWorldSpriteOverlayCache>()
-            .add_systems(
-                PostUpdate,
-                sync_direct_world_sprites.after(TransformSystems::Propagate),
-            );
+            .add_systems(Update, sync_direct_world_sprites);
     }
 }
 
@@ -133,12 +123,15 @@ struct AtlasFrame {
 }
 
 #[derive(Component, Clone, Copy)]
-struct DirectWorldSpriteOverlay;
+struct DirectWorldSpriteOverlayRoot;
+
+#[derive(Component, Clone, Copy)]
+struct DirectWorldSpriteOverlayPixel;
 
 #[derive(Clone)]
 struct DirectWorldSpriteOverlayState {
-    entity: Entity,
-    image: Handle<Image>,
+    root_entity: Entity,
+    pixel_entities: Vec<Entity>,
 }
 
 #[derive(Resource, Default)]
@@ -146,9 +139,15 @@ struct DirectWorldSpriteOverlayCache {
     entries: HashMap<Entity, DirectWorldSpriteOverlayState>,
 }
 
-struct BuiltSpriteImages {
-    image: Handle<Image>,
+struct BuiltSpritePixels {
+    pixels: Vec<BuiltSpritePixel>,
     source_size: UVec2,
+}
+
+struct BuiltSpritePixel {
+    x: u32,
+    y: u32,
+    color: Color,
 }
 
 fn sync_direct_world_sprites(
@@ -160,7 +159,7 @@ fn sync_direct_world_sprites(
     mut removed_sprites: RemovedComponents<DirectWorldSprite>,
     mut cache: ResMut<DirectWorldSpriteOverlayCache>,
     atlases: Res<Assets<TextureAtlasLayout>>,
-    mut images: ResMut<Assets<Image>>,
+    images: Res<Assets<Image>>,
     gpu_palette: Option<Res<GpuPalettePipeline>>,
 ) {
     let Ok((camera, camera_transform, _)) = camera_query.get(target.camera) else {
@@ -170,12 +169,12 @@ fn sync_direct_world_sprites(
     let removed_owners: HashSet<Entity> = removed_sprites.read().collect();
     if !removed_owners.is_empty() {
         for owner in &removed_owners {
-            despawn_overlay_state(&mut commands, &mut images, cache.entries.remove(owner));
+            despawn_overlay_state(&mut commands, cache.entries.remove(owner));
         }
     }
 
     if !settings.enabled {
-        clear_overlay_cache(&mut commands, &mut images, &mut cache);
+        clear_overlay_cache(&mut commands, &mut cache);
         return;
     }
 
@@ -187,7 +186,7 @@ fn sync_direct_world_sprites(
         .copied()
         .collect::<Vec<_>>();
     for owner in stale_owners {
-        despawn_overlay_state(&mut commands, &mut images, cache.entries.remove(&owner));
+        despawn_overlay_state(&mut commands, cache.entries.remove(&owner));
     }
 
     let target_changed = target.is_changed();
@@ -223,35 +222,30 @@ fn sync_direct_world_sprites(
         let needs_rebuild = target_changed
             || palette_changed
             || sprite.is_changed()
+            || images.is_changed()
             || !cache.entries.contains_key(&owner);
 
         if needs_rebuild {
-            despawn_overlay_state(&mut commands, &mut images, cache.entries.remove(&owner));
-            let Some(built_images) = build_overlay_images(
+            despawn_overlay_state(&mut commands, cache.entries.remove(&owner));
+            let Some(built_pixels) = build_overlay_pixels(
                 &sprite,
                 atlas_frame,
                 &target,
                 gpu_palette.as_deref(),
-                &mut images,
+                &images,
             ) else {
                 continue;
             };
-            let render_size = integer_scaled_size_for_source(&sprite, built_images.source_size);
+            let render_size = integer_scaled_size_for_source(&sprite, built_pixels.source_size);
             let transform = projected.transform();
-            let entity = spawn_overlay_sprite(
+            let state = spawn_overlay_sprite(
                 &mut commands,
-                built_images.image.clone(),
+                &built_pixels,
                 &overlay_layer,
                 transform,
                 render_size,
             );
-            cache.entries.insert(
-                owner,
-                DirectWorldSpriteOverlayState {
-                    entity,
-                    image: built_images.image,
-                },
-            );
+            cache.entries.insert(owner, state);
         } else if let Some(state) = cache.entries.get(&owner) {
             let transform = projected.transform();
             show_overlay_state(&mut commands, state, transform);
@@ -261,55 +255,69 @@ fn sync_direct_world_sprites(
 
 fn spawn_overlay_sprite(
     commands: &mut Commands,
-    image: Handle<Image>,
+    built_pixels: &BuiltSpritePixels,
     layer: &RenderLayers,
     transform: Transform,
     render_size: UVec2,
-) -> Entity {
-    commands
-        .spawn((
-            Sprite {
-                image,
-                color: Color::WHITE,
-                custom_size: Some(render_size.as_vec2()),
-                ..default()
-            },
-            transform,
-            Visibility::Visible,
-            layer.clone(),
-            DirectWorldSpriteOverlay,
-        ))
-        .id()
-}
+) -> DirectWorldSpriteOverlayState {
+    let root_entity = commands
+        .spawn((transform, Visibility::Visible, DirectWorldSpriteOverlayRoot))
+        .id();
+    let scale = pixel_scale(render_size, built_pixels.source_size);
+    let half_size = render_size.as_vec2() * 0.5;
+    let mut pixel_entities = Vec::with_capacity(built_pixels.pixels.len());
 
-fn clear_overlay_cache(
-    commands: &mut Commands,
-    images: &mut Assets<Image>,
-    cache: &mut DirectWorldSpriteOverlayCache,
-) {
-    let owners = cache.entries.keys().copied().collect::<Vec<_>>();
-    for owner in owners {
-        despawn_overlay_state(commands, images, cache.entries.remove(&owner));
+    commands.entity(root_entity).with_children(|children| {
+        for pixel in &built_pixels.pixels {
+            let local_x = -half_size.x + (pixel.x as f32 + 0.5) * scale.x;
+            let local_y = half_size.y - (pixel.y as f32 + 0.5) * scale.y;
+            let entity = children
+                .spawn((
+                    Sprite {
+                        color: pixel.color,
+                        custom_size: Some(scale),
+                        ..default()
+                    },
+                    Transform::from_xyz(local_x, local_y, 0.0),
+                    Visibility::Visible,
+                    layer.clone(),
+                    DirectWorldSpriteOverlayPixel,
+                ))
+                .id();
+            pixel_entities.push(entity);
+        }
+    });
+
+    DirectWorldSpriteOverlayState {
+        root_entity,
+        pixel_entities,
     }
 }
 
-fn despawn_overlay_state(
-    commands: &mut Commands,
-    images: &mut Assets<Image>,
-    state: Option<DirectWorldSpriteOverlayState>,
-) {
+fn clear_overlay_cache(commands: &mut Commands, cache: &mut DirectWorldSpriteOverlayCache) {
+    let owners = cache.entries.keys().copied().collect::<Vec<_>>();
+    for owner in owners {
+        despawn_overlay_state(commands, cache.entries.remove(&owner));
+    }
+}
+
+fn despawn_overlay_state(commands: &mut Commands, state: Option<DirectWorldSpriteOverlayState>) {
     let Some(state) = state else {
         return;
     };
-    commands.entity(state.entity).despawn();
-    images.remove(&state.image);
+    for pixel_entity in state.pixel_entities {
+        commands.entity(pixel_entity).despawn();
+    }
+    commands.entity(state.root_entity).despawn();
 }
 
 fn hide_overlay_state(commands: &mut Commands, state: Option<&DirectWorldSpriteOverlayState>) {
     let Some(state) = state else {
         return;
     };
-    commands.entity(state.entity).insert(Visibility::Hidden);
+    commands
+        .entity(state.root_entity)
+        .insert(Visibility::Hidden);
 }
 
 fn show_overlay_state(
@@ -318,8 +326,15 @@ fn show_overlay_state(
     transform: Transform,
 ) {
     commands
-        .entity(state.entity)
+        .entity(state.root_entity)
         .insert((transform, Visibility::Visible));
+}
+
+fn pixel_scale(render_size: UVec2, source_size: UVec2) -> Vec2 {
+    Vec2::new(
+        render_size.x.max(1) as f32 / source_size.x.max(1) as f32,
+        render_size.y.max(1) as f32 / source_size.y.max(1) as f32,
+    )
 }
 
 struct ProjectedOverlaySprite {
@@ -347,10 +362,9 @@ fn project_world_sprite_overlay(
 
     let anchor_world = owner_transform.translation();
     let projected = camera
-        .world_to_viewport_with_depth(camera_transform, anchor_world)
+        .world_to_viewport(camera_transform, anchor_world)
         .ok()?;
-    if projected.z <= 0.0
-        || projected.x < 0.0
+    if projected.x < 0.0
         || projected.y < 0.0
         || projected.x >= target.width as f32
         || projected.y >= target.height as f32
@@ -366,7 +380,10 @@ fn project_world_sprite_overlay(
 
     Some(ProjectedOverlaySprite {
         center: Vec2::new(left + center_viewport.x, top - center_viewport.y),
-        z: overlay_z(sprite, projected.z),
+        z: overlay_z(
+            sprite,
+            camera_transform.translation().distance(anchor_world),
+        ),
     })
 }
 
@@ -381,13 +398,13 @@ fn overlay_z(sprite: &DirectWorldSprite, projected_depth: f32) -> f32 {
     z.min(SPRITE_TEXT_Z_CEILING)
 }
 
-fn build_overlay_images(
+fn build_overlay_pixels(
     sprite: &DirectWorldSprite,
     atlas_frame: Option<AtlasFrame>,
     target: &DirectStreamTarget,
     gpu_palette: Option<&GpuPalettePipeline>,
-    images: &mut Assets<Image>,
-) -> Option<BuiltSpriteImages> {
+    images: &Assets<Image>,
+) -> Option<BuiltSpritePixels> {
     let source_image = images.get(&sprite.image)?;
     let source_rect = sprite_source_rect(atlas_frame, source_image)?;
     let source_size = source_rect.size();
@@ -395,9 +412,7 @@ fn build_overlay_images(
         return None;
     }
 
-    let pixel_count = source_size.x as usize * source_size.y as usize;
-    let mut data = vec![0u8; pixel_count * 4];
-    let mut has_on_pixels = false;
+    let mut pixels = Vec::new();
     let tint = sprite.tint.to_srgba();
     let direct_entries = if target.output_is_indexed {
         gpu_palette
@@ -421,48 +436,29 @@ fn build_overlay_images(
             if pixel[3] < SPRITE_ON_ALPHA_THRESHOLD {
                 continue;
             }
-            let offset = ((y as usize * source_size.x as usize) + x as usize) * 4;
-
-            if let Some(entries) = direct_entries {
+            let color = if let Some(entries) = direct_entries {
                 let index = lookup_direct_palette_index(pixel[0], pixel[1], pixel[2], entries)?;
-                data[offset..offset + 4].copy_from_slice(&[index, 0, 0, 255]);
+                Color::linear_rgba(f32::from(index) / 255.0, 0.0, 0.0, 1.0)
             } else {
-                data[offset..offset + 4].copy_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
-            }
-            has_on_pixels = true;
+                Color::srgba(
+                    f32::from(pixel[0]) / 255.0,
+                    f32::from(pixel[1]) / 255.0,
+                    f32::from(pixel[2]) / 255.0,
+                    1.0,
+                )
+            };
+            pixels.push(BuiltSpritePixel { x, y, color });
         }
     }
 
-    if !has_on_pixels {
+    if pixels.is_empty() {
         return None;
     }
 
-    let image_format = if target.output_is_indexed {
-        TextureFormat::Rgba8Unorm
-    } else {
-        TextureFormat::Rgba8UnormSrgb
-    };
-    let image = images.add(make_overlay_image(source_size, data, image_format));
-
-    Some(BuiltSpriteImages { image, source_size })
-}
-
-fn make_overlay_image(size: UVec2, data: Vec<u8>, format: TextureFormat) -> Image {
-    let mut image = Image::new_fill(
-        Extent3d {
-            width: size.x.max(1),
-            height: size.y.max(1),
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        &data,
-        format,
-        RenderAssetUsages::default(),
-    );
-    image.texture_descriptor.usage =
-        TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::COPY_SRC;
-    image.sampler = ImageSampler::nearest();
-    image
+    Some(BuiltSpritePixels {
+        pixels,
+        source_size,
+    })
 }
 
 fn sprite_source_rect(atlas_frame: Option<AtlasFrame>, image: &Image) -> Option<URect> {
@@ -568,6 +564,10 @@ fn sprite_base_pixel_size(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::{
+        asset::RenderAssetUsages,
+        render::render_resource::{Extent3d, TextureDimension},
+    };
 
     fn test_image(width: u32, height: u32, pixel: [u8; 4], format: TextureFormat) -> Image {
         Image::new_fill(
@@ -641,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn opaque_direct_sprite_builds_binary_indexed_output_texture() {
+    fn opaque_direct_sprite_builds_binary_indexed_pixels() {
         let mut images = Assets::<Image>::default();
         let source = images.add(test_image(
             1,
@@ -656,11 +656,14 @@ mod tests {
         let sprite =
             DirectWorldSprite::new(source, UVec2::ONE).with_color_lookup(DirectColorLookup::Direct);
 
-        let built = build_overlay_images(&sprite, None, &target, Some(&pipeline), &mut images)
-            .expect("sprite image should build");
-        let indexed = images.get(&built.image).unwrap();
+        let built = build_overlay_pixels(&sprite, None, &target, Some(&pipeline), &images)
+            .expect("sprite pixels should build");
+        let color = built.pixels[0].color.to_linear();
 
-        assert_eq!(indexed.data.as_ref().unwrap(), &[42, 0, 0, 255]);
+        assert_eq!(built.pixels.len(), 1);
+        assert_eq!((built.pixels[0].x, built.pixels[0].y), (0, 0));
+        assert!((color.red - (42.0 / 255.0)).abs() < 0.0001);
+        assert_eq!(color.alpha, 1.0);
     }
 
     #[test]
@@ -679,11 +682,13 @@ mod tests {
         let sprite =
             DirectWorldSprite::new(source, UVec2::ONE).with_color_lookup(DirectColorLookup::Direct);
 
-        let built = build_overlay_images(&sprite, None, &target, Some(&pipeline), &mut images)
-            .expect("sprite image should build");
-        let indexed = images.get(&built.image).unwrap();
+        let built = build_overlay_pixels(&sprite, None, &target, Some(&pipeline), &images)
+            .expect("sprite pixels should build");
+        let color = built.pixels[0].color.to_linear();
 
-        assert_eq!(indexed.data.as_ref().unwrap(), &[12, 0, 0, 255]);
+        assert_eq!(built.pixels.len(), 1);
+        assert!((color.red - (12.0 / 255.0)).abs() < 0.0001);
+        assert_eq!(color.alpha, 1.0);
     }
 
     #[test]
@@ -701,9 +706,7 @@ mod tests {
         let sprite =
             DirectWorldSprite::new(source, UVec2::ONE).with_color_lookup(DirectColorLookup::Direct);
 
-        assert!(
-            build_overlay_images(&sprite, None, &target, Some(&pipeline), &mut images).is_none()
-        );
+        assert!(build_overlay_pixels(&sprite, None, &target, Some(&pipeline), &images).is_none());
     }
 
     #[test]
@@ -722,11 +725,13 @@ mod tests {
         let sprite = DirectWorldSprite::new(source, UVec2::ONE)
             .with_color_lookup(DirectColorLookup::Altered);
 
-        let built = build_overlay_images(&sprite, None, &target, Some(&pipeline), &mut images)
-            .expect("sprite image should build");
-        let indexed = images.get(&built.image).unwrap();
+        let built = build_overlay_pixels(&sprite, None, &target, Some(&pipeline), &images)
+            .expect("sprite pixels should build");
+        let color = built.pixels[0].color.to_linear();
 
-        assert_eq!(indexed.data.as_ref().unwrap(), &[33, 0, 0, 255]);
+        assert_eq!(built.pixels.len(), 1);
+        assert!((color.red - (33.0 / 255.0)).abs() < 0.0001);
+        assert_eq!(color.alpha, 1.0);
     }
 
     #[test]

@@ -1754,9 +1754,16 @@ pub(crate) fn handle_preview_palette_editor_interactions(
         }
     }
 
-    for (slider, value) in &slider_changes {
-        set_preview_slider_value(&mut editor.lab_settings, slider.0, value.0);
-        match slider.0 {
+    let changed_sliders = slider_changes
+        .iter()
+        .map(|(slider, value)| (slider.0, value.0))
+        .collect::<Vec<_>>();
+    for (slider, value) in changed_sliders {
+        set_preview_slider_value(&mut editor.lab_settings, slider, value);
+        if is_preview_priority_slider(slider) {
+            normalize_preview_priorities(&mut editor.lab_settings, slider);
+        }
+        match slider {
             PreviewLabSlider::BiasLightness
             | PreviewLabSlider::BiasChroma
             | PreviewLabSlider::BiasHue
@@ -1954,7 +1961,7 @@ pub(crate) fn sync_preview_palette_editor_ui(
             Without<PreviewPaletteSliderValueText>,
         ),
     >,
-    slider_ranges: Query<(Entity, &SliderValue, &SliderRange), With<PreviewPaletteSlider>>,
+    slider_ranges: Query<(Entity, &PreviewPaletteSlider, &SliderRange), With<PreviewPaletteSlider>>,
     children: Query<&Children>,
     mut slider_thumbs: Query<
         &mut Node,
@@ -1996,10 +2003,11 @@ pub(crate) fn sync_preview_palette_editor_ui(
         });
         node.border = UiRect::all(px(if selected { 2 } else { 1 }));
     }
-    for (slider_entity, value, range) in &slider_ranges {
+    for (slider_entity, slider, range) in &slider_ranges {
+        let value = preview_slider_value(editor.lab_settings, slider.0);
         for child in children.iter_descendants(slider_entity) {
             if let Ok(mut node) = slider_thumbs.get_mut(child) {
-                node.left = percent(range.thumb_position(value.0) * 100.0);
+                node.left = percent(range.thumb_position(value) * 100.0);
             }
         }
     }
@@ -2371,6 +2379,64 @@ fn set_preview_slider_value(
         PreviewLabSlider::OffsetChromaAdd => settings.offset_chroma_add = value,
         PreviewLabSlider::OffsetHueAdd => settings.offset_hue_add = value,
         PreviewLabSlider::GreyChromaThreshold => settings.grey_chroma_threshold = value,
+    }
+}
+
+fn is_preview_priority_slider(slider: PreviewLabSlider) -> bool {
+    matches!(
+        slider,
+        PreviewLabSlider::BiasLightness | PreviewLabSlider::BiasChroma | PreviewLabSlider::BiasHue
+    )
+}
+
+fn normalize_preview_priorities(settings: &mut PreviewLabSettings, changed: PreviewLabSlider) {
+    let changed_value = preview_slider_value(*settings, changed).clamp(0.0, 1.0);
+    set_preview_priority_value(settings, changed, changed_value);
+
+    let others = match changed {
+        PreviewLabSlider::BiasLightness => {
+            [PreviewLabSlider::BiasChroma, PreviewLabSlider::BiasHue]
+        }
+        PreviewLabSlider::BiasChroma => {
+            [PreviewLabSlider::BiasLightness, PreviewLabSlider::BiasHue]
+        }
+        PreviewLabSlider::BiasHue => [
+            PreviewLabSlider::BiasLightness,
+            PreviewLabSlider::BiasChroma,
+        ],
+        _ => return,
+    };
+    let remaining = (1.0 - changed_value).max(0.0);
+    let other_total =
+        preview_slider_value(*settings, others[0]) + preview_slider_value(*settings, others[1]);
+    if other_total <= f32::EPSILON {
+        let split = remaining * 0.5;
+        set_preview_priority_value(settings, others[0], split);
+        set_preview_priority_value(settings, others[1], split);
+    } else {
+        for slider in others {
+            let value = preview_slider_value(*settings, slider) / other_total * remaining;
+            set_preview_priority_value(settings, slider, value);
+        }
+    }
+
+    let total = settings.bias_lightness + settings.bias_chroma + settings.bias_hue;
+    let correction = 1.0 - total;
+    let corrected = (preview_slider_value(*settings, others[1]) + correction).clamp(0.0, 1.0);
+    set_preview_priority_value(settings, others[1], corrected);
+}
+
+fn set_preview_priority_value(
+    settings: &mut PreviewLabSettings,
+    slider: PreviewLabSlider,
+    value: f32,
+) {
+    let value = value.clamp(0.0, 1.0);
+    match slider {
+        PreviewLabSlider::BiasLightness => settings.bias_lightness = value,
+        PreviewLabSlider::BiasChroma => settings.bias_chroma = value,
+        PreviewLabSlider::BiasHue => settings.bias_hue = value,
+        _ => {}
     }
 }
 
@@ -3529,6 +3595,42 @@ mod preview_pixel_debug_tests {
         assert_eq!(label, "direct IPSMAP table");
         assert_eq!(index, "12");
         assert_eq!(color, [1, 2, 3, 255]);
+    }
+
+    #[test]
+    fn priority_normalization_preserves_changed_value_and_sums_to_one() {
+        let mut settings = PreviewLabSettings {
+            bias_lightness: 0.8,
+            bias_chroma: 0.3,
+            bias_hue: 0.3,
+            ..default()
+        };
+
+        normalize_preview_priorities(&mut settings, PreviewLabSlider::BiasLightness);
+
+        assert!((settings.bias_lightness - 0.8).abs() < 0.000_001);
+        assert!((settings.bias_chroma - 0.1).abs() < 0.000_001);
+        assert!((settings.bias_hue - 0.1).abs() < 0.000_001);
+        assert!(
+            (settings.bias_lightness + settings.bias_chroma + settings.bias_hue - 1.0).abs()
+                < 0.000_001
+        );
+    }
+
+    #[test]
+    fn priority_normalization_splits_remaining_when_other_priorities_are_zero() {
+        let mut settings = PreviewLabSettings {
+            bias_lightness: 0.0,
+            bias_chroma: 0.4,
+            bias_hue: 0.0,
+            ..default()
+        };
+
+        normalize_preview_priorities(&mut settings, PreviewLabSlider::BiasChroma);
+
+        assert!((settings.bias_chroma - 0.4).abs() < 0.000_001);
+        assert!((settings.bias_lightness - 0.3).abs() < 0.000_001);
+        assert!((settings.bias_hue - 0.3).abs() < 0.000_001);
     }
 }
 

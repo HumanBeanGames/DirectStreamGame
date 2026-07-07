@@ -14,6 +14,8 @@ const BITMAP_FONT_ADVANCE: f32 = 4.0;
 const BITMAP_FONT_LINE_HEIGHT: f32 = 6.0;
 const DEFAULT_DIRECT_TEXT_FONT_SIZE: f32 = BITMAP_FONT_HEIGHT as f32;
 const GLYPH_ON_THRESHOLD: f32 = 0.5;
+const DIRECT_ALPHA_SENTINEL: f32 = 254.0 / 255.0;
+const EXACT_INDEX_ALPHA_SENTINEL: f32 = 253.0 / 255.0;
 
 impl Plugin for DirectTextPlugin {
     fn build(&self, app: &mut App) {
@@ -181,7 +183,7 @@ fn sync_direct_text_overlays(
                 (
                     owner,
                     (
-                        raw_overlay_color(text),
+                        direct_source_overlay_color(text, &target),
                         indexed_overlay_color(text, &target, gpu_palette.as_deref()),
                         text.color_lookup,
                     ),
@@ -191,7 +193,7 @@ fn sync_direct_text_overlays(
         for (_, overlay, mut sprite) in &mut existing {
             if let Some((raw_color, indexed_color, color_lookup)) = recolors.get(&overlay.owner) {
                 sprite.color = if overlay.raw {
-                    direct_source_overlay_color(*raw_color, *color_lookup, &target)
+                    *raw_color
                 } else if *color_lookup == DirectColorLookup::Direct {
                     *indexed_color
                 } else {
@@ -225,7 +227,7 @@ fn sync_direct_text_overlays(
         let scale = resolve_bitmap_scale(text.font_size);
         let threshold = text.threshold.unwrap_or(GLYPH_ON_THRESHOLD).clamp(0.0, 1.0);
         let raw_color = raw_overlay_color(text);
-        let source_color = direct_source_overlay_color(raw_color, text.color_lookup, &target);
+        let source_color = direct_source_overlay_color(text, &target);
         let indexed_color = indexed_overlay_color(text, &target, gpu_palette.as_deref());
         let mut cursor_x = text.x as f32;
         let mut cursor_y = text.y as f32;
@@ -387,15 +389,20 @@ fn raw_overlay_color(text: &DirectText) -> Color {
     )
 }
 
-fn direct_source_overlay_color(
-    color: Color,
-    color_lookup: DirectColorLookup,
-    target: &DirectStreamTarget,
-) -> Color {
-    if target.output_is_indexed && color_lookup == DirectColorLookup::Direct {
+fn direct_source_overlay_color(text: &DirectText, target: &DirectStreamTarget) -> Color {
+    let color = raw_overlay_color(text);
+    if target.output_is_indexed && text.color_lookup == DirectColorLookup::Direct {
+        if let Some(palette_index) = text.palette_index {
+            return Color::linear_rgba(
+                f32::from(palette_index) / 255.0,
+                0.0,
+                0.0,
+                EXACT_INDEX_ALPHA_SENTINEL,
+            );
+        }
         let srgba = color.to_srgba();
         if srgba.alpha >= 1.0 - (0.5 / 255.0) {
-            return Color::srgba(srgba.red, srgba.green, srgba.blue, 254.0 / 255.0);
+            return Color::srgba(srgba.red, srgba.green, srgba.blue, DIRECT_ALPHA_SENTINEL);
         }
     }
     color
@@ -588,19 +595,40 @@ mod tests {
         };
 
         let marked = direct_source_overlay_color(
-            Color::srgba(1.0, 0.0, 0.0, 1.0),
-            DirectColorLookup::Direct,
+            &DirectText::new("!", 0, 0).with_color(Srgba::RED),
             &target,
         )
         .to_srgba();
-        assert!((marked.alpha - 254.0 / 255.0).abs() < 0.0001);
+        assert!((marked.alpha - DIRECT_ALPHA_SENTINEL).abs() < 0.0001);
 
         let transparent = direct_source_overlay_color(
-            Color::srgba(1.0, 0.0, 0.0, 0.5),
-            DirectColorLookup::Direct,
+            &DirectText::new("!", 0, 0).with_color(Srgba::new(1.0, 0.0, 0.0, 0.5)),
             &target,
         )
         .to_srgba();
         assert!((transparent.alpha - 0.5).abs() < 0.0001);
+    }
+
+    #[test]
+    fn explicit_palette_index_uses_exact_index_source_sentinel() {
+        let target = DirectStreamTarget {
+            camera: Entity::PLACEHOLDER,
+            overlay_camera: Entity::PLACEHOLDER,
+            image: Handle::default(),
+            output_image: Handle::default(),
+            output_is_indexed: true,
+            overlay_layer: 0,
+            raw_overlay_layer: Some(1),
+            width: 16,
+            height: 16,
+            fps: 30,
+        };
+        let text = DirectText::new("!", 0, 0)
+            .with_color(Srgba::RED)
+            .with_palette_index(37);
+
+        let color = direct_source_overlay_color(&text, &target).to_linear();
+        assert!((color.red - (37.0 / 255.0)).abs() < 0.0001);
+        assert!((color.alpha - EXACT_INDEX_ALPHA_SENTINEL).abs() < 0.0001);
     }
 }

@@ -301,6 +301,11 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
         let palette_index = min(u32(round(raw_source.r * 255.0)), palette_width - 1u);
         return display_palette_color(palette_index);
     }
+    let exact_index = abs(raw_sample.a - (253.0 / 255.0)) <= (0.5 / 255.0);
+    if exact_index {
+        let palette_index = min(u32(round(raw_source.r * 255.0)), palette_width - 1u);
+        return display_palette_color(palette_index);
+    }
     let direct_index = abs(raw_sample.a - (254.0 / 255.0)) <= (0.5 / 255.0);
     var palette_index = nearest_palette_index_raw(raw_source);
     if direct_index {

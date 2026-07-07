@@ -14,8 +14,6 @@ const BITMAP_FONT_ADVANCE: f32 = 4.0;
 const BITMAP_FONT_LINE_HEIGHT: f32 = 6.0;
 const DEFAULT_DIRECT_TEXT_FONT_SIZE: f32 = BITMAP_FONT_HEIGHT as f32;
 const GLYPH_ON_THRESHOLD: f32 = 0.5;
-const DIRECT_ALPHA_SENTINEL: f32 = 254.0 / 255.0;
-const EXACT_INDEX_ALPHA_SENTINEL: f32 = 253.0 / 255.0;
 
 impl Plugin for DirectTextPlugin {
     fn build(&self, app: &mut App) {
@@ -84,7 +82,6 @@ impl DirectText {
 #[derive(Component, Clone, Copy)]
 struct DirectTextOverlayPixel {
     owner: Entity,
-    raw: bool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -176,29 +173,19 @@ fn sync_direct_text_overlays(
     }
 
     if !recolor_owners.is_empty() {
-        let recolors: HashMap<Entity, (Color, Color, DirectColorLookup)> = all_text
+        let recolors: HashMap<Entity, Color> = all_text
             .iter()
             .filter(|(owner, _)| recolor_owners.contains(owner))
             .map(|(owner, text)| {
                 (
                     owner,
-                    (
-                        direct_source_overlay_color(text, &target),
-                        indexed_overlay_color(text, &target, gpu_palette.as_deref()),
-                        text.color_lookup,
-                    ),
+                    final_overlay_color(text, &target, gpu_palette.as_deref()),
                 )
             })
             .collect();
         for (_, overlay, mut sprite) in &mut existing {
-            if let Some((raw_color, indexed_color, color_lookup)) = recolors.get(&overlay.owner) {
-                sprite.color = if overlay.raw {
-                    *raw_color
-                } else if *color_lookup == DirectColorLookup::Direct {
-                    *indexed_color
-                } else {
-                    *raw_color
-                };
+            if let Some(color) = recolors.get(&overlay.owner) {
+                sprite.color = *color;
             }
         }
         for (owner, text) in &changed_text {
@@ -216,7 +203,6 @@ fn sync_direct_text_overlays(
     }
 
     let overlay_layer = RenderLayers::layer(target.overlay_layer);
-    let raw_overlay_layer = target.raw_overlay_layer.map(RenderLayers::layer);
     let left = -(target.width as f32) * 0.5;
     let top = target.height as f32 * 0.5;
 
@@ -226,9 +212,7 @@ fn sync_direct_text_overlays(
         }
         let scale = resolve_bitmap_scale(text.font_size);
         let threshold = text.threshold.unwrap_or(GLYPH_ON_THRESHOLD).clamp(0.0, 1.0);
-        let raw_color = raw_overlay_color(text);
-        let source_color = direct_source_overlay_color(text, &target);
-        let indexed_color = indexed_overlay_color(text, &target, gpu_palette.as_deref());
+        let color = final_overlay_color(text, &target, gpu_palette.as_deref());
         let mut cursor_x = text.x as f32;
         let mut cursor_y = text.y as f32;
         let start_x = cursor_x;
@@ -244,54 +228,19 @@ fn sync_direct_text_overlays(
                 '\r' => {}
                 _ => {
                     let columns = glyph_columns(character);
-                    if let Some(raw_overlay_layer) = raw_overlay_layer.as_ref() {
-                        spawn_bitmap_glyph(
-                            &mut commands,
-                            raw_overlay_layer,
-                            owner,
-                            true,
-                            source_color,
-                            left,
-                            top,
-                            cursor_x,
-                            cursor_y,
-                            scale,
-                            threshold,
-                            columns,
-                        );
-                    }
-                    if text.color_lookup == DirectColorLookup::Direct && raw_overlay_layer.is_none()
-                    {
-                        spawn_bitmap_glyph(
-                            &mut commands,
-                            &overlay_layer,
-                            owner,
-                            false,
-                            indexed_color,
-                            left,
-                            top,
-                            cursor_x,
-                            cursor_y,
-                            scale,
-                            threshold,
-                            columns,
-                        );
-                    } else if raw_overlay_layer.is_none() {
-                        spawn_bitmap_glyph(
-                            &mut commands,
-                            &overlay_layer,
-                            owner,
-                            false,
-                            raw_color,
-                            left,
-                            top,
-                            cursor_x,
-                            cursor_y,
-                            scale,
-                            threshold,
-                            columns,
-                        );
-                    }
+                    spawn_bitmap_glyph(
+                        &mut commands,
+                        &overlay_layer,
+                        owner,
+                        color,
+                        left,
+                        top,
+                        cursor_x,
+                        cursor_y,
+                        scale,
+                        threshold,
+                        columns,
+                    );
                     cursor_x += advance;
                 }
             }
@@ -327,7 +276,6 @@ fn spawn_bitmap_glyph(
     commands: &mut Commands,
     overlay_layer: &RenderLayers,
     owner: Entity,
-    raw: bool,
     color: Color,
     left: f32,
     top: f32,
@@ -354,7 +302,7 @@ fn spawn_bitmap_glyph(
                     },
                     Transform::from_xyz(pixel_x, pixel_y, 0.0),
                     overlay_layer.clone(),
-                    DirectTextOverlayPixel { owner, raw },
+                    DirectTextOverlayPixel { owner },
                 ));
             }
         }
@@ -366,13 +314,13 @@ fn indexed_overlay_color(
     target: &DirectStreamTarget,
     gpu_palette: Option<&GpuPalettePipeline>,
 ) -> Color {
-    if target.output_is_indexed
-        && let Some(gpu_palette) = gpu_palette
-    {
-        let palette_index = text
-            .palette_index
-            .or_else(|| lookup_palette_index(text.color, &gpu_palette.lookup_entries, true))
-            .unwrap_or(0);
+    if target.output_is_indexed {
+        let palette_index = text.palette_index.or_else(|| {
+            gpu_palette.and_then(|gpu_palette| {
+                lookup_palette_index(text.color, &gpu_palette.lookup_entries, true)
+            })
+        });
+        let palette_index = palette_index.unwrap_or(0);
         let index_value = f32::from(palette_index) / 255.0;
         return Color::linear_rgba(index_value, 0.0, 0.0, text.color.alpha);
     }
@@ -389,23 +337,15 @@ fn raw_overlay_color(text: &DirectText) -> Color {
     )
 }
 
-fn direct_source_overlay_color(text: &DirectText, target: &DirectStreamTarget) -> Color {
-    let color = raw_overlay_color(text);
-    if target.output_is_indexed && text.color_lookup == DirectColorLookup::Direct {
-        if let Some(palette_index) = text.palette_index {
-            return Color::linear_rgba(
-                f32::from(palette_index) / 255.0,
-                0.0,
-                0.0,
-                EXACT_INDEX_ALPHA_SENTINEL,
-            );
-        }
-        let srgba = color.to_srgba();
-        if srgba.alpha >= 1.0 - (0.5 / 255.0) {
-            return Color::srgba(srgba.red, srgba.green, srgba.blue, DIRECT_ALPHA_SENTINEL);
-        }
+fn final_overlay_color(
+    text: &DirectText,
+    target: &DirectStreamTarget,
+    gpu_palette: Option<&GpuPalettePipeline>,
+) -> Color {
+    if target.output_is_indexed {
+        return indexed_overlay_color(text, target, gpu_palette);
     }
-    color
+    raw_overlay_color(text)
 }
 
 fn lookup_palette_index(color: Srgba, lookup_entries: &[u8], direct: bool) -> Option<u8> {
@@ -580,37 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_source_overlay_marks_only_opaque_direct_text() {
-        let target = DirectStreamTarget {
-            camera: Entity::PLACEHOLDER,
-            overlay_camera: Entity::PLACEHOLDER,
-            image: Handle::default(),
-            output_image: Handle::default(),
-            output_is_indexed: true,
-            overlay_layer: 0,
-            raw_overlay_layer: Some(1),
-            width: 16,
-            height: 16,
-            fps: 30,
-        };
-
-        let marked = direct_source_overlay_color(
-            &DirectText::new("!", 0, 0).with_color(Srgba::RED),
-            &target,
-        )
-        .to_srgba();
-        assert!((marked.alpha - DIRECT_ALPHA_SENTINEL).abs() < 0.0001);
-
-        let transparent = direct_source_overlay_color(
-            &DirectText::new("!", 0, 0).with_color(Srgba::new(1.0, 0.0, 0.0, 0.5)),
-            &target,
-        )
-        .to_srgba();
-        assert!((transparent.alpha - 0.5).abs() < 0.0001);
-    }
-
-    #[test]
-    fn explicit_palette_index_uses_exact_index_source_sentinel() {
+    fn explicit_palette_index_uses_final_index_overlay_even_with_raw_layer() {
         let target = DirectStreamTarget {
             camera: Entity::PLACEHOLDER,
             overlay_camera: Entity::PLACEHOLDER,
@@ -627,8 +537,8 @@ mod tests {
             .with_color(Srgba::RED)
             .with_palette_index(37);
 
-        let color = direct_source_overlay_color(&text, &target).to_linear();
+        let color = final_overlay_color(&text, &target, None).to_linear();
         assert!((color.red - (37.0 / 255.0)).abs() < 0.0001);
-        assert!((color.alpha - EXACT_INDEX_ALPHA_SENTINEL).abs() < 0.0001);
+        assert!((color.alpha - 1.0).abs() < 0.0001);
     }
 }

@@ -1,40 +1,30 @@
 use crate::{
-    gpu_palette::{GpuPalettePipeline, make_lookup_texture_from_entries, make_palette_texture},
+    gpu_palette::GpuPalettePipeline,
+    palette_lut::LUT_ENTRY_COUNT,
     public_types::{DirectColorLookup, DirectStreamTarget},
 };
 use bevy::{
-    asset::{RenderAssetUsages, load_internal_asset, uuid_handle},
+    asset::RenderAssetUsages,
     camera::visibility::RenderLayers,
-    light::{NotShadowCaster, NotShadowReceiver},
-    mesh::Indices,
+    image::ImageSampler,
     prelude::*,
-    reflect::TypePath,
-    render::{
-        alpha::AlphaMode,
-        render_resource::{AsBindGroup, PrimitiveTopology},
-    },
-    shader::{Shader, ShaderRef},
+    render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
     transform::TransformSystems,
 };
 use std::collections::{HashMap, HashSet};
 
-const DIRECT_WORLD_SPRITE_SHADER_HANDLE: Handle<Shader> =
-    uuid_handle!("90a42887-6f03-4a30-b322-466a5b1b30e8");
+const DIRECT_ALPHA_SENTINEL: u8 = 254;
+const OPAQUE_ALPHA_THRESHOLD: u8 = 254;
+const SPRITE_TEXT_Z_CEILING: f32 = -0.1;
+const SPRITE_BASE_Z: f32 = -100.0;
+const ALWAYS_ON_TOP_BASE_Z: f32 = -10.0;
 
 pub struct DirectWorldSpritePlugin;
 
 impl Plugin for DirectWorldSpritePlugin {
     fn build(&self, app: &mut App) {
-        load_internal_asset!(
-            app,
-            DIRECT_WORLD_SPRITE_SHADER_HANDLE,
-            "../assets/shaders/direct_world_sprite.wgsl",
-            Shader::from_wgsl
-        );
-
         app.init_resource::<DirectWorldSpriteSettings>()
-            .init_resource::<DirectWorldSpriteFallbackTextures>()
-            .add_plugins(MaterialPlugin::<DirectWorldSpriteMaterial>::default())
+            .init_resource::<DirectWorldSpriteOverlayCache>()
             .add_systems(
                 PostUpdate,
                 sync_direct_world_sprites.after(TransformSystems::Propagate),
@@ -143,91 +133,85 @@ struct AtlasFrame {
     size: UVec2,
 }
 
-#[derive(Component)]
-struct DirectWorldSpriteRender {
-    material: Handle<DirectWorldSpriteMaterial>,
-    mesh: Handle<Mesh>,
-    image: Handle<Image>,
-    atlas: Option<Handle<TextureAtlasLayout>>,
-    atlas_index: usize,
-    atlas_frame: Option<AtlasFrame>,
-    depth_mode: SpriteDepthMode,
+#[derive(Component, Clone, Copy)]
+struct DirectWorldSpriteOverlay;
+
+#[derive(Clone)]
+struct DirectWorldSpriteOverlayState {
+    raw_entity: Entity,
+    indexed_entity: Option<Entity>,
+    raw_image: Handle<Image>,
+    indexed_image: Option<Handle<Image>>,
 }
 
-#[derive(Default)]
-struct DirectWorldSpriteRenderMap(HashMap<Entity, Entity>);
+#[derive(Resource, Default)]
+struct DirectWorldSpriteOverlayCache {
+    entries: HashMap<Entity, DirectWorldSpriteOverlayState>,
+}
+
+struct BuiltSpriteImages {
+    raw_image: Handle<Image>,
+    indexed_image: Option<Handle<Image>>,
+    source_size: UVec2,
+}
 
 fn sync_direct_world_sprites(
     mut commands: Commands,
     settings: Res<DirectWorldSpriteSettings>,
     target: Res<DirectStreamTarget>,
-    mut queries: ParamSet<(
-        Query<(&Camera, &GlobalTransform, Option<&RenderLayers>)>,
-        Query<(Entity, &DirectWorldSprite, &GlobalTransform), Without<DirectWorldSpriteRender>>,
-        Query<(
-            &mut DirectWorldSpriteRender,
-            &mut Mesh3d,
-            &mut MeshMaterial3d<DirectWorldSpriteMaterial>,
-            &mut Transform,
-            &mut Visibility,
-        )>,
-    )>,
-    mut render_map: Local<DirectWorldSpriteRenderMap>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<DirectWorldSpriteMaterial>>,
+    camera_query: Query<(&Camera, Ref<GlobalTransform>, Option<&RenderLayers>)>,
+    sprites: Query<(Entity, Ref<DirectWorldSprite>, Ref<GlobalTransform>)>,
+    mut removed_sprites: RemovedComponents<DirectWorldSprite>,
+    mut cache: ResMut<DirectWorldSpriteOverlayCache>,
     atlases: Res<Assets<TextureAtlasLayout>>,
-    images: Res<Assets<Image>>,
+    mut images: ResMut<Assets<Image>>,
     gpu_palette: Option<Res<GpuPalettePipeline>>,
-    fallback_textures: Res<DirectWorldSpriteFallbackTextures>,
 ) {
-    let (camera, camera_transform, camera_layers) = {
-        let camera_query = queries.p0();
-        let Ok((camera, camera_transform, camera_layers)) = camera_query.get(target.camera) else {
-            return;
-        };
-        (camera.clone(), *camera_transform, camera_layers.cloned())
+    let Ok((camera, camera_transform, _)) = camera_query.get(target.camera) else {
+        return;
     };
 
-    let source_sprites = queries
-        .p1()
-        .iter()
-        .map(|(entity, sprite, transform)| (entity, sprite.clone(), *transform))
-        .collect::<Vec<_>>();
-
-    let active_owners = source_sprites
-        .iter()
-        .map(|(entity, _, _)| *entity)
-        .collect::<HashSet<_>>();
-
-    render_map.0.retain(|owner, render_entity| {
-        let keep = active_owners.contains(owner);
-        if !keep {
-            commands.entity(*render_entity).despawn();
+    let removed_owners: HashSet<Entity> = removed_sprites.read().collect();
+    if !removed_owners.is_empty() {
+        for owner in &removed_owners {
+            despawn_overlay_state(&mut commands, &mut images, cache.entries.remove(owner));
         }
-        keep
-    });
+    }
 
     if !settings.enabled {
-        for render_entity in render_map.0.values().copied() {
-            if let Ok((_, _, _, _, mut visibility)) = queries.p2().get_mut(render_entity) {
-                *visibility = Visibility::Hidden;
-            }
-        }
+        clear_overlay_cache(&mut commands, &mut images, &mut cache);
         return;
     }
 
-    let render_layers = camera_layers.unwrap_or_else(|| RenderLayers::layer(0));
+    let active_owners: HashSet<Entity> = sprites.iter().map(|(entity, _, _)| entity).collect();
+    let stale_owners = cache
+        .entries
+        .keys()
+        .filter(|owner| !active_owners.contains(owner))
+        .copied()
+        .collect::<Vec<_>>();
+    for owner in stale_owners {
+        despawn_overlay_state(&mut commands, &mut images, cache.entries.remove(&owner));
+    }
 
+    let target_changed = target.is_changed();
+    let palette_changed = gpu_palette
+        .as_ref()
+        .map(|pipeline| pipeline.is_changed())
+        .unwrap_or(false);
+    let overlay_layer = RenderLayers::layer(target.overlay_layer);
+    let raw_overlay_layer = target.raw_overlay_layer.map(RenderLayers::layer);
     let mut visible_count = 0usize;
-    for (owner, sprite, owner_transform) in &source_sprites {
-        let atlas_frame = atlas_frame(sprite, &atlases);
-        let pixel_size = integer_scaled_pixel_size(sprite, atlas_frame, &images);
-        let render_transform = if visible_count < settings.max_sprites {
-            project_world_sprite(
-                sprite,
+
+    for (owner, sprite, owner_transform) in &sprites {
+        let atlas_frame = atlas_frame(&sprite, &atlases);
+        let pixel_size = integer_scaled_pixel_size(&sprite, atlas_frame, &images);
+        let projected = if visible_count < settings.max_sprites {
+            project_world_sprite_overlay(
+                &sprite,
                 pixel_size,
-                owner_transform,
-                &camera,
+                &owner_transform,
+                camera,
                 &camera_transform,
                 &target,
             )
@@ -235,110 +219,158 @@ fn sync_direct_world_sprites(
             None
         };
 
-        let Some(render_transform) = render_transform else {
-            if let Some(render_entity) = render_map.0.get(owner).copied()
-                && let Ok((_, _, _, _, mut visibility)) = queries.p2().get_mut(render_entity)
-            {
-                *visibility = Visibility::Hidden;
-            }
+        let Some(projected) = projected else {
+            hide_overlay_state(&mut commands, cache.entries.get(&owner));
             continue;
         };
-
         visible_count += 1;
-        let render_entity = if let Some(render_entity) = render_map.0.get(owner).copied() {
-            render_entity
-        } else {
-            let mesh = meshes.add(sprite_mesh(atlas_frame));
-            let material = materials.add(sprite_material(
-                sprite,
-                target.output_is_indexed,
-                gpu_palette.as_deref(),
-                &fallback_textures,
-            ));
-            let render_entity = commands
-                .spawn((
-                    Mesh3d(mesh.clone()),
-                    MeshMaterial3d(material.clone()),
-                    render_transform,
-                    Visibility::Visible,
-                    render_layers.clone(),
-                    NotShadowCaster,
-                    NotShadowReceiver,
-                    DirectWorldSpriteRender {
-                        material,
-                        mesh,
-                        image: sprite.image.clone(),
-                        atlas: sprite.atlas.clone(),
-                        atlas_index: sprite.atlas_index,
-                        atlas_frame,
-                        depth_mode: sprite.depth_mode,
-                    },
-                ))
-                .id();
-            render_map.0.insert(*owner, render_entity);
-            continue;
-        };
 
-        {
-            let mut render_query = queries.p2();
-            let Ok((mut render, mut mesh, mut material, mut transform, mut visibility)) =
-                render_query.get_mut(render_entity)
-            else {
-                render_map.0.remove(owner);
+        let needs_rebuild = target_changed
+            || palette_changed
+            || sprite.is_changed()
+            || !cache.entries.contains_key(&owner);
+
+        if needs_rebuild {
+            despawn_overlay_state(&mut commands, &mut images, cache.entries.remove(&owner));
+            let Some(built_images) = build_overlay_images(
+                &sprite,
+                atlas_frame,
+                &target,
+                gpu_palette.as_deref(),
+                &mut images,
+            ) else {
                 continue;
             };
-
-            if render.image != sprite.image
-                || render.atlas != sprite.atlas
-                || render.atlas_index != sprite.atlas_index
-                || render.atlas_frame != atlas_frame
-            {
-                let next_mesh = meshes.add(sprite_mesh(atlas_frame));
-                mesh.0 = next_mesh.clone();
-                render.mesh = next_mesh;
-                render.image = sprite.image.clone();
-                render.atlas = sprite.atlas.clone();
-                render.atlas_index = sprite.atlas_index;
-                render.atlas_frame = atlas_frame;
-            }
-
-            render.depth_mode = sprite.depth_mode;
-            if render.material != material.0 {
-                material.0 = render.material.clone();
-            }
-
-            if let Some(existing_material) = materials.get_mut(&render.material) {
-                existing_material.tint = sprite_tint(sprite, sprite.tint, target.output_is_indexed);
-                existing_material.texture = sprite.image.clone();
-                existing_material.params =
-                    sprite_params(sprite, target.output_is_indexed, gpu_palette.as_deref());
-                existing_material.palette_texture = gpu_palette
-                    .as_deref()
-                    .map(|pipeline| pipeline.palette_texture.clone())
-                    .unwrap_or_else(|| fallback_textures.palette_texture.clone());
-                existing_material.lookup_texture = gpu_palette
-                    .as_deref()
-                    .map(|pipeline| pipeline.lookup_texture.clone())
-                    .unwrap_or_else(|| fallback_textures.lookup_texture.clone());
-                existing_material.alpha_mode = alpha_mode(sprite, target.output_is_indexed);
-                existing_material.depth_bias = material_depth_bias(sprite);
-            }
-
-            *transform = render_transform;
-            *visibility = Visibility::Visible;
+            let render_size = integer_scaled_size_for_source(&sprite, built_images.source_size);
+            let transform = projected.transform();
+            let raw_entity = spawn_overlay_sprite(
+                &mut commands,
+                built_images.raw_image.clone(),
+                raw_overlay_layer.as_ref().unwrap_or(&overlay_layer),
+                transform,
+                render_size,
+            );
+            let indexed_entity = built_images.indexed_image.as_ref().map(|indexed_image| {
+                spawn_overlay_sprite(
+                    &mut commands,
+                    indexed_image.clone(),
+                    &overlay_layer,
+                    transform,
+                    render_size,
+                )
+            });
+            cache.entries.insert(
+                owner,
+                DirectWorldSpriteOverlayState {
+                    raw_entity,
+                    indexed_entity,
+                    raw_image: built_images.raw_image,
+                    indexed_image: built_images.indexed_image,
+                },
+            );
+        } else if let Some(state) = cache.entries.get(&owner) {
+            let transform = projected.transform();
+            show_overlay_state(&mut commands, state, transform);
         }
-        commands.entity(render_entity).insert(render_layers.clone());
     }
 }
 
-fn project_world_sprite(
+fn spawn_overlay_sprite(
+    commands: &mut Commands,
+    image: Handle<Image>,
+    layer: &RenderLayers,
+    transform: Transform,
+    render_size: UVec2,
+) -> Entity {
+    commands
+        .spawn((
+            Sprite {
+                image,
+                color: Color::WHITE,
+                custom_size: Some(render_size.as_vec2()),
+                ..default()
+            },
+            transform,
+            Visibility::Visible,
+            layer.clone(),
+            DirectWorldSpriteOverlay,
+        ))
+        .id()
+}
+
+fn clear_overlay_cache(
+    commands: &mut Commands,
+    images: &mut Assets<Image>,
+    cache: &mut DirectWorldSpriteOverlayCache,
+) {
+    let owners = cache.entries.keys().copied().collect::<Vec<_>>();
+    for owner in owners {
+        despawn_overlay_state(commands, images, cache.entries.remove(&owner));
+    }
+}
+
+fn despawn_overlay_state(
+    commands: &mut Commands,
+    images: &mut Assets<Image>,
+    state: Option<DirectWorldSpriteOverlayState>,
+) {
+    let Some(state) = state else {
+        return;
+    };
+    commands.entity(state.raw_entity).despawn();
+    images.remove(&state.raw_image);
+    if let Some(indexed_entity) = state.indexed_entity {
+        commands.entity(indexed_entity).despawn();
+    }
+    if let Some(indexed_image) = state.indexed_image {
+        images.remove(&indexed_image);
+    }
+}
+
+fn hide_overlay_state(commands: &mut Commands, state: Option<&DirectWorldSpriteOverlayState>) {
+    let Some(state) = state else {
+        return;
+    };
+    commands.entity(state.raw_entity).insert(Visibility::Hidden);
+    if let Some(indexed_entity) = state.indexed_entity {
+        commands.entity(indexed_entity).insert(Visibility::Hidden);
+    }
+}
+
+fn show_overlay_state(
+    commands: &mut Commands,
+    state: &DirectWorldSpriteOverlayState,
+    transform: Transform,
+) {
+    commands
+        .entity(state.raw_entity)
+        .insert((transform, Visibility::Visible));
+    if let Some(indexed_entity) = state.indexed_entity {
+        commands
+            .entity(indexed_entity)
+            .insert((transform, Visibility::Visible));
+    }
+}
+
+struct ProjectedOverlaySprite {
+    center: Vec2,
+    z: f32,
+}
+
+impl ProjectedOverlaySprite {
+    fn transform(&self) -> Transform {
+        Transform::from_xyz(self.center.x, self.center.y, self.z)
+    }
+}
+
+fn project_world_sprite_overlay(
     sprite: &DirectWorldSprite,
     pixel_size: UVec2,
     owner_transform: &GlobalTransform,
     camera: &Camera,
     camera_transform: &GlobalTransform,
     target: &DirectStreamTarget,
-) -> Option<Transform> {
+) -> Option<ProjectedOverlaySprite> {
     if pixel_size.x == 0 || pixel_size.y == 0 {
         return None;
     }
@@ -359,96 +391,166 @@ fn project_world_sprite(
     let snapped_anchor = Vec2::new(projected.x.floor(), projected.y.floor()) + Vec2::splat(0.5);
     let pixel_size = pixel_size.as_vec2();
     let center_viewport = snapped_anchor + (Vec2::splat(0.5) - sprite.anchor) * pixel_size;
-    let rotation = sprite_rotation(sprite.facing, anchor_world, camera_transform);
-    let plane_normal = rotation * Vec3::Z;
-    let render_anchor_world =
-        anchor_world + camera_transform.forward().as_vec3() * world_depth_bias(sprite);
-    let center_world = intersect_viewport_ray_with_plane(
-        camera,
-        camera_transform,
-        center_viewport,
-        render_anchor_world,
-        plane_normal,
-    )?;
-    let half_size = pixel_size * 0.5;
-    let left_world = intersect_viewport_ray_with_plane(
-        camera,
-        camera_transform,
-        center_viewport - Vec2::X * half_size.x,
-        render_anchor_world,
-        plane_normal,
-    )?;
-    let right_world = intersect_viewport_ray_with_plane(
-        camera,
-        camera_transform,
-        center_viewport + Vec2::X * half_size.x,
-        render_anchor_world,
-        plane_normal,
-    )?;
-    let top_world = intersect_viewport_ray_with_plane(
-        camera,
-        camera_transform,
-        center_viewport - Vec2::Y * half_size.y,
-        render_anchor_world,
-        plane_normal,
-    )?;
-    let bottom_world = intersect_viewport_ray_with_plane(
-        camera,
-        camera_transform,
-        center_viewport + Vec2::Y * half_size.y,
-        render_anchor_world,
-        plane_normal,
-    )?;
+    let left = -(target.width as f32) * 0.5;
+    let top = target.height as f32 * 0.5;
 
-    Some(Transform {
-        translation: center_world,
-        rotation,
-        scale: Vec3::new(
-            left_world.distance(right_world).max(0.0001),
-            top_world.distance(bottom_world).max(0.0001),
-            1.0,
-        ),
+    Some(ProjectedOverlaySprite {
+        center: Vec2::new(left + center_viewport.x, top - center_viewport.y),
+        z: overlay_z(sprite, projected.z),
     })
 }
 
-fn sprite_rotation(
-    facing: SpriteFacing,
-    anchor_world: Vec3,
-    camera_transform: &GlobalTransform,
-) -> Quat {
-    match facing {
-        SpriteFacing::FaceStreamCamera => camera_transform.rotation(),
-        SpriteFacing::LockY => {
-            let camera_position = camera_transform.translation();
-            let look_target = Vec3::new(camera_position.x, anchor_world.y, camera_position.z);
-            if look_target.distance_squared(anchor_world) <= f32::EPSILON {
-                return camera_transform.rotation();
-            }
-            Transform::from_translation(anchor_world)
-                .looking_at(look_target, Vec3::Y)
-                .rotation
+fn overlay_z(sprite: &DirectWorldSprite, projected_depth: f32) -> f32 {
+    let depth_bias = sprite.depth_bias.clamp(-1000.0, 1000.0);
+    let z = match sprite.depth_mode {
+        SpriteDepthMode::AlwaysOnTopBeforeText => ALWAYS_ON_TOP_BASE_Z + depth_bias,
+        SpriteDepthMode::TestAgainstScene | SpriteDepthMode::TestAndWrite => {
+            SPRITE_BASE_Z - projected_depth + depth_bias
         }
+    };
+    z.min(SPRITE_TEXT_Z_CEILING)
+}
+
+fn build_overlay_images(
+    sprite: &DirectWorldSprite,
+    atlas_frame: Option<AtlasFrame>,
+    target: &DirectStreamTarget,
+    gpu_palette: Option<&GpuPalettePipeline>,
+    images: &mut Assets<Image>,
+) -> Option<BuiltSpriteImages> {
+    let source_image = images.get(&sprite.image)?;
+    let source_rect = sprite_source_rect(atlas_frame, source_image)?;
+    let source_size = source_rect.size();
+    if source_size.x == 0 || source_size.y == 0 {
+        return None;
+    }
+
+    let pixel_count = source_size.x as usize * source_size.y as usize;
+    let mut raw_data = vec![0u8; pixel_count * 4];
+    let mut indexed_data = vec![0u8; pixel_count * 4];
+    let mut has_indexed_pixels = false;
+    let tint = sprite.tint.to_srgba();
+    let direct_lookup = target.output_is_indexed
+        && sprite.color_lookup == DirectColorLookup::Direct
+        && gpu_palette
+            .map(|pipeline| pipeline.lookup_entries.len() >= LUT_ENTRY_COUNT.saturating_mul(2))
+            .unwrap_or(false);
+
+    for y in 0..source_size.y {
+        for x in 0..source_size.x {
+            let Some(source_pixel) =
+                read_image_pixel(source_image, source_rect.min.x + x, source_rect.min.y + y)
+            else {
+                continue;
+            };
+            let pixel = tint_pixel(source_pixel, tint);
+            let offset = ((y as usize * source_size.x as usize) + x as usize) * 4;
+            let raw_alpha = if direct_lookup && pixel[3] >= OPAQUE_ALPHA_THRESHOLD {
+                DIRECT_ALPHA_SENTINEL
+            } else {
+                pixel[3]
+            };
+            raw_data[offset..offset + 4]
+                .copy_from_slice(&[pixel[0], pixel[1], pixel[2], raw_alpha]);
+
+            if direct_lookup
+                && pixel[3] >= OPAQUE_ALPHA_THRESHOLD
+                && let Some(pipeline) = gpu_palette
+                && let Some(index) = lookup_direct_palette_index(
+                    pixel[0],
+                    pixel[1],
+                    pixel[2],
+                    &pipeline.lookup_entries,
+                )
+            {
+                indexed_data[offset..offset + 4].copy_from_slice(&[index, 0, 0, 255]);
+                has_indexed_pixels = true;
+            }
+        }
+    }
+
+    let raw_image = images.add(make_overlay_image(
+        source_size,
+        raw_data,
+        TextureFormat::Rgba8UnormSrgb,
+    ));
+    let indexed_image = has_indexed_pixels.then(|| {
+        images.add(make_overlay_image(
+            source_size,
+            indexed_data,
+            TextureFormat::Rgba8Unorm,
+        ))
+    });
+
+    Some(BuiltSpriteImages {
+        raw_image,
+        indexed_image,
+        source_size,
+    })
+}
+
+fn make_overlay_image(size: UVec2, data: Vec<u8>, format: TextureFormat) -> Image {
+    let mut image = Image::new_fill(
+        Extent3d {
+            width: size.x.max(1),
+            height: size.y.max(1),
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &data,
+        format,
+        RenderAssetUsages::default(),
+    );
+    image.texture_descriptor.usage =
+        TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::COPY_SRC;
+    image.sampler = ImageSampler::nearest();
+    image
+}
+
+fn sprite_source_rect(atlas_frame: Option<AtlasFrame>, image: &Image) -> Option<URect> {
+    if let Some(frame) = atlas_frame {
+        return Some(frame.rect);
+    }
+
+    let size = image.texture_descriptor.size;
+    (size.width > 0 && size.height > 0).then_some(URect::from_corners(
+        UVec2::ZERO,
+        UVec2::new(size.width, size.height),
+    ))
+}
+
+fn read_image_pixel(image: &Image, x: u32, y: u32) -> Option<[u8; 4]> {
+    let data = image.data.as_ref()?;
+    let width = image.texture_descriptor.size.width as usize;
+    let offset = ((y as usize * width) + x as usize).checked_mul(4)?;
+    let slice = data.get(offset..offset + 4)?;
+    match image.texture_descriptor.format {
+        TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb => {
+            Some([slice[0], slice[1], slice[2], slice[3]])
+        }
+        TextureFormat::Bgra8Unorm | TextureFormat::Bgra8UnormSrgb => {
+            Some([slice[2], slice[1], slice[0], slice[3]])
+        }
+        _ => None,
     }
 }
 
-fn intersect_viewport_ray_with_plane(
-    camera: &Camera,
-    camera_transform: &GlobalTransform,
-    viewport: Vec2,
-    plane_origin: Vec3,
-    plane_normal: Vec3,
-) -> Option<Vec3> {
-    let ray = camera.viewport_to_world(camera_transform, viewport).ok()?;
-    let normal = plane_normal.normalize_or_zero();
-    let denom = (*ray.direction).dot(normal);
-    if denom.abs() <= f32::EPSILON {
-        return None;
-    }
-    let distance = (plane_origin - ray.origin).dot(normal) / denom;
-    if !distance.is_finite() || distance <= 0.0 {
-        return None;
-    }
-    Some(ray.get_point(distance))
+fn tint_pixel(pixel: [u8; 4], tint: Srgba) -> [u8; 4] {
+    [
+        multiply_u8(pixel[0], tint.red),
+        multiply_u8(pixel[1], tint.green),
+        multiply_u8(pixel[2], tint.blue),
+        multiply_u8(pixel[3], tint.alpha),
+    ]
+}
+
+fn multiply_u8(value: u8, factor: f32) -> u8 {
+    ((value as f32 * factor.clamp(0.0, 1.0)).round()).clamp(0.0, 255.0) as u8
+}
+
+fn lookup_direct_palette_index(r: u8, g: u8, b: u8, lookup_entries: &[u8]) -> Option<u8> {
+    let offset = ((r as usize) << 16) | ((g as usize) << 8) | b as usize;
+    lookup_entries.get(LUT_ENTRY_COUNT + offset).copied()
 }
 
 fn atlas_frame(
@@ -470,10 +572,14 @@ fn integer_scaled_pixel_size(
     images: &Assets<Image>,
 ) -> UVec2 {
     let Some(base_size) = sprite_base_pixel_size(sprite, atlas_frame, images) else {
-        return sprite.pixel_size;
+        return sprite.pixel_size.max(UVec2::ONE);
     };
+    integer_scaled_size_for_source(sprite, base_size)
+}
+
+fn integer_scaled_size_for_source(sprite: &DirectWorldSprite, base_size: UVec2) -> UVec2 {
     if base_size.x == 0 || base_size.y == 0 {
-        return sprite.pixel_size;
+        return sprite.pixel_size.max(UVec2::ONE);
     }
 
     let requested = sprite.pixel_size.max(UVec2::ONE).as_vec2();
@@ -501,179 +607,11 @@ fn sprite_base_pixel_size(
     (size.width > 0 && size.height > 0).then_some(UVec2::new(size.width, size.height))
 }
 
-fn sprite_mesh(atlas_frame: Option<AtlasFrame>) -> Mesh {
-    let (u_min, v_min, u_max, v_max) = if let Some(frame) = atlas_frame {
-        let size = frame.size.as_vec2().max(Vec2::ONE);
-        let min = frame.rect.min.as_vec2() / size;
-        let max = frame.rect.max.as_vec2() / size;
-        (min.x, min.y, max.x, max.y)
-    } else {
-        (0.0, 0.0, 1.0, 1.0)
-    };
-
-    Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
-    )
-    .with_inserted_attribute(
-        Mesh::ATTRIBUTE_POSITION,
-        vec![
-            [-0.5, -0.5, 0.0],
-            [0.5, -0.5, 0.0],
-            [0.5, 0.5, 0.0],
-            [-0.5, 0.5, 0.0],
-        ],
-    )
-    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 0.0, 1.0]; 4])
-    .with_inserted_attribute(
-        Mesh::ATTRIBUTE_UV_0,
-        vec![
-            [u_min, v_max],
-            [u_max, v_max],
-            [u_max, v_min],
-            [u_min, v_min],
-        ],
-    )
-    .with_inserted_indices(Indices::U32(vec![0, 1, 2, 0, 2, 3]))
-}
-
-fn sprite_material(
-    sprite: &DirectWorldSprite,
-    output_is_indexed: bool,
-    gpu_palette: Option<&GpuPalettePipeline>,
-    fallback_textures: &DirectWorldSpriteFallbackTextures,
-) -> DirectWorldSpriteMaterial {
-    DirectWorldSpriteMaterial {
-        tint: sprite_tint(sprite, sprite.tint, output_is_indexed),
-        texture: sprite.image.clone(),
-        params: sprite_params(sprite, output_is_indexed, gpu_palette),
-        palette_texture: gpu_palette
-            .map(|pipeline| pipeline.palette_texture.clone())
-            .unwrap_or_else(|| fallback_textures.palette_texture.clone()),
-        lookup_texture: gpu_palette
-            .map(|pipeline| pipeline.lookup_texture.clone())
-            .unwrap_or_else(|| fallback_textures.lookup_texture.clone()),
-        alpha_mode: alpha_mode(sprite, output_is_indexed),
-        depth_bias: material_depth_bias(sprite),
-    }
-}
-
-#[derive(Resource, Clone)]
-struct DirectWorldSpriteFallbackTextures {
-    palette_texture: Handle<Image>,
-    lookup_texture: Handle<Image>,
-}
-
-impl FromWorld for DirectWorldSpriteFallbackTextures {
-    fn from_world(world: &mut World) -> Self {
-        let mut images = world.resource_mut::<Assets<Image>>();
-        Self {
-            palette_texture: images.add(make_palette_texture(&[[0, 0, 0, 255]])),
-            lookup_texture: images.add(make_lookup_texture_from_entries(&[0])),
-        }
-    }
-}
-
-#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
-struct DirectWorldSpriteMaterial {
-    #[uniform(0)]
-    tint: LinearRgba,
-    #[texture(1)]
-    #[sampler(2)]
-    texture: Handle<Image>,
-    #[uniform(3)]
-    params: Vec4,
-    #[texture(4)]
-    palette_texture: Handle<Image>,
-    #[texture(5, sample_type = "u_int")]
-    lookup_texture: Handle<Image>,
-    alpha_mode: AlphaMode,
-    depth_bias: f32,
-}
-
-impl Material for DirectWorldSpriteMaterial {
-    fn fragment_shader() -> ShaderRef {
-        ShaderRef::Handle(DIRECT_WORLD_SPRITE_SHADER_HANDLE)
-    }
-
-    fn alpha_mode(&self) -> AlphaMode {
-        self.alpha_mode
-    }
-
-    fn depth_bias(&self) -> f32 {
-        self.depth_bias
-    }
-
-    fn enable_shadows() -> bool {
-        false
-    }
-}
-
-fn sprite_tint(sprite: &DirectWorldSprite, tint: Color, _output_is_indexed: bool) -> LinearRgba {
-    if sprite.color_lookup == DirectColorLookup::Direct {
-        let tint_srgba = tint.to_srgba();
-        if tint_srgba.alpha >= 1.0 - (0.5 / 255.0) {
-            return LinearRgba::new(
-                tint_srgba.red,
-                tint_srgba.green,
-                tint_srgba.blue,
-                254.0 / 255.0,
-            );
-        }
-    }
-
-    tint.into()
-}
-
-fn sprite_params(
-    sprite: &DirectWorldSprite,
-    _output_is_indexed: bool,
-    gpu_palette: Option<&GpuPalettePipeline>,
-) -> Vec4 {
-    let direct_lookup = sprite.color_lookup == DirectColorLookup::Direct
-        && sprite.tint.to_srgba().alpha >= 1.0 - (0.5 / 255.0)
-        && gpu_palette.is_some();
-    let palette_count = gpu_palette
-        .map(|pipeline| pipeline.palette_count.max(1) as f32)
-        .unwrap_or(1.0);
-    Vec4::new(f32::from(direct_lookup), palette_count, 0.0, 0.0)
-}
-
-fn alpha_mode(sprite: &DirectWorldSprite, _output_is_indexed: bool) -> AlphaMode {
-    if sprite.color_lookup == DirectColorLookup::Direct
-        && sprite.tint.to_srgba().alpha >= 1.0 - (0.5 / 255.0)
-    {
-        return AlphaMode::Mask(0.01);
-    }
-
-    match sprite.depth_mode {
-        SpriteDepthMode::TestAgainstScene | SpriteDepthMode::AlwaysOnTopBeforeText => {
-            AlphaMode::Blend
-        }
-        SpriteDepthMode::TestAndWrite => AlphaMode::Mask(0.01),
-    }
-}
-
-fn world_depth_bias(sprite: &DirectWorldSprite) -> f32 {
-    match sprite.depth_mode {
-        SpriteDepthMode::AlwaysOnTopBeforeText => -sprite.depth_bias,
-        _ => 0.0,
-    }
-}
-
-fn material_depth_bias(sprite: &DirectWorldSprite) -> f32 {
-    match sprite.depth_mode {
-        SpriteDepthMode::AlwaysOnTopBeforeText => 0.0,
-        _ => sprite.depth_bias,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
-    fn test_image(width: u32, height: u32) -> Image {
+    fn test_image(width: u32, height: u32, pixel: [u8; 4], format: TextureFormat) -> Image {
         Image::new_fill(
             Extent3d {
                 width,
@@ -681,8 +619,8 @@ mod tests {
                 depth_or_array_layers: 1,
             },
             TextureDimension::D2,
-            &[0, 0, 0, 0],
-            TextureFormat::Rgba8UnormSrgb,
+            &pixel,
+            format,
             RenderAssetUsages::default(),
         )
     }
@@ -690,7 +628,12 @@ mod tests {
     #[test]
     fn world_sprite_sub_native_request_uses_native_integer_size() {
         let mut images = Assets::<Image>::default();
-        let handle = images.add(test_image(64, 33));
+        let handle = images.add(test_image(
+            64,
+            33,
+            [0, 0, 0, 0],
+            TextureFormat::Rgba8UnormSrgb,
+        ));
         let sprite = DirectWorldSprite::new(handle, UVec2::new(40, 21));
 
         assert_eq!(
@@ -702,7 +645,12 @@ mod tests {
     #[test]
     fn world_sprite_request_snaps_to_nearest_integer_scale() {
         let mut images = Assets::<Image>::default();
-        let handle = images.add(test_image(64, 33));
+        let handle = images.add(test_image(
+            64,
+            33,
+            [0, 0, 0, 0],
+            TextureFormat::Rgba8UnormSrgb,
+        ));
         let sprite = DirectWorldSprite::new(handle, UVec2::new(130, 70));
 
         assert_eq!(
@@ -727,55 +675,132 @@ mod tests {
     }
 
     #[test]
-    fn transparent_direct_sprite_uses_blended_alpha_mode() {
-        let sprite = DirectWorldSprite::new(Handle::default(), UVec2::splat(4))
-            .with_tint(Color::srgba(1.0, 0.0, 0.0, 0.5))
-            .with_color_lookup(DirectColorLookup::Direct)
-            .with_depth_mode(SpriteDepthMode::TestAgainstScene);
+    fn direct_lookup_uses_second_ipsmap_table() {
+        let mut entries = vec![0u8; LUT_ENTRY_COUNT * 2];
+        entries[LUT_ENTRY_COUNT + (1usize << 16) + (2usize << 8) + 3] = 77;
 
-        assert!(matches!(alpha_mode(&sprite, true), AlphaMode::Blend));
+        assert_eq!(lookup_direct_palette_index(1, 2, 3, &entries), Some(77));
     }
 
     #[test]
-    fn opaque_direct_sprite_uses_direct_alpha_sentinel() {
-        let sprite = DirectWorldSprite::new(Handle::default(), UVec2::splat(4))
-            .with_tint(Color::srgba(1.0, 0.0, 0.0, 1.0))
-            .with_color_lookup(DirectColorLookup::Direct);
+    fn opaque_direct_sprite_builds_indexed_output_texture() {
+        let mut images = Assets::<Image>::default();
+        let source = images.add(test_image(
+            1,
+            1,
+            [1, 2, 3, 255],
+            TextureFormat::Rgba8UnormSrgb,
+        ));
+        let mut entries = vec![0u8; LUT_ENTRY_COUNT * 2];
+        entries[LUT_ENTRY_COUNT + (1usize << 16) + (2usize << 8) + 3] = 42;
+        let pipeline = test_palette_pipeline(entries);
+        let target = test_target(true, Some(5));
+        let sprite =
+            DirectWorldSprite::new(source, UVec2::ONE).with_color_lookup(DirectColorLookup::Direct);
 
-        let tint = sprite_tint(&sprite, sprite.tint, false);
-        assert!((tint.alpha - 254.0 / 255.0).abs() < 0.0001);
+        let built = build_overlay_images(&sprite, None, &target, Some(&pipeline), &mut images)
+            .expect("sprite image should build");
+        let raw = images.get(&built.raw_image).unwrap();
+        let indexed = images.get(&built.indexed_image.unwrap()).unwrap();
 
-        let tint = sprite_tint(&sprite, sprite.tint, true);
-        assert!((tint.alpha - 254.0 / 255.0).abs() < 0.0001);
+        assert_eq!(
+            raw.data.as_ref().unwrap(),
+            &[1, 2, 3, DIRECT_ALPHA_SENTINEL]
+        );
+        assert_eq!(indexed.data.as_ref().unwrap(), &[42, 0, 0, 255]);
     }
 
     #[test]
-    fn opaque_direct_sprite_uses_masked_alpha_independent_of_output_mode() {
-        let sprite = DirectWorldSprite::new(Handle::default(), UVec2::splat(4))
-            .with_tint(Color::srgba(1.0, 0.0, 0.0, 1.0))
-            .with_color_lookup(DirectColorLookup::Direct)
-            .with_depth_mode(SpriteDepthMode::TestAgainstScene);
+    fn transparent_direct_sprite_does_not_build_indexed_output_texture() {
+        let mut images = Assets::<Image>::default();
+        let source = images.add(test_image(
+            1,
+            1,
+            [1, 2, 3, 128],
+            TextureFormat::Rgba8UnormSrgb,
+        ));
+        let entries = vec![0u8; LUT_ENTRY_COUNT * 2];
+        let pipeline = test_palette_pipeline(entries);
+        let target = test_target(true, Some(5));
+        let sprite =
+            DirectWorldSprite::new(source, UVec2::ONE).with_color_lookup(DirectColorLookup::Direct);
 
-        assert!(matches!(alpha_mode(&sprite, false), AlphaMode::Mask(_)));
-        assert!(matches!(alpha_mode(&sprite, true), AlphaMode::Mask(_)));
+        let built = build_overlay_images(&sprite, None, &target, Some(&pipeline), &mut images)
+            .expect("sprite image should build");
+        let raw = images.get(&built.raw_image).unwrap();
+
+        assert_eq!(raw.data.as_ref().unwrap(), &[1, 2, 3, 128]);
+        assert!(built.indexed_image.is_none());
     }
 
     #[test]
-    fn direct_sprite_shader_premaps_opaque_texels_without_alpha_marker_gate() {
-        let shader = include_str!("../assets/shaders/direct_world_sprite.wgsl");
+    fn altered_sprite_does_not_build_indexed_output_texture() {
+        let mut images = Assets::<Image>::default();
+        let source = images.add(test_image(
+            1,
+            1,
+            [1, 2, 3, 255],
+            TextureFormat::Rgba8UnormSrgb,
+        ));
+        let entries = vec![0u8; LUT_ENTRY_COUNT * 2];
+        let pipeline = test_palette_pipeline(entries);
+        let target = test_target(true, Some(5));
+        let sprite = DirectWorldSprite::new(source, UVec2::ONE)
+            .with_color_lookup(DirectColorLookup::Altered);
 
-        assert!(shader.contains("if direct_opaque_pixel {"));
-        assert!(shader.contains("return vec4<f32>(lookup_direct_palette_color(color.rgb), 1.0);"));
-        assert!(!shader.contains("direct_opaque_pixel && params.x"));
+        let built = build_overlay_images(&sprite, None, &target, Some(&pipeline), &mut images)
+            .expect("sprite image should build");
+        let raw = images.get(&built.raw_image).unwrap();
+
+        assert_eq!(raw.data.as_ref().unwrap(), &[1, 2, 3, 255]);
+        assert!(built.indexed_image.is_none());
     }
 
     #[test]
-    fn always_on_top_depth_bias_moves_toward_camera() {
+    fn depth_bias_stays_below_direct_text_overlay() {
         let sprite = DirectWorldSprite::new(Handle::default(), UVec2::splat(4))
             .with_depth_mode(SpriteDepthMode::AlwaysOnTopBeforeText)
             .with_depth_bias(5.0);
 
-        assert_eq!(world_depth_bias(&sprite), -5.0);
-        assert_eq!(material_depth_bias(&sprite), 0.0);
+        assert!(overlay_z(&sprite, 0.5) < 0.0);
+    }
+
+    fn test_target(
+        output_is_indexed: bool,
+        raw_overlay_layer: Option<usize>,
+    ) -> DirectStreamTarget {
+        DirectStreamTarget {
+            camera: Entity::PLACEHOLDER,
+            overlay_camera: Entity::PLACEHOLDER,
+            image: Handle::default(),
+            output_image: Handle::default(),
+            output_is_indexed,
+            overlay_layer: 2,
+            raw_overlay_layer,
+            width: 320,
+            height: 180,
+            fps: 30,
+        }
+    }
+
+    fn test_palette_pipeline(entries: Vec<u8>) -> GpuPalettePipeline {
+        GpuPalettePipeline {
+            material: Handle::default(),
+            source_copy_material: Handle::default(),
+            palette_texture: Handle::default(),
+            lookup_texture: Handle::default(),
+            source_copy_camera: Entity::PLACEHOLDER,
+            palette_camera: Entity::PLACEHOLDER,
+            raw_overlay_camera: Entity::PLACEHOLDER,
+            overlay_camera: Entity::PLACEHOLDER,
+            source_copy_quad_entity: Entity::PLACEHOLDER,
+            quad_entity: Entity::PLACEHOLDER,
+            source_images: Vec::new(),
+            output_images: Vec::new(),
+            current_output_index: 0,
+            palette_count: 256,
+            palette_colors: Vec::new(),
+            lookup_entries: std::sync::Arc::from(entries.into_boxed_slice()),
+        }
     }
 }

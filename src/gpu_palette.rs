@@ -381,6 +381,7 @@ pub(crate) fn spawn_custom_host_pipeline(
     let source_copy_camera = commands
         .spawn((
             Camera2d,
+            Msaa::Off,
             Camera {
                 order: 0,
                 clear_color: ClearColorConfig::Custom(Color::BLACK),
@@ -394,6 +395,7 @@ pub(crate) fn spawn_custom_host_pipeline(
     let palette_camera = commands
         .spawn((
             Camera2d,
+            Msaa::Off,
             Camera {
                 order: 2,
                 clear_color: ClearColorConfig::Custom(Color::BLACK),
@@ -407,6 +409,7 @@ pub(crate) fn spawn_custom_host_pipeline(
     let raw_overlay_camera = commands
         .spawn((
             Camera2d,
+            Msaa::Off,
             Camera {
                 order: 1,
                 clear_color: ClearColorConfig::None,
@@ -421,6 +424,7 @@ pub(crate) fn spawn_custom_host_pipeline(
     let overlay_camera = commands
         .spawn((
             Camera2d,
+            Msaa::Off,
             Camera {
                 order: 3,
                 clear_color: ClearColorConfig::None,

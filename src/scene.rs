@@ -449,6 +449,7 @@ pub(crate) struct PreviewPixelDebugState {
     validation_quantized_data: Option<Vec<u8>>,
     pixel_debug_raw: Option<RawPixelDebug>,
     pixel_debug_quantized: Option<QuantizedPixelDebug>,
+    pixel_debug_clicked_source: Option<PreviewPixelSource>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -716,6 +717,7 @@ fn spawn_preview_comparison(
             validation_quantized_data: None,
             pixel_debug_raw: None,
             pixel_debug_quantized: None,
+            pixel_debug_clicked_source: None,
         },
     )
 }
@@ -1567,7 +1569,7 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
         return;
     }
 
-    let Some((_source, x, y)) = preview_sample_from_world(
+    let Some((source, x, y)) = preview_sample_from_world(
         world_position,
         &debug_state,
         config.stream_width,
@@ -1575,6 +1577,13 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
     ) else {
         return;
     };
+    commands.queue(move |world: &mut World| {
+        if let Some(mut debug_state) = world.get_resource_mut::<PreviewPixelDebugState>() {
+            debug_state.pixel_debug_clicked_source = Some(source);
+            debug_state.pixel_debug_raw = None;
+            debug_state.pixel_debug_quantized = None;
+        }
+    });
 
     commands
         .spawn(PreviewPixelDebugReadback {
@@ -2114,6 +2123,7 @@ fn commit_loaded_preview_lookup_to_pipeline(
         debug_state.validation_quantized_data = None;
         debug_state.pixel_debug_raw = None;
         debug_state.pixel_debug_quantized = None;
+        debug_state.pixel_debug_clicked_source = None;
     }
 }
 
@@ -2222,6 +2232,7 @@ pub(crate) fn process_preview_palette_rebake(
                 debug_state.validation_quantized_data = None;
                 debug_state.pixel_debug_raw = None;
                 debug_state.pixel_debug_quantized = None;
+                debug_state.pixel_debug_clicked_source = None;
             }
         }
         update_preview_palette_materials_for_gpu(
@@ -3092,7 +3103,11 @@ fn handle_preview_pixel_debug_readback(
             .pixel_debug_quantized
             .take()
             .expect("quantized pixel debug checked above");
-        debug_state.output = preview_pixel_pair_text(&raw, &quantized);
+        let clicked_source = debug_state
+            .pixel_debug_clicked_source
+            .take()
+            .unwrap_or(PreviewPixelSource::Raw);
+        debug_state.output = preview_pixel_pair_text(&raw, &quantized, clicked_source);
     }
     commands.entity(event.entity).despawn();
 }
@@ -3121,6 +3136,7 @@ pub(crate) fn request_preview_palette_validation(
     debug_state.validation_quantized_data = None;
     debug_state.pixel_debug_raw = None;
     debug_state.pixel_debug_quantized = None;
+    debug_state.pixel_debug_clicked_source = None;
     let raw_image = debug_state.raw_image.clone();
     let quantized_image = debug_state.quantized_image.clone();
     commands
@@ -3378,12 +3394,29 @@ fn preview_quantized_pixel_debug(
     }
 }
 
-fn preview_pixel_pair_text(raw: &RawPixelDebug, quantized: &QuantizedPixelDebug) -> String {
-    let expected_index = raw
-        .expected_index
-        .map(|index| index.to_string())
-        .unwrap_or_else(|| "out of range".to_owned());
-    let expected_color = raw.expected_color;
+fn preview_pixel_pair_text(
+    raw: &RawPixelDebug,
+    quantized: &QuantizedPixelDebug,
+    clicked_source: PreviewPixelSource,
+) -> String {
+    let clicked_after = clicked_source == PreviewPixelSource::Quantized;
+    let expected_index = if clicked_after {
+        quantized.palette_index.to_string()
+    } else {
+        raw.expected_index
+            .map(|index| index.to_string())
+            .unwrap_or_else(|| "out of range".to_owned())
+    };
+    let expected_color = if clicked_after {
+        quantized.color
+    } else {
+        raw.expected_color
+    };
+    let lookup_route = if clicked_after {
+        "actual after/output index"
+    } else {
+        raw.lookup_route.label()
+    };
     let raw_oklab = rgb_to_oklab(raw.r, raw.g, raw.b);
     let quantized_oklab = rgb_to_oklab(quantized.color[0], quantized.color[1], quantized.color[2]);
     let delta_l = raw_oklab.l - quantized_oklab.l;
@@ -3412,7 +3445,7 @@ fn preview_pixel_pair_text(raw: &RawPixelDebug, quantized: &QuantizedPixelDebug)
         quantized.color[0],
         quantized.color[1],
         quantized.color[2],
-        raw.lookup_route.label(),
+        lookup_route,
         expected_index,
         expected_color[0],
         expected_color[1],

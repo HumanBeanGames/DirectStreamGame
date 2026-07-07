@@ -372,9 +372,8 @@ fn project_world_sprite_overlay(
         return None;
     }
 
-    let snapped_anchor = Vec2::new(projected.x.floor(), projected.y.floor()) + Vec2::splat(0.5);
     let pixel_size = pixel_size.as_vec2();
-    let center_viewport = snapped_anchor + (Vec2::splat(0.5) - sprite.anchor) * pixel_size;
+    let center_viewport = sprite_center_from_projected_anchor(projected, sprite.anchor, pixel_size);
     let left = -(target.width as f32) * 0.5;
     let top = target.height as f32 * 0.5;
 
@@ -385,6 +384,15 @@ fn project_world_sprite_overlay(
             camera_transform.translation().distance(anchor_world),
         ),
     })
+}
+
+fn sprite_center_from_projected_anchor(
+    projected_anchor: Vec2,
+    anchor: Vec2,
+    pixel_size: Vec2,
+) -> Vec2 {
+    let top_left = (projected_anchor - anchor * pixel_size).floor();
+    top_left + pixel_size * 0.5
 }
 
 fn overlay_z(sprite: &DirectWorldSprite, projected_depth: f32) -> f32 {
@@ -644,6 +652,18 @@ mod tests {
             integer_scaled_pixel_size(&sprite, Some(frame), &images),
             UVec2::new(42, 30)
         );
+    }
+
+    #[test]
+    fn projected_sprite_pixels_land_on_pixel_centers_for_even_sizes() {
+        let projected_anchor = Vec2::new(100.3, 50.8);
+        let size = Vec2::new(64.0, 33.0);
+        let anchor = Vec2::new(0.5, 1.0);
+        let center = sprite_center_from_projected_anchor(projected_anchor, anchor, size);
+        let first_pixel_center = center - size * 0.5 + Vec2::splat(0.5);
+
+        assert_eq!(first_pixel_center.x.fract(), 0.5);
+        assert_eq!(first_pixel_center.y.fract(), 0.5);
     }
 
     #[test]

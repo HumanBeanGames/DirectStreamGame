@@ -9,6 +9,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+const LOCAL_COMMAND_CHAT_TTL_MS: u64 = 30_000;
+
 #[derive(Message, Clone)]
 pub struct StreamChatMessage {
     pub user: String,
@@ -211,6 +213,7 @@ impl LocalChatHub {
 
         let display_name = display_name_for_identity_hash(&mut state, &identity_hash);
         let text = message.into();
+        let ttl_ms = parse_stream_command(&text).map(|_| LOCAL_COMMAND_CHAT_TTL_MS);
         let entry = LocalChatEntry {
             id: state.next_id,
             user: identity_hash.clone(),
@@ -218,7 +221,7 @@ impl LocalChatHub {
             mentions: mentions_from_text(&text),
             text,
             created_at_ms: current_time_millis(),
-            ttl_ms: None,
+            ttl_ms,
             audience: ChatAudience::All,
             display_name_color: Some(display_name_color_from_hash(&identity_hash)),
             message_color: None,
@@ -806,5 +809,27 @@ mod tests {
         let (_, second) = hub.viewer_for_identity("device:test-device");
         assert_ne!(first, second);
         assert!(second.starts_with("Two-"));
+    }
+
+    #[test]
+    fn non_command_local_chat_entries_do_not_expire() {
+        let hub = LocalChatHub::default();
+
+        hub.submit("device:test-device", "hello market").unwrap();
+        let entries = hub.entries_after(0, None, None);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].ttl_ms, None);
+    }
+
+    #[test]
+    fn command_local_chat_entries_expire() {
+        let hub = LocalChatHub::default();
+
+        hub.submit("device:test-device", "!where").unwrap();
+        let entries = hub.entries_after(0, None, None);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].ttl_ms, Some(LOCAL_COMMAND_CHAT_TTL_MS));
     }
 }

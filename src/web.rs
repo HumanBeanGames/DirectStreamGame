@@ -1296,7 +1296,7 @@ fn palette_stream_page_html_with_options(
     .chat[hidden] {{ display: none; }}
     .chat h2 {{ margin: 0; padding: 10px 12px; border-bottom: 1px solid #303847; font-size: 14px; }}
     .chat-log {{ flex: 1 1 auto; min-height: 0; padding: 10px 12px; overflow-y: auto; color: #cbd5e1; font: 13px Consolas, monospace; }}
-    .chat-log p {{ margin: 0 0 8px; }}
+    .chat-log p {{ margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }}
     .chat-input {{ flex: none; display: flex; gap: 6px; padding: 10px; border-top: 1px solid #303847; }}
     .chat-input input {{ flex: 1; min-width: 0; background: #111722; color: #eef3f8; border: 1px solid #3a4353; border-radius: 4px; padding: 7px 8px; }}
     .chat-input button {{ border: 1px solid #4a5668; border-radius: 4px; background: #263142; color: #f8fafc; padding: 7px 10px; }}

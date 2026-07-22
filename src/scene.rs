@@ -406,6 +406,7 @@ impl PreviewLabSettings {
 
 #[derive(Component)]
 struct PreviewPixelDebugReadback {
+    request_id: u64,
     source: PreviewPixelSource,
     x: u32,
     y: u32,
@@ -453,6 +454,8 @@ pub(crate) struct PreviewPixelDebugState {
     pixel_debug_raw: Option<RawPixelDebug>,
     pixel_debug_quantized: Option<QuantizedPixelDebug>,
     pixel_debug_clicked_source: Option<PreviewPixelSource>,
+    next_pixel_debug_request_id: u64,
+    active_pixel_debug_request_id: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -492,7 +495,7 @@ struct QuantizedPixelDebug {
     palette_index: u8,
     color: [u8; 4],
     direct_overlay: bool,
-    lookup_fingerprint: u8,
+    lookup_fingerprint: u16,
 }
 
 pub(crate) fn setup_direct_stream_scene(
@@ -733,6 +736,8 @@ fn spawn_preview_comparison(
             pixel_debug_raw: None,
             pixel_debug_quantized: None,
             pixel_debug_clicked_source: None,
+            next_pixel_debug_request_id: 0,
+            active_pixel_debug_request_id: None,
         },
     )
 }
@@ -1597,9 +1602,13 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
     debug_state.pixel_debug_clicked_source = Some(source);
     debug_state.pixel_debug_raw = None;
     debug_state.pixel_debug_quantized = None;
+    let request_id = debug_state.next_pixel_debug_request_id;
+    debug_state.next_pixel_debug_request_id = request_id.wrapping_add(1);
+    debug_state.active_pixel_debug_request_id = Some(request_id);
 
     commands
         .spawn(PreviewPixelDebugReadback {
+            request_id,
             source: PreviewPixelSource::Raw,
             x,
             y,
@@ -1610,6 +1619,7 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
         .insert(Readback::texture(raw_image));
     commands
         .spawn(PreviewPixelDebugReadback {
+            request_id,
             source: PreviewPixelSource::Quantized,
             x,
             y,
@@ -3159,6 +3169,10 @@ fn handle_preview_pixel_debug_readback(
         commands.entity(event.entity).despawn();
         return;
     };
+    if debug_state.active_pixel_debug_request_id != Some(readback.request_id) {
+        commands.entity(event.entity).despawn();
+        return;
+    }
 
     match readback.source {
         PreviewPixelSource::Raw => {
@@ -3193,6 +3207,7 @@ fn handle_preview_pixel_debug_readback(
             .unwrap_or(PreviewPixelSource::Raw);
         debug_state.output =
             preview_pixel_pair_text(&raw, &quantized, clicked_source, debug_state.matching);
+        debug_state.active_pixel_debug_request_id = None;
     }
     commands.entity(event.entity).despawn();
 }
@@ -3220,9 +3235,6 @@ pub(crate) fn request_preview_palette_validation(
     debug_state.validation_pending = true;
     debug_state.validation_raw_data = None;
     debug_state.validation_quantized_data = None;
-    debug_state.pixel_debug_raw = None;
-    debug_state.pixel_debug_quantized = None;
-    debug_state.pixel_debug_clicked_source = None;
     let raw_image = debug_state.raw_image.clone();
     let quantized_image = debug_state.quantized_image.clone();
     commands
@@ -3358,7 +3370,8 @@ fn validate_preview_palette_frame(
             }
             if actual_index != expected_index {
                 let expected_fingerprint = lookup_fingerprint(lookup_rgb);
-                let actual_fingerprint = quantized[quantized_offset + 2];
+                let actual_fingerprint = u16::from(quantized[quantized_offset + 2])
+                    | (u16::from(quantized[quantized_offset + 3]) << 8);
                 let expected_color = palette_colors
                     .get(expected_index as usize)
                     .copied()
@@ -3368,7 +3381,7 @@ fn validate_preview_palette_frame(
                     .copied()
                     .unwrap_or([0, 0, 0, 255]);
                 return Some(format!(
-                    "automatic preview palette validation frame {frame_number} [MISMATCH]\nraw preview ({x}, {y})\nraw BGRA: {b}, {g}, {r}, {a}\nraw RGB: #{r:02X}{g:02X}{b:02X}\nlookup RGB key: {lookup_key}\nlookup fingerprint CPU/GPU: {expected_fingerprint:02X}/{actual_fingerprint:02X}\nexpected index {expected_index} #{:02X}{:02X}{:02X}\nactual output index {actual_index} #{:02X}{:02X}{:02X}",
+                    "automatic preview palette validation frame {frame_number} [MISMATCH]\nraw preview ({x}, {y})\nraw BGRA: {b}, {g}, {r}, {a}\nraw RGB: #{r:02X}{g:02X}{b:02X}\nlookup RGB key: {lookup_key}\nlookup fingerprint CPU/GPU: {expected_fingerprint:04X}/{actual_fingerprint:04X}\nexpected index {expected_index} #{:02X}{:02X}{:02X}\nactual output index {actual_index} #{:02X}{:02X}{:02X}",
                     expected_color[0],
                     expected_color[1],
                     expected_color[2],
@@ -3430,10 +3443,12 @@ fn rgb_key([r, g, b]: [u8; 3]) -> usize {
     (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b)
 }
 
-fn lookup_fingerprint([r, g, b]: [u8; 3]) -> u8 {
-    r.wrapping_mul(31)
-        .wrapping_add(g.wrapping_mul(17))
-        .wrapping_add(b.wrapping_mul(13))
+fn lookup_fingerprint([r, g, b]: [u8; 3]) -> u16 {
+    let mut hash = 2_166_136_261u32;
+    for channel in [r, g, b] {
+        hash = (hash ^ u32::from(channel)).wrapping_mul(16_777_619);
+    }
+    (hash ^ (hash >> 16)) as u16
 }
 
 fn apply_preview_dither(
@@ -3597,7 +3612,8 @@ fn preview_quantized_pixel_debug(
     let offset = readback.y as usize * aligned_row_bytes + readback.x as usize * 4;
     let palette_index = data.get(offset).copied().unwrap_or(0);
     let direct_overlay = data.get(offset + 1).copied().unwrap_or(0) != 0;
-    let lookup_fingerprint = data.get(offset + 2).copied().unwrap_or(0);
+    let lookup_fingerprint = u16::from(data.get(offset + 2).copied().unwrap_or(0))
+        | (u16::from(data.get(offset + 3).copied().unwrap_or(0)) << 8);
     let color = palette_colors
         .get(palette_index as usize)
         .copied()
@@ -3688,7 +3704,7 @@ fn preview_pixel_pair_text(
         "MISMATCH"
     };
     format!(
-        "Preview sample ({}, {})\nbefore raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}{}\nafter actual: index {} #{:02X}{:02X}{:02X}\nmapping: [{}]\nlookup fingerprint CPU/GPU: {:02X}/{:02X} [{}]\nexpected: {} index {} #{:02X}{:02X}{:02X}{}\nDelta E OK: {:.5}  OKLab dL/da/db: {:.4} / {:.4} / {:.4}\nOKLCH delta L/C/H: {:.4} / {:.4} / {:.1}deg\nlookup RGB key: {}",
+        "Preview sample ({}, {})\nbefore raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}{}\nafter actual: index {} #{:02X}{:02X}{:02X}\nmapping: [{}]\nlookup fingerprint CPU/GPU: {:04X}/{:04X} [{}]\nexpected: {} index {} #{:02X}{:02X}{:02X}{}\nDelta E OK: {:.5}  OKLab dL/da/db: {:.4} / {:.4} / {:.4}\nOKLCH delta L/C/H: {:.4} / {:.4} / {:.1}deg\nlookup RGB key: {}",
         raw.x,
         raw.y,
         raw.r,
@@ -3900,8 +3916,9 @@ mod preview_pixel_debug_tests {
         let shader = include_str!("../assets/shaders/palette_material_2d.wgsl");
 
         assert!(shader.contains("floor(mesh.position.xy)"));
+        assert!(shader.contains("textureLoad(source_image, source_coord, 0)"));
         assert!(shader.contains("apply_dither(raw_source, framebuffer_coord)"));
-        assert!(!shader.contains("apply_dither(raw_source, source_coord)"));
+        assert!(!shader.contains("source_uv"));
     }
 
     #[test]

@@ -303,26 +303,34 @@ fn lookup_has_direct_entries() -> bool {
     return textureDimensions(lookup_texture).y >= 8192u;
 }
 
-fn lookup_fingerprint(source: vec3<f32>) -> f32 {
+fn lookup_fingerprint(source: vec3<f32>) -> u32 {
     let source_u8 = vec3<u32>(round(source * 255.0));
-    let hash = (source_u8.r * 31u + source_u8.g * 17u + source_u8.b * 13u) & 255u;
-    return f32(hash) / 255.0;
+    var hash = 2166136261u;
+    hash = (hash ^ source_u8.r) * 16777619u;
+    hash = (hash ^ source_u8.g) * 16777619u;
+    hash = (hash ^ source_u8.b) * 16777619u;
+    return (hash ^ (hash >> 16u)) & 65535u;
 }
 
 fn indexed_output(palette_index: u32, lookup_source: vec3<f32>) -> vec4<f32> {
+    let fingerprint = lookup_fingerprint(lookup_source);
     return vec4<f32>(
         f32(palette_index) / 255.0,
         0.0,
-        lookup_fingerprint(lookup_source),
-        1.0,
+        f32(fingerprint & 255u) / 255.0,
+        f32(fingerprint >> 8u) / 255.0,
     );
 }
 
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let source_size = textureDimensions(source_image);
-    let source_uv = clamp(mesh.uv, vec2<f32>(0.0), vec2<f32>(0.999999));
-    let source_coord = vec2<i32>(floor(source_uv * vec2<f32>(source_size)));
+    let framebuffer_coord = vec2<i32>(floor(mesh.position.xy));
+    let source_coord = clamp(
+        framebuffer_coord,
+        vec2<i32>(0),
+        vec2<i32>(source_size) - vec2<i32>(1),
+    );
     let raw_sample = textureLoad(source_image, source_coord, 0);
     let raw_source = clamp(raw_sample.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     let direct_alpha_flag = abs(raw_sample.a - (254.0 / 255.0)) <= (0.5 / 255.0);
@@ -337,7 +345,6 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     if exact_index < 256u {
         return indexed_output(exact_index, raw_source);
     }
-    let framebuffer_coord = vec2<i32>(floor(mesh.position.xy));
     let source = apply_dither(raw_source, framebuffer_coord);
     var palette_index = nearest_palette_index_direct(source);
     if lookup_params.flags.x > 0.5 {

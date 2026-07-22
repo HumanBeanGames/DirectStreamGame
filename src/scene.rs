@@ -424,6 +424,7 @@ struct PreviewPixelDebugReadback {
 struct PreviewPaletteValidationReadback {
     source: PreviewPixelSource,
     generation: u64,
+    frame_number: u32,
     width: u32,
     height: u32,
     dither: DirectStreamDitherSettings,
@@ -453,16 +454,15 @@ pub(crate) struct PreviewPixelDebugState {
     quantized_center: Vec2,
     display_size: Vec2,
     output: String,
-    validation_pending: bool,
-    validation_warmup_updates: u32,
+    validation_frames_requested: u32,
     validation_frames_checked: u32,
     validation_total_mismatches: u64,
     validation_total_mapping_mismatches: u64,
     validation_total_fingerprint_mismatches: u64,
     pub(crate) display_generation: u64,
     validation_last_requested_generation: Option<u64>,
-    validation_raw_data: Option<Vec<u8>>,
-    validation_quantized_data: Option<Vec<u8>>,
+    validation_raw_data: HashMap<u64, Vec<u8>>,
+    validation_quantized_data: HashMap<u64, Vec<u8>>,
     pixel_debug_raw: Option<RawPixelDebug>,
     pixel_debug_quantized: Option<QuantizedPixelDebug>,
     pixel_debug_clicked_source: Option<PreviewPixelSource>,
@@ -743,16 +743,15 @@ fn spawn_preview_comparison(
             output:
                 "Pixel debug: click either preview to compare the paired raw and quantized pixels"
                     .to_owned(),
-            validation_pending: false,
-            validation_warmup_updates: 0,
+            validation_frames_requested: 0,
             validation_frames_checked: 0,
             validation_total_mismatches: 0,
             validation_total_mapping_mismatches: 0,
             validation_total_fingerprint_mismatches: 0,
             display_generation: 0,
             validation_last_requested_generation: None,
-            validation_raw_data: None,
-            validation_quantized_data: None,
+            validation_raw_data: HashMap::new(),
+            validation_quantized_data: HashMap::new(),
             pixel_debug_raw: None,
             pixel_debug_quantized: None,
             pixel_debug_clicked_source: None,
@@ -2180,11 +2179,14 @@ fn commit_loaded_preview_lookup_to_pipeline(
         debug_state.palette_colors = colors;
         debug_state.lookup_entries = lookup_entries;
         debug_state.matching = config.matching;
-        debug_state.validation_pending = false;
-        debug_state.validation_warmup_updates = 0;
+        debug_state.validation_frames_requested = 0;
         debug_state.validation_frames_checked = 0;
-        debug_state.validation_raw_data = None;
-        debug_state.validation_quantized_data = None;
+        debug_state.validation_total_mismatches = 0;
+        debug_state.validation_total_mapping_mismatches = 0;
+        debug_state.validation_total_fingerprint_mismatches = 0;
+        debug_state.validation_last_requested_generation = None;
+        debug_state.validation_raw_data.clear();
+        debug_state.validation_quantized_data.clear();
         debug_state.pixel_debug_raw = None;
         debug_state.pixel_debug_quantized = None;
         debug_state.pixel_debug_clicked_source = None;
@@ -2290,11 +2292,14 @@ pub(crate) fn process_preview_palette_rebake(
             if let Some(debug_state) = debug_state.as_deref_mut() {
                 debug_state.lookup_entries = lookup_entries;
                 debug_state.matching = PaletteMatching::from(editor.committed_lab_settings);
-                debug_state.validation_pending = false;
-                debug_state.validation_warmup_updates = 0;
+                debug_state.validation_frames_requested = 0;
                 debug_state.validation_frames_checked = 0;
-                debug_state.validation_raw_data = None;
-                debug_state.validation_quantized_data = None;
+                debug_state.validation_total_mismatches = 0;
+                debug_state.validation_total_mapping_mismatches = 0;
+                debug_state.validation_total_fingerprint_mismatches = 0;
+                debug_state.validation_last_requested_generation = None;
+                debug_state.validation_raw_data.clear();
+                debug_state.validation_quantized_data.clear();
                 debug_state.pixel_debug_raw = None;
                 debug_state.pixel_debug_quantized = None;
                 debug_state.pixel_debug_clicked_source = None;
@@ -3254,30 +3259,27 @@ pub(crate) fn request_preview_palette_validation(
     let Some(mut debug_state) = debug_state else {
         return;
     };
-    if debug_state.validation_pending
-        || debug_state.validation_frames_checked >= PREVIEW_PALETTE_VALIDATION_FRAMES
-    {
+    if debug_state.validation_frames_requested >= PREVIEW_PALETTE_VALIDATION_FRAMES {
         return;
     }
-    if debug_state.validation_warmup_updates < 60 {
-        debug_state.validation_warmup_updates += 1;
+    if debug_state.display_generation == 0 {
         return;
     }
     if debug_state.validation_last_requested_generation == Some(debug_state.display_generation) {
         return;
     }
 
-    debug_state.validation_pending = true;
     let generation = debug_state.display_generation;
     debug_state.validation_last_requested_generation = Some(generation);
-    debug_state.validation_raw_data = None;
-    debug_state.validation_quantized_data = None;
+    debug_state.validation_frames_requested += 1;
+    let frame_number = debug_state.validation_frames_requested;
     let raw_image = debug_state.raw_image.clone();
     let quantized_image = debug_state.quantized_image.clone();
     commands
         .spawn(PreviewPaletteValidationReadback {
             source: PreviewPixelSource::Raw,
             generation,
+            frame_number,
             width: config.stream_width,
             height: config.stream_height,
             dither: *dither,
@@ -3288,6 +3290,7 @@ pub(crate) fn request_preview_palette_validation(
         .spawn(PreviewPaletteValidationReadback {
             source: PreviewPixelSource::Quantized,
             generation,
+            frame_number,
             width: config.stream_width,
             height: config.stream_height,
             dither: *dither,
@@ -3312,20 +3315,36 @@ fn handle_preview_palette_validation_readback(
     };
 
     match readback.source {
-        PreviewPixelSource::Raw => debug_state.validation_raw_data = Some(event.data.clone()),
+        PreviewPixelSource::Raw => {
+            debug_state
+                .validation_raw_data
+                .insert(readback.generation, event.data.clone());
+        }
         PreviewPixelSource::Quantized => {
-            debug_state.validation_quantized_data = Some(event.data.clone())
+            debug_state
+                .validation_quantized_data
+                .insert(readback.generation, event.data.clone());
         }
     }
 
-    if let (Some(raw), Some(quantized)) = (
-        debug_state.validation_raw_data.take(),
-        debug_state.validation_quantized_data.take(),
-    ) {
-        debug_state.validation_pending = false;
+    if debug_state
+        .validation_raw_data
+        .contains_key(&readback.generation)
+        && debug_state
+            .validation_quantized_data
+            .contains_key(&readback.generation)
+    {
+        let raw = debug_state
+            .validation_raw_data
+            .remove(&readback.generation)
+            .expect("raw validation data checked above");
+        let quantized = debug_state
+            .validation_quantized_data
+            .remove(&readback.generation)
+            .expect("quantized validation data checked above");
         debug_state.validation_frames_checked =
             debug_state.validation_frames_checked.saturating_add(1);
-        let frame_number = debug_state.validation_frames_checked;
+        let frame_number = readback.frame_number;
         let log_result = OpenOptions::new()
             .create(true)
             .append(true)
@@ -3363,7 +3382,7 @@ fn handle_preview_palette_validation_readback(
                     summary.fingerprint_mismatches;
                 debug_state.output = format!(
                     "Palette audit {}/{}: {} mismatches (see {})",
-                    frame_number,
+                    debug_state.validation_frames_checked,
                     PREVIEW_PALETTE_VALIDATION_FRAMES,
                     summary.mismatches,
                     PREVIEW_PALETTE_MISMATCH_LOG,
@@ -3375,7 +3394,7 @@ fn handle_preview_palette_validation_readback(
                 eprintln!("{}", debug_state.output);
             }
         }
-        if frame_number == PREVIEW_PALETTE_VALIDATION_FRAMES {
+        if debug_state.validation_frames_checked == PREVIEW_PALETTE_VALIDATION_FRAMES {
             let report = format!(
                 "automatic preview palette validation: {} frames, {} mismatches (mapping {}, fingerprint {})",
                 PREVIEW_PALETTE_VALIDATION_FRAMES,

@@ -492,6 +492,7 @@ struct QuantizedPixelDebug {
     palette_index: u8,
     color: [u8; 4],
     direct_overlay: bool,
+    lookup_fingerprint: u8,
 }
 
 pub(crate) fn setup_direct_stream_scene(
@@ -3356,6 +3357,8 @@ fn validate_preview_palette_frame(
                 continue;
             }
             if actual_index != expected_index {
+                let expected_fingerprint = lookup_fingerprint(lookup_rgb);
+                let actual_fingerprint = quantized[quantized_offset + 2];
                 let expected_color = palette_colors
                     .get(expected_index as usize)
                     .copied()
@@ -3365,7 +3368,7 @@ fn validate_preview_palette_frame(
                     .copied()
                     .unwrap_or([0, 0, 0, 255]);
                 return Some(format!(
-                    "automatic preview palette validation frame {frame_number} [MISMATCH]\nraw preview ({x}, {y})\nraw BGRA: {b}, {g}, {r}, {a}\nraw RGB: #{r:02X}{g:02X}{b:02X}\nlookup RGB key: {lookup_key}\nexpected index {expected_index} #{:02X}{:02X}{:02X}\nactual output index {actual_index} #{:02X}{:02X}{:02X}",
+                    "automatic preview palette validation frame {frame_number} [MISMATCH]\nraw preview ({x}, {y})\nraw BGRA: {b}, {g}, {r}, {a}\nraw RGB: #{r:02X}{g:02X}{b:02X}\nlookup RGB key: {lookup_key}\nlookup fingerprint CPU/GPU: {expected_fingerprint:02X}/{actual_fingerprint:02X}\nexpected index {expected_index} #{:02X}{:02X}{:02X}\nactual output index {actual_index} #{:02X}{:02X}{:02X}",
                     expected_color[0],
                     expected_color[1],
                     expected_color[2],
@@ -3425,6 +3428,12 @@ fn expected_preview_index(
 
 fn rgb_key([r, g, b]: [u8; 3]) -> usize {
     (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b)
+}
+
+fn lookup_fingerprint([r, g, b]: [u8; 3]) -> u8 {
+    r.wrapping_mul(31)
+        .wrapping_add(g.wrapping_mul(17))
+        .wrapping_add(b.wrapping_mul(13))
 }
 
 fn apply_preview_dither(
@@ -3588,6 +3597,7 @@ fn preview_quantized_pixel_debug(
     let offset = readback.y as usize * aligned_row_bytes + readback.x as usize * 4;
     let palette_index = data.get(offset).copied().unwrap_or(0);
     let direct_overlay = data.get(offset + 1).copied().unwrap_or(0) != 0;
+    let lookup_fingerprint = data.get(offset + 2).copied().unwrap_or(0);
     let color = palette_colors
         .get(palette_index as usize)
         .copied()
@@ -3596,6 +3606,7 @@ fn preview_quantized_pixel_debug(
         palette_index,
         color,
         direct_overlay,
+        lookup_fingerprint,
     }
 }
 
@@ -3670,8 +3681,14 @@ fn preview_pixel_pair_text(
     } else {
         "MISMATCH"
     };
+    let expected_fingerprint = lookup_fingerprint(raw.lookup_rgb);
+    let fingerprint_status = if expected_fingerprint == quantized.lookup_fingerprint {
+        "MATCH"
+    } else {
+        "MISMATCH"
+    };
     format!(
-        "Preview sample ({}, {})\nbefore raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}{}\nafter actual: index {} #{:02X}{:02X}{:02X}\nmapping: [{}]\nexpected: {} index {} #{:02X}{:02X}{:02X}{}\nDelta E OK: {:.5}  OKLab dL/da/db: {:.4} / {:.4} / {:.4}\nOKLCH delta L/C/H: {:.4} / {:.4} / {:.1}deg\nlookup RGB key: {}",
+        "Preview sample ({}, {})\nbefore raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}{}\nafter actual: index {} #{:02X}{:02X}{:02X}\nmapping: [{}]\nlookup fingerprint CPU/GPU: {:02X}/{:02X} [{}]\nexpected: {} index {} #{:02X}{:02X}{:02X}{}\nDelta E OK: {:.5}  OKLab dL/da/db: {:.4} / {:.4} / {:.4}\nOKLCH delta L/C/H: {:.4} / {:.4} / {:.1}deg\nlookup RGB key: {}",
         raw.x,
         raw.y,
         raw.r,
@@ -3687,6 +3704,9 @@ fn preview_pixel_pair_text(
         quantized.color[1],
         quantized.color[2],
         mapping_status,
+        expected_fingerprint,
+        quantized.lookup_fingerprint,
+        fingerprint_status,
         lookup_route,
         expected_index,
         expected_color[0],
@@ -3759,6 +3779,7 @@ mod preview_pixel_debug_tests {
             palette_index: index,
             color: [4, 5, 6, 255],
             direct_overlay: false,
+            lookup_fingerprint: 0,
         }
     }
 
@@ -3872,6 +3893,24 @@ mod preview_pixel_debug_tests {
             expected,
             Some((PreviewLookupRoute::AlteredTable, 42, lookup_rgb))
         );
+    }
+
+    #[test]
+    fn palette_shader_anchors_dither_to_framebuffer_coordinates() {
+        let shader = include_str!("../assets/shaders/palette_material_2d.wgsl");
+
+        assert!(shader.contains("floor(mesh.position.xy)"));
+        assert!(shader.contains("apply_dither(raw_source, framebuffer_coord)"));
+        assert!(!shader.contains("apply_dither(raw_source, source_coord)"));
+    }
+
+    #[test]
+    fn lookup_fingerprint_covers_all_lookup_channels() {
+        let original = lookup_fingerprint([21, 7, 37]);
+
+        assert_ne!(lookup_fingerprint([22, 7, 37]), original);
+        assert_ne!(lookup_fingerprint([21, 8, 37]), original);
+        assert_ne!(lookup_fingerprint([21, 7, 38]), original);
     }
 
     #[test]

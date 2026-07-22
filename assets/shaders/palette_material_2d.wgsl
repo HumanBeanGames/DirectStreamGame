@@ -303,6 +303,21 @@ fn lookup_has_direct_entries() -> bool {
     return textureDimensions(lookup_texture).y >= 8192u;
 }
 
+fn lookup_fingerprint(source: vec3<f32>) -> f32 {
+    let source_u8 = vec3<u32>(round(source * 255.0));
+    let hash = (source_u8.r * 31u + source_u8.g * 17u + source_u8.b * 13u) & 255u;
+    return f32(hash) / 255.0;
+}
+
+fn indexed_output(palette_index: u32, lookup_source: vec3<f32>) -> vec4<f32> {
+    return vec4<f32>(
+        f32(palette_index) / 255.0,
+        0.0,
+        lookup_fingerprint(lookup_source),
+        1.0,
+    );
+}
+
 @fragment
 fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let source_size = textureDimensions(source_image);
@@ -316,16 +331,17 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
         if lookup_params.flags.x > 0.5 && lookup_has_direct_entries() {
             palette_index = lookup_palette_index(raw_source, true);
         }
-        return vec4<f32>(f32(palette_index) / 255.0, 0.0, 0.0, 1.0);
+        return indexed_output(palette_index, raw_source);
     }
     let exact_index = exact_palette_index(raw_source);
     if exact_index < 256u {
-        return vec4<f32>(f32(exact_index) / 255.0, 0.0, 0.0, 1.0);
+        return indexed_output(exact_index, raw_source);
     }
-    let source = apply_dither(raw_source, source_coord);
+    let framebuffer_coord = vec2<i32>(floor(mesh.position.xy));
+    let source = apply_dither(raw_source, framebuffer_coord);
     var palette_index = nearest_palette_index_direct(source);
     if lookup_params.flags.x > 0.5 {
         palette_index = lookup_palette_index(source, false);
     }
-    return vec4<f32>(f32(palette_index) / 255.0, 0.0, 0.0, 1.0);
+    return indexed_output(palette_index, source);
 }

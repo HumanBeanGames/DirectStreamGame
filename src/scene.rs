@@ -3461,6 +3461,30 @@ fn preview_pixel_pair_text(
     quantized: &QuantizedPixelDebug,
     clicked_source: PreviewPixelSource,
 ) -> String {
+    if is_direct_output_overlay(raw, quantized, clicked_source) {
+        return format!(
+            "Preview sample ({}, {})\nunderlay raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}\noverlay output: index {} #{:02X}{:02X}{:02X}\nexpected: direct output overlay index {} #{:02X}{:02X}{:02X}\nDelta E OK: n/a (overlay replaces underlay)\nunderlay lookup RGB key: {}",
+            raw.x,
+            raw.y,
+            raw.r,
+            raw.g,
+            raw.b,
+            raw.b,
+            raw.g,
+            raw.r,
+            raw.a,
+            quantized.palette_index,
+            quantized.color[0],
+            quantized.color[1],
+            quantized.color[2],
+            quantized.palette_index,
+            quantized.color[0],
+            quantized.color[1],
+            quantized.color[2],
+            raw.lookup_key,
+        );
+    }
+
     let (lookup_route, expected_index, expected_color) =
         preview_expected_readout(raw, quantized, clicked_source);
     let raw_oklab = rgb_to_oklab(raw.r, raw.g, raw.b);
@@ -3512,10 +3536,7 @@ fn preview_expected_readout(
     quantized: &QuantizedPixelDebug,
     clicked_source: PreviewPixelSource,
 ) -> (&'static str, String, [u8; 4]) {
-    if clicked_source == PreviewPixelSource::Quantized
-        && raw.lookup_route != PreviewLookupRoute::DirectTable
-        && raw.expected_index != Some(quantized.palette_index)
-    {
+    if is_direct_output_overlay(raw, quantized, clicked_source) {
         return (
             "direct output overlay",
             quantized.palette_index.to_string(),
@@ -3530,6 +3551,16 @@ fn preview_expected_readout(
             .unwrap_or_else(|| "out of range".to_owned()),
         raw.expected_color,
     )
+}
+
+fn is_direct_output_overlay(
+    raw: &RawPixelDebug,
+    quantized: &QuantizedPixelDebug,
+    clicked_source: PreviewPixelSource,
+) -> bool {
+    clicked_source == PreviewPixelSource::Quantized
+        && raw.lookup_route != PreviewLookupRoute::DirectTable
+        && raw.expected_index != Some(quantized.palette_index)
 }
 
 #[cfg(test)]
@@ -3582,6 +3613,26 @@ mod preview_pixel_debug_tests {
         assert_eq!(label, "direct output overlay");
         assert_eq!(index, "42");
         assert_eq!(color, [4, 5, 6, 255]);
+    }
+
+    #[test]
+    fn direct_overlay_readout_does_not_compare_overlay_to_underlay() {
+        let mut raw = raw_debug(PreviewLookupRoute::AlteredTable, Some(9));
+        raw.r = 0x14;
+        raw.g = 0x07;
+        raw.b = 0x2A;
+        raw.lookup_key = 1_312_554;
+        let mut quantized = quantized_debug(169);
+        quantized.color = [0x52, 0x45, 0xFC, 255];
+
+        let text = preview_pixel_pair_text(&raw, &quantized, PreviewPixelSource::Quantized);
+
+        assert!(text.contains("underlay raw: #14072A"));
+        assert!(text.contains("overlay output: index 169 #5245FC"));
+        assert!(text.contains("Delta E OK: n/a (overlay replaces underlay)"));
+        assert!(text.contains("underlay lookup RGB key: 1312554"));
+        assert!(!text.contains("OKLab dL/da/db"));
+        assert!(!text.contains("OKLCH delta"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::public_types::DirectStreamTarget;
+use crate::public_types::{DirectColorLookup, DirectStreamTarget};
 use bevy::{
     asset::{RenderAssetUsages, load_internal_asset, uuid_handle},
     camera::visibility::RenderLayers,
@@ -87,6 +87,7 @@ pub struct DirectBackdropSprite {
     pub uv_offset: Vec2,
     pub uv_scale: Vec2,
     pub tint: Color,
+    pub color_lookup: DirectColorLookup,
     pub alpha_cutoff: Option<f32>,
     pub layer: DirectBackdropLayer,
     pub depth: f32,
@@ -100,6 +101,7 @@ impl DirectBackdropSprite {
             uv_offset: Vec2::ZERO,
             uv_scale: Vec2::ONE,
             tint: Color::WHITE,
+            color_lookup: DirectColorLookup::Altered,
             alpha_cutoff: None,
             layer: DirectBackdropLayer::BehindWorld,
             depth: 512.0,
@@ -123,6 +125,11 @@ impl DirectBackdropSprite {
 
     pub fn with_tint(mut self, tint: Color) -> Self {
         self.tint = tint;
+        self
+    }
+
+    pub fn with_color_lookup(mut self, color_lookup: DirectColorLookup) -> Self {
+        self.color_lookup = color_lookup;
         self
     }
 
@@ -171,6 +178,7 @@ struct DirectBackdropSpriteRender {
     mesh: Handle<Mesh>,
     image: Handle<Image>,
     pixel_rect: Option<URect>,
+    color_lookup: DirectColorLookup,
     alpha_cutoff: Option<f32>,
     layer: DirectBackdropLayer,
     depth: f32,
@@ -289,7 +297,7 @@ fn sync_direct_backdrop_sprites(
                     Mesh3d(marker_mesh),
                     MeshMaterial3d(marker_material.clone()),
                     Transform::default(),
-                    Visibility::Visible,
+                    direct_marker_visibility(sprite.color_lookup),
                     render_layers.clone(),
                     NotShadowCaster,
                 ))
@@ -308,6 +316,7 @@ fn sync_direct_backdrop_sprites(
                         mesh,
                         image: sprite.image.clone(),
                         pixel_rect: sprite.pixel_rect,
+                        color_lookup: sprite.color_lookup,
                         alpha_cutoff: sprite.alpha_cutoff,
                         layer: sprite.layer,
                         depth: sprite.depth,
@@ -362,11 +371,13 @@ fn sync_direct_backdrop_sprites(
 
             if render.image != sprite.image
                 || render.pixel_rect != sprite.pixel_rect
+                || render.color_lookup != sprite.color_lookup
                 || render.alpha_cutoff != sprite.alpha_cutoff
                 || render.layer != sprite.layer
             {
                 render.image = sprite.image.clone();
                 render.pixel_rect = sprite.pixel_rect;
+                render.color_lookup = sprite.color_lookup;
                 render.alpha_cutoff = sprite.alpha_cutoff;
                 render.layer = sprite.layer;
             }
@@ -394,9 +405,10 @@ fn sync_direct_backdrop_sprites(
         commands
             .entity(render_entities.color)
             .insert(render_layers.clone());
-        commands
-            .entity(render_entities.marker)
-            .insert((render_layers.clone(), Visibility::Visible));
+        commands.entity(render_entities.marker).insert((
+            render_layers.clone(),
+            direct_marker_visibility(sprite.color_lookup),
+        ));
     }
 }
 
@@ -531,6 +543,13 @@ fn backdrop_marker_material(sprite: &DirectBackdropSprite) -> DirectBackdropMark
     }
 }
 
+fn direct_marker_visibility(color_lookup: DirectColorLookup) -> Visibility {
+    match color_lookup {
+        DirectColorLookup::Direct => Visibility::Visible,
+        DirectColorLookup::Altered => Visibility::Hidden,
+    }
+}
+
 fn backdrop_alpha_mode(sprite: &DirectBackdropSprite) -> AlphaMode {
     if let Some(alpha_cutoff) = sprite.alpha_cutoff {
         AlphaMode::Mask(alpha_cutoff)
@@ -544,5 +563,32 @@ fn backdrop_depth_bias(layer: DirectBackdropLayer) -> f32 {
         DirectBackdropLayer::BehindWorld => -10_000.0,
         DirectBackdropLayer::BeforeWorldSprites => 5_000.0,
         DirectBackdropLayer::BeforeText => 9_000.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blended_backdrops_default_to_the_altered_lookup_path() {
+        let sprite = DirectBackdropSprite::new(Handle::default());
+
+        assert_eq!(sprite.color_lookup, DirectColorLookup::Altered);
+        assert!(matches!(
+            direct_marker_visibility(sprite.color_lookup),
+            Visibility::Hidden
+        ));
+    }
+
+    #[test]
+    fn direct_backdrops_enable_the_direct_lookup_marker() {
+        let sprite = DirectBackdropSprite::new(Handle::default())
+            .with_color_lookup(DirectColorLookup::Direct);
+
+        assert!(matches!(
+            direct_marker_visibility(sprite.color_lookup),
+            Visibility::Visible
+        ));
     }
 }

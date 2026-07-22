@@ -1,28 +1,82 @@
 use crate::public_types::DirectStreamTarget;
 use bevy::{
-    asset::RenderAssetUsages,
+    asset::{RenderAssetUsages, load_internal_asset, uuid_handle},
     camera::visibility::RenderLayers,
     light::NotShadowCaster,
     math::Affine2,
-    mesh::Indices,
+    mesh::{Indices, MeshVertexBufferLayoutRef},
+    pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin},
     prelude::*,
+    reflect::TypePath,
     render::{
         alpha::AlphaMode,
-        render_resource::{Face, PrimitiveTopology},
+        render_resource::{
+            AsBindGroup, ColorWrites, Face, PrimitiveTopology, RenderPipelineDescriptor,
+            SpecializedMeshPipelineError,
+        },
     },
+    shader::{Shader, ShaderRef},
     transform::TransformSystems,
 };
 use std::collections::{HashMap, HashSet};
 
 pub struct DirectBackdropSpritePlugin;
 
+const DIRECT_BACKDROP_MARKER_SHADER_HANDLE: Handle<Shader> =
+    uuid_handle!("5706e440-f61e-46db-92b2-f5979f4d48e1");
+const DIRECT_LOOKUP_ALPHA: f32 = 254.0 / 255.0;
+const MARKER_DEPTH_OFFSET: f32 = 0.01;
+
 impl Plugin for DirectBackdropSpritePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<DirectBackdropSpriteSettings>()
+        load_internal_asset!(
+            app,
+            DIRECT_BACKDROP_MARKER_SHADER_HANDLE,
+            "../assets/shaders/direct_backdrop_marker.wgsl",
+            Shader::from_wgsl
+        );
+        app.add_plugins(MaterialPlugin::<DirectBackdropMarkerMaterial>::default())
+            .init_resource::<DirectBackdropSpriteSettings>()
             .add_systems(
                 PostUpdate,
                 sync_direct_backdrop_sprites.after(TransformSystems::Propagate),
             );
+    }
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+struct DirectBackdropMarkerMaterial {
+    #[uniform(0)]
+    uv_scale_offset: Vec4,
+    #[texture(1)]
+    #[sampler(2)]
+    image: Handle<Image>,
+    #[uniform(3)]
+    alpha_params: Vec4,
+}
+
+impl Material for DirectBackdropMarkerMaterial {
+    fn fragment_shader() -> ShaderRef {
+        ShaderRef::Handle(DIRECT_BACKDROP_MARKER_SHADER_HANDLE)
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Blend
+    }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        if let Some(fragment) = descriptor.fragment.as_mut() {
+            for target in fragment.targets.iter_mut().flatten() {
+                target.blend = None;
+                target.write_mask = ColorWrites::ALPHA;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -113,6 +167,7 @@ impl Default for DirectBackdropSpriteSettings {
 #[derive(Component)]
 struct DirectBackdropSpriteRender {
     material: Handle<StandardMaterial>,
+    marker_material: Handle<DirectBackdropMarkerMaterial>,
     mesh: Handle<Mesh>,
     image: Handle<Image>,
     pixel_rect: Option<URect>,
@@ -122,8 +177,14 @@ struct DirectBackdropSpriteRender {
     target_size: UVec2,
 }
 
+#[derive(Clone, Copy)]
+struct DirectBackdropRenderEntities {
+    color: Entity,
+    marker: Entity,
+}
+
 #[derive(Default)]
-struct DirectBackdropSpriteRenderMap(HashMap<Entity, Entity>);
+struct DirectBackdropSpriteRenderMap(HashMap<Entity, DirectBackdropRenderEntities>);
 
 fn sync_direct_backdrop_sprites(
     mut commands: Commands,
@@ -142,6 +203,7 @@ fn sync_direct_backdrop_sprites(
     mut render_map: Local<DirectBackdropSpriteRenderMap>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut marker_materials: ResMut<Assets<DirectBackdropMarkerMaterial>>,
 ) {
     let target_changed = target.is_changed();
     let (camera, camera_transform, camera_changed, camera_layers) = {
@@ -167,19 +229,23 @@ fn sync_direct_backdrop_sprites(
         .map(|(entity, _)| *entity)
         .collect::<HashSet<_>>();
 
-    render_map.0.retain(|owner, render_entity| {
+    render_map.0.retain(|owner, render_entities| {
         let keep = active_owners.contains(owner);
         if !keep {
-            commands.entity(*render_entity).despawn();
+            commands.entity(render_entities.color).despawn();
+            commands.entity(render_entities.marker).despawn();
         }
         keep
     });
 
     if !settings.enabled {
-        for render_entity in render_map.0.values().copied() {
-            if let Ok((_, _, _, mut visibility)) = queries.p2().get_mut(render_entity) {
+        for render_entities in render_map.0.values().copied() {
+            if let Ok((_, _, _, mut visibility)) = queries.p2().get_mut(render_entities.color) {
                 *visibility = Visibility::Hidden;
             }
+            commands
+                .entity(render_entities.marker)
+                .insert(Visibility::Hidden);
         }
         return;
     }
@@ -188,25 +254,47 @@ fn sync_direct_backdrop_sprites(
     let mut visible_count = 0usize;
     for (owner, sprite) in &source_sprites {
         if visible_count >= settings.max_sprites {
-            if let Some(render_entity) = render_map.0.get(owner).copied()
-                && let Ok((_, _, _, mut visibility)) = queries.p2().get_mut(render_entity)
+            if let Some(render_entities) = render_map.0.get(owner).copied()
+                && let Ok((_, _, _, mut visibility)) = queries.p2().get_mut(render_entities.color)
             {
                 *visibility = Visibility::Hidden;
+                commands
+                    .entity(render_entities.marker)
+                    .insert(Visibility::Hidden);
             }
             continue;
         }
 
         visible_count += 1;
-        let render_entity = if let Some(render_entity) = render_map.0.get(owner).copied() {
-            render_entity
+        let render_entities = if let Some(render_entities) = render_map.0.get(owner).copied() {
+            render_entities
         } else {
             let Some(render_mesh) = backdrop_mesh(sprite, &camera, &camera_transform, &target)
             else {
                 continue;
             };
+            let mut marker_sprite = sprite.clone();
+            marker_sprite.depth = (sprite.depth - MARKER_DEPTH_OFFSET).max(0.001);
+            let Some(marker_mesh) =
+                backdrop_mesh(&marker_sprite, &camera, &camera_transform, &target)
+            else {
+                continue;
+            };
             let mesh = meshes.add(render_mesh);
+            let marker_mesh = meshes.add(marker_mesh);
             let material = materials.add(backdrop_material(sprite));
-            let render_entity = commands
+            let marker_material = marker_materials.add(backdrop_marker_material(sprite));
+            let marker_entity = commands
+                .spawn((
+                    Mesh3d(marker_mesh),
+                    MeshMaterial3d(marker_material.clone()),
+                    Transform::default(),
+                    Visibility::Visible,
+                    render_layers.clone(),
+                    NotShadowCaster,
+                ))
+                .id();
+            let color_entity = commands
                 .spawn((
                     Mesh3d(mesh.clone()),
                     MeshMaterial3d(material.clone()),
@@ -216,6 +304,7 @@ fn sync_direct_backdrop_sprites(
                     NotShadowCaster,
                     DirectBackdropSpriteRender {
                         material,
+                        marker_material,
                         mesh,
                         image: sprite.image.clone(),
                         pixel_rect: sprite.pixel_rect,
@@ -226,14 +315,20 @@ fn sync_direct_backdrop_sprites(
                     },
                 ))
                 .id();
-            render_map.0.insert(*owner, render_entity);
+            render_map.0.insert(
+                *owner,
+                DirectBackdropRenderEntities {
+                    color: color_entity,
+                    marker: marker_entity,
+                },
+            );
             continue;
         };
 
         {
             let mut render_query = queries.p2();
             let Ok((mut render, mut mesh, mut material, mut visibility)) =
-                render_query.get_mut(render_entity)
+                render_query.get_mut(render_entities.color)
             else {
                 render_map.0.remove(owner);
                 continue;
@@ -251,6 +346,15 @@ fn sync_direct_backdrop_sprites(
                 let next_mesh = meshes.add(next_mesh);
                 mesh.0 = next_mesh.clone();
                 render.mesh = next_mesh;
+                let mut marker_sprite = sprite.clone();
+                marker_sprite.depth = (sprite.depth - MARKER_DEPTH_OFFSET).max(0.001);
+                if let Some(next_marker_mesh) =
+                    backdrop_mesh(&marker_sprite, &camera, &camera_transform, &target)
+                {
+                    commands
+                        .entity(render_entities.marker)
+                        .insert(Mesh3d(meshes.add(next_marker_mesh)));
+                }
                 render.pixel_rect = sprite.pixel_rect;
                 render.depth = sprite.depth;
                 render.target_size = UVec2::new(target.width, target.height);
@@ -279,10 +383,20 @@ fn sync_direct_backdrop_sprites(
                 existing_material.uv_transform =
                     Affine2::from_scale_angle_translation(sprite.uv_scale, 0.0, sprite.uv_offset);
             }
+            if let Some(existing_marker_material) =
+                marker_materials.get_mut(&render.marker_material)
+            {
+                *existing_marker_material = backdrop_marker_material(sprite);
+            }
 
             *visibility = Visibility::Visible;
         }
-        commands.entity(render_entity).insert(render_layers.clone());
+        commands
+            .entity(render_entities.color)
+            .insert(render_layers.clone());
+        commands
+            .entity(render_entities.marker)
+            .insert((render_layers.clone(), Visibility::Visible));
     }
 }
 
@@ -396,6 +510,24 @@ fn backdrop_material(sprite: &DirectBackdropSprite) -> StandardMaterial {
         depth_bias: backdrop_depth_bias(sprite.layer),
         uv_transform: Affine2::from_scale_angle_translation(sprite.uv_scale, 0.0, sprite.uv_offset),
         ..default()
+    }
+}
+
+fn backdrop_marker_material(sprite: &DirectBackdropSprite) -> DirectBackdropMarkerMaterial {
+    DirectBackdropMarkerMaterial {
+        uv_scale_offset: Vec4::new(
+            sprite.uv_scale.x,
+            sprite.uv_scale.y,
+            sprite.uv_offset.x,
+            sprite.uv_offset.y,
+        ),
+        image: sprite.image.clone(),
+        alpha_params: Vec4::new(
+            sprite.alpha_cutoff.unwrap_or(0.5 / 255.0),
+            sprite.tint.alpha(),
+            DIRECT_LOOKUP_ALPHA,
+            0.0,
+        ),
     }
 }
 

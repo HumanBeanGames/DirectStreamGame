@@ -296,11 +296,14 @@ fn clamp_chroma_to_srgb_gamut(color: vec3<f32>) -> f32 {
 fn apply_input_offset(color: vec3<f32>) -> vec3<f32> {
     let value_chroma = palette_data.input_offset_a;
     let grey_chroma_threshold = clamp(palette_data.input_offset_b.y, 0.0, 1.0);
-    let chroma_offset_enabled = color.y > grey_chroma_threshold;
-    let adjusted_chroma = select(
+    let chroma_offset_weight = smoothstep(
+        grey_chroma_threshold,
+        grey_chroma_threshold + 0.04,
         color.y,
-        max(color.y * (1.0 + value_chroma.z) + value_chroma.w, 0.0),
-        chroma_offset_enabled,
+    );
+    let adjusted_chroma = max(
+        color.y + (color.y * value_chroma.z + value_chroma.w) * chroma_offset_weight,
+        0.0,
     );
     var adjusted = vec3<f32>(
         clamp(color.x * (1.0 + value_chroma.x) + value_chroma.y, 0.0, 1.0),

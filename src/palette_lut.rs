@@ -14,7 +14,8 @@ const LUT_MAGIC_V6: &[u8; 8] = b"IPSMAP6\0";
 const LUT_V1_HEADER_LEN: usize = 30;
 const LUT_V4_HEADER_LEN: usize = 24;
 const LUT_V6_MATCHING_LEN: usize = 9 * std::mem::size_of::<f32>();
-const PALETTE_MATCHING_ALGORITHM_VERSION: &[u8] = b"delta-e-ok-v7";
+const PALETTE_MATCHING_ALGORITHM_VERSION: &[u8] = b"delta-e-ok-v8";
+const CHROMA_OFFSET_TRANSITION: f32 = 0.04;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PaletteMatching {
@@ -811,12 +812,15 @@ fn nearest_palette_index_unaltered(color: Oklch, palette: &[Oklch]) -> u8 {
 }
 
 fn apply_input_offset(color: Oklch, matching: PaletteMatching) -> Oklch {
-    let chroma_offset_enabled = color.c > matching.grey_chroma_threshold.clamp(0.0, 1.0);
-    let adjusted_chroma = if chroma_offset_enabled {
-        (color.c * (1.0 + matching.chroma_multiply) + matching.chroma_add).max(0.0)
-    } else {
-        color.c
-    };
+    let grey_chroma_threshold = matching.grey_chroma_threshold.clamp(0.0, 1.0);
+    let chroma_offset_weight = smoothstep(
+        grey_chroma_threshold,
+        grey_chroma_threshold + CHROMA_OFFSET_TRANSITION,
+        color.c,
+    );
+    let adjusted_chroma = (color.c
+        + (color.c * matching.chroma_multiply + matching.chroma_add) * chroma_offset_weight)
+        .max(0.0);
     let mut adjusted = Oklch {
         l: (color.l * (1.0 + matching.lightness_multiply) + matching.lightness_add).clamp(0.0, 1.0),
         c: adjusted_chroma,
@@ -826,6 +830,11 @@ fn apply_input_offset(color: Oklch, matching: PaletteMatching) -> Oklch {
         adjusted.c = clamp_chroma_to_srgb_gamut(adjusted);
     }
     adjusted
+}
+
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 fn clamp_chroma_to_srgb_gamut(color: Oklch) -> f32 {
@@ -1163,6 +1172,38 @@ oklab_b = 0.0
     }
 
     #[test]
+    fn near_neutral_chroma_offset_ramps_in_instead_of_jumping() {
+        let source = Oklch {
+            l: 0.5,
+            c: 0.00666,
+            h: -std::f32::consts::FRAC_PI_2,
+        };
+        let matching = PaletteMatching {
+            chroma_add: 0.05,
+            ..Default::default()
+        };
+        let adjusted = apply_input_offset(source, matching);
+
+        assert!(adjusted.c > source.c);
+        assert!(adjusted.c < 0.012);
+    }
+
+    #[test]
+    fn near_black_blue_noise_does_not_jump_to_saturated_purple() {
+        let palette = [
+            Oklch::from(rgb_to_oklab(8, 8, 8)),
+            Oklch::from(rgb_to_oklab(14, 13, 60)),
+        ];
+        let source = Oklch::from(rgb_to_oklab(10, 11, 14));
+        let matching = PaletteMatching {
+            chroma_add: 0.05,
+            ..Default::default()
+        };
+
+        assert_eq!(nearest_palette_index(source, &palette, matching), 0);
+    }
+
+    #[test]
     fn chroma_multiply_affects_lookup_choice() {
         let palette = [
             Oklch {
@@ -1207,13 +1248,13 @@ oklab_b = 0.0
             },
             Oklch {
                 l: 0.5,
-                c: 0.12,
+                c: 0.17,
                 h: 0.0,
             },
         ];
         let source = Oklch {
             l: 0.5,
-            c: 0.000_5,
+            c: 0.05,
             h: 0.0,
         };
         let matching = PaletteMatching {
@@ -1221,7 +1262,7 @@ oklab_b = 0.0
             chroma: 1.0,
             hue: 0.0,
             chroma_add: 0.12,
-            grey_chroma_threshold: 0.001,
+            grey_chroma_threshold: 0.1,
             ..Default::default()
         };
         let disabled_threshold = PaletteMatching {

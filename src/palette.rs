@@ -938,12 +938,12 @@ impl From<Oklab> for Oklch {
 
 impl Oklch {
     fn with_input_offset(self, bias: PaletteBias) -> Self {
-        let chroma_offset_enabled = self.c > bias.grey_chroma_threshold.clamp(0.0, 1.0);
-        let adjusted_chroma = if chroma_offset_enabled {
-            (self.c * (1.0 + bias.chroma_multiply) + bias.chroma_add).max(0.0)
-        } else {
-            self.c
-        };
+        let grey_chroma_threshold = bias.grey_chroma_threshold.clamp(0.0, 1.0);
+        let chroma_offset_weight =
+            smoothstep(grey_chroma_threshold, grey_chroma_threshold + 0.04, self.c);
+        let adjusted_chroma = (self.c
+            + (self.c * bias.chroma_multiply + bias.chroma_add) * chroma_offset_weight)
+            .max(0.0);
         let mut adjusted = Self {
             l: (self.l * (1.0 + bias.lightness_multiply) + bias.lightness_add).clamp(0.0, 1.0),
             c: adjusted_chroma,
@@ -963,6 +963,11 @@ impl Oklch {
         let db = self_lab.b - other_lab.b;
         dl * dl + da * da + db * db
     }
+}
+
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 fn oklch_to_oklab(color: Oklch) -> Oklab {

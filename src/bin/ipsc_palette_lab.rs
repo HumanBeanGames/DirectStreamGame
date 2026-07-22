@@ -605,6 +605,11 @@ fn palette_lab_html() -> String {
       return Math.max(min, Math.min(max, value));
     }
 
+    function smoothstep(edge0, edge1, value) {
+      const t = clamp((value - edge0) / (edge1 - edge0), 0, 1);
+      return t * t * (3 - 2 * t);
+    }
+
     function deltaEOkDistanceSquared(a, b) {
       const dl = a.l - b.l;
       const da = a.a - b.a;
@@ -613,10 +618,16 @@ fn palette_lab_html() -> String {
     }
 
     function offsetInputOklch(color, offset) {
-      const chromaOffsetEnabled = color.c > Math.max(0, Math.min(1, offset.greyChromaThreshold));
-      const adjustedChroma = chromaOffsetEnabled
-        ? Math.max(0, color.c * (1 + offset.chromaMultiply) + offset.chromaAdd)
-        : color.c;
+      const greyChromaThreshold = Math.max(0, Math.min(1, offset.greyChromaThreshold));
+      const chromaOffsetWeight = smoothstep(
+        greyChromaThreshold,
+        greyChromaThreshold + 0.04,
+        color.c,
+      );
+      const adjustedChroma = Math.max(
+        0,
+        color.c + (color.c * offset.chromaMultiply + offset.chromaAdd) * chromaOffsetWeight,
+      );
       const adjusted = {
         l: Math.max(0, Math.min(1, color.l * (1 + offset.lightnessMultiply) + offset.lightnessAdd)),
         c: adjustedChroma,
@@ -1138,7 +1149,7 @@ fn palette_lab_html() -> String {
         hash ^= BigInt(byte);
         hash = BigInt.asUintN(64, hash * prime);
       };
-      for (const byte of new TextEncoder().encode("delta-e-ok-v7")) feed(byte);
+      for (const byte of new TextEncoder().encode("delta-e-ok-v8")) feed(byte);
       for (const color of colors) {
         for (const byte of color) feed(byte);
       }

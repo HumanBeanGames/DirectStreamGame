@@ -14,7 +14,7 @@ use crate::{
     palette_lut::{
         PaletteConfig, PaletteLookup, PaletteMatching, build_lookup_with_progress, write_lookup,
     },
-    public_types::{DirectStreamTarget, DirectStreamWindowLayout},
+    public_types::{DirectStreamDitherSettings, DirectStreamTarget, DirectStreamWindowLayout},
     stats::{SharedStats, StatsText},
     stream_control::{
         CustomFpsInputBox, CustomFpsInputText, CustomHeightInputBox, CustomHeightInputText,
@@ -410,6 +410,7 @@ struct PreviewPixelDebugReadback {
     x: u32,
     y: u32,
     width: u32,
+    dither: DirectStreamDitherSettings,
 }
 
 #[derive(Component)]
@@ -417,6 +418,7 @@ struct PreviewPaletteValidationReadback {
     source: PreviewPixelSource,
     width: u32,
     height: u32,
+    dither: DirectStreamDitherSettings,
 }
 
 #[derive(Component)]
@@ -438,6 +440,7 @@ pub(crate) struct PreviewPixelDebugState {
     pub(crate) quantized_image: Handle<Image>,
     pub(crate) palette_colors: Vec<[u8; 4]>,
     pub(crate) lookup_entries: Arc<[u8]>,
+    matching: PaletteMatching,
     raw_center: Vec2,
     quantized_center: Vec2,
     display_size: Vec2,
@@ -477,6 +480,7 @@ struct RawPixelDebug {
     g: u8,
     r: u8,
     a: u8,
+    lookup_rgb: [u8; 3],
     lookup_key: usize,
     lookup_route: PreviewLookupRoute,
     expected_index: Option<u8>,
@@ -487,6 +491,7 @@ struct RawPixelDebug {
 struct QuantizedPixelDebug {
     palette_index: u8,
     color: [u8; 4],
+    direct_overlay: bool,
 }
 
 pub(crate) fn setup_direct_stream_scene(
@@ -582,6 +587,7 @@ pub(crate) fn setup_direct_stream_scene(
                 &stream_image,
                 &pipeline,
                 Arc::<[u8]>::from(palette_lookup.entries().to_vec()),
+                palette_config.matching,
                 batch_size,
                 &window_layout,
                 config.stream_width,
@@ -632,6 +638,7 @@ fn spawn_preview_comparison(
     _stream_image: &Handle<Image>,
     pipeline: &crate::gpu_palette::GpuPalettePipeline,
     lookup_entries: Arc<[u8]>,
+    matching: PaletteMatching,
     _batch_size: usize,
     window_layout: &DirectStreamWindowLayout,
     width: u32,
@@ -695,7 +702,13 @@ fn spawn_preview_comparison(
     spawn_preview_loading_ui(commands);
     spawn_preview_rebaking_overlay(commands, window_layout);
     spawn_preview_pixel_debug_ui(commands);
-    spawn_preview_palette_editor_ui(commands, images, &pipeline.palette_colors, window_layout);
+    spawn_preview_palette_editor_ui(
+        commands,
+        images,
+        &pipeline.palette_colors,
+        matching,
+        window_layout,
+    );
     (
         display_material,
         raw_display_material,
@@ -704,6 +717,7 @@ fn spawn_preview_comparison(
             quantized_image: pipeline.output_images[0].clone(),
             palette_colors: pipeline.palette_colors.clone(),
             lookup_entries,
+            matching,
             raw_center,
             quantized_center,
             display_size,
@@ -858,6 +872,7 @@ fn spawn_preview_palette_editor_ui(
     commands: &mut Commands,
     images: &mut Assets<Image>,
     colors: &[[u8; 4]],
+    matching: PaletteMatching,
     window_layout: &DirectStreamWindowLayout,
 ) {
     let picker = PreviewColorPicker::default();
@@ -866,8 +881,8 @@ fn spawn_preview_palette_editor_ui(
         colors: colors.to_vec(),
         selected: 0,
         pick_raw_next_click: false,
-        lab_settings: PreviewLabSettings::default(),
-        committed_lab_settings: PreviewLabSettings::default(),
+        lab_settings: PreviewLabSettings::default().with_matching(matching),
+        committed_lab_settings: PreviewLabSettings::default().with_matching(matching),
         picker,
         picker_images: picker_images.clone(),
         dirty: false,
@@ -1514,6 +1529,7 @@ fn spawn_readback_entities(commands: &mut Commands, count: usize) -> Vec<Entity>
 
 pub(crate) fn handle_preview_pixel_debug_clicks(
     config: Res<AppConfig>,
+    dither: Res<DirectStreamDitherSettings>,
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<PreviewDisplayCamera>>,
@@ -1587,6 +1603,7 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
             x,
             y,
             width: config.stream_width,
+            dither: *dither,
         })
         .observe(handle_preview_pixel_debug_readback)
         .insert(Readback::texture(raw_image));
@@ -1596,6 +1613,7 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
             x,
             y,
             width: config.stream_width,
+            dither: *dither,
         })
         .observe(handle_preview_pixel_debug_readback)
         .insert(Readback::texture(quantized_image));
@@ -2120,6 +2138,7 @@ fn commit_loaded_preview_lookup_to_pipeline(
     if let Some(debug_state) = debug_state {
         debug_state.palette_colors = colors;
         debug_state.lookup_entries = lookup_entries;
+        debug_state.matching = config.matching;
         debug_state.validation_pending = false;
         debug_state.validation_warmup_updates = 0;
         debug_state.validation_frames_checked = 0;
@@ -2229,6 +2248,7 @@ pub(crate) fn process_preview_palette_rebake(
             pipeline.lookup_entries = lookup_entries.clone();
             if let Some(debug_state) = debug_state.as_deref_mut() {
                 debug_state.lookup_entries = lookup_entries;
+                debug_state.matching = PaletteMatching::from(editor.committed_lab_settings);
                 debug_state.validation_pending = false;
                 debug_state.validation_warmup_updates = 0;
                 debug_state.validation_frames_checked = 0;
@@ -3146,6 +3166,7 @@ fn handle_preview_pixel_debug_readback(
                 &event.data,
                 &debug_state.lookup_entries,
                 &debug_state.palette_colors,
+                readback.dither,
             ));
         }
         PreviewPixelSource::Quantized => {
@@ -3169,13 +3190,15 @@ fn handle_preview_pixel_debug_readback(
             .pixel_debug_clicked_source
             .take()
             .unwrap_or(PreviewPixelSource::Raw);
-        debug_state.output = preview_pixel_pair_text(&raw, &quantized, clicked_source);
+        debug_state.output =
+            preview_pixel_pair_text(&raw, &quantized, clicked_source, debug_state.matching);
     }
     commands.entity(event.entity).despawn();
 }
 
 pub(crate) fn request_preview_palette_validation(
     config: Res<AppConfig>,
+    dither: Res<DirectStreamDitherSettings>,
     debug_state: Option<ResMut<PreviewPixelDebugState>>,
     mut commands: Commands,
 ) {
@@ -3206,6 +3229,7 @@ pub(crate) fn request_preview_palette_validation(
             source: PreviewPixelSource::Raw,
             width: config.stream_width,
             height: config.stream_height,
+            dither: *dither,
         })
         .observe(handle_preview_palette_validation_readback)
         .insert(Readback::texture(raw_image));
@@ -3214,6 +3238,7 @@ pub(crate) fn request_preview_palette_validation(
             source: PreviewPixelSource::Quantized,
             width: config.stream_width,
             height: config.stream_height,
+            dither: *dither,
         })
         .observe(handle_preview_palette_validation_readback)
         .insert(Readback::texture(quantized_image));
@@ -3255,6 +3280,7 @@ fn handle_preview_palette_validation_readback(
             readback.height,
             &debug_state.lookup_entries,
             &debug_state.palette_colors,
+            readback.dither,
             debug_state.validation_frames_checked,
         );
         if let Some(report) = report {
@@ -3277,6 +3303,7 @@ fn validate_preview_palette_frame(
     height: u32,
     lookup_entries: &[u8],
     palette_colors: &[[u8; 4]],
+    dither: DirectStreamDitherSettings,
     frame_number: u32,
 ) -> Option<String> {
     let raw_row_bytes = width as usize * 4;
@@ -3296,10 +3323,22 @@ fn validate_preview_palette_frame(
             let g = raw[raw_offset + 1];
             let r = raw[raw_offset + 2];
             let a = raw[raw_offset + 3];
-            let lookup_key = (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b);
-            let expected_index = expected_preview_index(r, g, b, a, lookup_entries, palette_colors)
-                .map(|(_, index)| index)
-                .unwrap_or(0);
+            let expected = expected_preview_index(
+                r,
+                g,
+                b,
+                a,
+                x as u32,
+                y as u32,
+                dither,
+                lookup_entries,
+                palette_colors,
+            );
+            let expected_index = expected.map(|(_, index, _)| index).unwrap_or(0);
+            let lookup_rgb = expected
+                .map(|(_, _, lookup_rgb)| lookup_rgb)
+                .unwrap_or([r, g, b]);
+            let lookup_key = rgb_key(lookup_rgb);
             if palette_colors.get(expected_index as usize).is_none() {
                 return Some(format!(
                     "automatic preview palette validation frame {frame_number} [MISMATCH]\nraw preview ({x}, {y})\nraw BGRA: {b}, {g}, {r}, {a}\nraw RGB: #{r:02X}{g:02X}{b:02X}\nlookup RGB key: {lookup_key}\nlookup index {expected_index} is outside the loaded palette"
@@ -3313,6 +3352,9 @@ fn validate_preview_palette_frame(
                 ));
             }
             let actual_index = quantized[quantized_offset];
+            if quantized[quantized_offset + 1] != 0 {
+                continue;
+            }
             if actual_index != expected_index {
                 let expected_color = palette_colors
                     .get(expected_index as usize)
@@ -3343,14 +3385,23 @@ fn expected_preview_index(
     g: u8,
     b: u8,
     alpha: u8,
+    x: u32,
+    y: u32,
+    dither: DirectStreamDitherSettings,
     lookup_entries: &[u8],
     palette_colors: &[[u8; 4]],
-) -> Option<(PreviewLookupRoute, u8)> {
-    let lookup_key = (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b);
+) -> Option<(PreviewLookupRoute, u8, [u8; 3])> {
     let direct = alpha == 254 && lookup_entries.len() >= crate::palette_lut::LUT_ENTRY_COUNT * 2;
     if !direct && let Some(index) = exact_palette_index(r, g, b, palette_colors) {
-        return Some((PreviewLookupRoute::ExactPalette, index));
+        return Some((PreviewLookupRoute::ExactPalette, index, [r, g, b]));
     }
+
+    let lookup_rgb = if direct {
+        [r, g, b]
+    } else {
+        apply_preview_dither([r, g, b], x, y, dither)
+    };
+    let lookup_key = rgb_key(lookup_rgb);
     let expected_lookup_key = if direct {
         lookup_key + crate::palette_lut::LUT_ENTRY_COUNT
     } else {
@@ -3367,8 +3418,83 @@ fn expected_preview_index(
                     PreviewLookupRoute::AlteredTable
                 },
                 index,
+                lookup_rgb,
             )
         })
+}
+
+fn rgb_key([r, g, b]: [u8; 3]) -> usize {
+    (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b)
+}
+
+fn apply_preview_dither(
+    [r, g, b]: [u8; 3],
+    x: u32,
+    y: u32,
+    dither: DirectStreamDitherSettings,
+) -> [u8; 3] {
+    let intensity = dither.intensity.max(0.0);
+    if intensity <= 0.0 {
+        return [r, g, b];
+    }
+
+    let scale = dither.scale.max(0.125);
+    let cell_x = ((x as f32 + 0.5) / scale).floor() as i32;
+    let cell_y = ((y as f32 + 0.5) / scale).floor() as i32;
+    let value_noise = ordered_dither(cell_x, cell_y, 0, 0);
+    let chroma_noise = ordered_dither(cell_x, cell_y, 3, 5);
+    let hue_noise = ordered_dither(cell_x, cell_y, 6, 2);
+
+    let mut oklch = Oklch::from(rgb_to_oklab(r, g, b));
+    oklch.l = (oklch.l + value_noise * dither.value_strength * intensity).clamp(0.0, 1.0);
+    oklch.c = (oklch.c + chroma_noise * dither.chroma_strength * intensity).max(0.0);
+    oklch.h += hue_noise * dither.hue_strength * intensity * std::f32::consts::TAU;
+    oklch.c = clamp_preview_chroma_to_srgb_gamut(oklch);
+
+    let (r, g, b) = oklch_to_linear_srgb(oklch);
+    [srgb_byte(r), srgb_byte(g), srgb_byte(b)]
+}
+
+fn ordered_dither(cell_x: i32, cell_y: i32, offset_x: i32, offset_y: i32) -> f32 {
+    let x = (cell_x + offset_x) & 7;
+    let y = (cell_y + offset_y) & 7;
+    let mut index = 0u32;
+    for bit in 0..3 {
+        let x_bit = ((x >> bit) & 1) as u32;
+        let y_bit = ((y >> bit) & 1) as u32;
+        let pair = match (x_bit, y_bit) {
+            (0, 0) => 0,
+            (1, 0) => 2,
+            (0, 1) => 3,
+            _ => 1,
+        };
+        index += pair << (bit * 2);
+    }
+    ((index as f32 + 0.5) / 64.0) * 2.0 - 1.0
+}
+
+fn clamp_preview_chroma_to_srgb_gamut(color: Oklch) -> f32 {
+    if color.c <= 0.0 {
+        return 0.0;
+    }
+    let (r, g, b) = oklch_to_linear_srgb(color);
+    if in_srgb_gamut(r, g, b) {
+        return color.c;
+    }
+
+    let mut low = 0.0;
+    let mut high = color.c;
+    for _ in 0..16 {
+        let mid = (low + high) * 0.5;
+        let candidate = Oklch { c: mid, ..color };
+        let (r, g, b) = oklch_to_linear_srgb(candidate);
+        if in_srgb_gamut(r, g, b) {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    low
 }
 
 fn exact_palette_index(r: u8, g: u8, b: u8, palette_colors: &[[u8; 4]]) -> Option<u8> {
@@ -3384,6 +3510,7 @@ fn preview_raw_pixel_debug(
     data: &[u8],
     lookup_entries: &[u8],
     palette_colors: &[[u8; 4]],
+    dither: DirectStreamDitherSettings,
 ) -> RawPixelDebug {
     let row_bytes = readback.width as usize * 4;
     let aligned_row_bytes =
@@ -3396,12 +3523,24 @@ fn preview_raw_pixel_debug(
     let g = data[offset + 1];
     let r = data[offset + 2];
     let a = data[offset + 3];
-    let lookup_key = (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b);
-    let expected = expected_preview_index(r, g, b, a, lookup_entries, palette_colors);
+    let expected = expected_preview_index(
+        r,
+        g,
+        b,
+        a,
+        readback.x,
+        readback.y,
+        dither,
+        lookup_entries,
+        palette_colors,
+    );
     let lookup_route = expected
-        .map(|(route, _)| route)
+        .map(|(route, _, _)| route)
         .unwrap_or(PreviewLookupRoute::AlteredTable);
-    let expected_index = expected.map(|(_, index)| index);
+    let expected_index = expected.map(|(_, index, _)| index);
+    let lookup_rgb = expected
+        .map(|(_, _, lookup_rgb)| lookup_rgb)
+        .unwrap_or([r, g, b]);
     let expected_color = expected_index
         .and_then(|index| palette_colors.get(index as usize).copied())
         .unwrap_or([0, 0, 0, 255]);
@@ -3412,7 +3551,8 @@ fn preview_raw_pixel_debug(
         g,
         r,
         a,
-        lookup_key,
+        lookup_rgb,
+        lookup_key: rgb_key(lookup_rgb),
         lookup_route,
         expected_index,
         expected_color,
@@ -3428,6 +3568,7 @@ impl RawPixelDebug {
             g: 0,
             r: 0,
             a: 0,
+            lookup_rgb: [0, 0, 0],
             lookup_key: 0,
             lookup_route: PreviewLookupRoute::AlteredTable,
             expected_index: None,
@@ -3446,6 +3587,7 @@ fn preview_quantized_pixel_debug(
         bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(row_bytes);
     let offset = readback.y as usize * aligned_row_bytes + readback.x as usize * 4;
     let palette_index = data.get(offset).copied().unwrap_or(0);
+    let direct_overlay = data.get(offset + 1).copied().unwrap_or(0) != 0;
     let color = palette_colors
         .get(palette_index as usize)
         .copied()
@@ -3453,6 +3595,7 @@ fn preview_quantized_pixel_debug(
     QuantizedPixelDebug {
         palette_index,
         color,
+        direct_overlay,
     }
 }
 
@@ -3460,10 +3603,19 @@ fn preview_pixel_pair_text(
     raw: &RawPixelDebug,
     quantized: &QuantizedPixelDebug,
     clicked_source: PreviewPixelSource,
+    matching: PaletteMatching,
 ) -> String {
+    let lookup_input = if raw.lookup_rgb != [raw.r, raw.g, raw.b] {
+        format!(
+            "\nlookup input after dither: #{:02X}{:02X}{:02X}",
+            raw.lookup_rgb[0], raw.lookup_rgb[1], raw.lookup_rgb[2]
+        )
+    } else {
+        String::new()
+    };
     if is_direct_output_overlay(raw, quantized, clicked_source) {
         return format!(
-            "Preview sample ({}, {})\nunderlay raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}\noverlay output: index {} #{:02X}{:02X}{:02X}\nexpected: direct output overlay index {} #{:02X}{:02X}{:02X}\nDelta E OK: n/a (overlay replaces underlay)\nunderlay lookup RGB key: {}",
+            "Preview sample ({}, {})\nunderlay raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}{}\noverlay output: index {} #{:02X}{:02X}{:02X}\nexpected: direct output overlay index {} #{:02X}{:02X}{:02X}\nDelta E OK: n/a (overlay replaces underlay)\nunderlay lookup RGB key: {}",
             raw.x,
             raw.y,
             raw.r,
@@ -3473,6 +3625,7 @@ fn preview_pixel_pair_text(
             raw.g,
             raw.r,
             raw.a,
+            lookup_input,
             quantized.palette_index,
             quantized.color[0],
             quantized.color[1],
@@ -3500,8 +3653,25 @@ fn preview_pixel_pair_text(
     let dh_degrees = (raw_oklch.h.to_degrees() - quantized_oklch.h.to_degrees() + 180.0)
         .rem_euclid(360.0)
         - 180.0;
+    let prequantization = if raw.lookup_route == PreviewLookupRoute::AlteredTable {
+        format!(
+            "\nprequantization: L x{:.3} {:+.3}, C x{:.3} {:+.3}, H {:+.3} turns",
+            1.0 + matching.lightness_multiply,
+            matching.lightness_add,
+            1.0 + matching.chroma_multiply,
+            matching.chroma_add,
+            matching.hue_add,
+        )
+    } else {
+        String::new()
+    };
+    let mapping_status = if raw.expected_index == Some(quantized.palette_index) {
+        "MATCH"
+    } else {
+        "MISMATCH"
+    };
     format!(
-        "Preview sample ({}, {})\nbefore raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}\nafter actual: index {} #{:02X}{:02X}{:02X}\nexpected: {} index {} #{:02X}{:02X}{:02X}\nDelta E OK: {:.5}  OKLab dL/da/db: {:.4} / {:.4} / {:.4}\nOKLCH delta L/C/H: {:.4} / {:.4} / {:.1}deg\nlookup RGB key: {}",
+        "Preview sample ({}, {})\nbefore raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}{}\nafter actual: index {} #{:02X}{:02X}{:02X}\nmapping: [{}]\nexpected: {} index {} #{:02X}{:02X}{:02X}{}\nDelta E OK: {:.5}  OKLab dL/da/db: {:.4} / {:.4} / {:.4}\nOKLCH delta L/C/H: {:.4} / {:.4} / {:.1}deg\nlookup RGB key: {}",
         raw.x,
         raw.y,
         raw.r,
@@ -3511,15 +3681,18 @@ fn preview_pixel_pair_text(
         raw.g,
         raw.r,
         raw.a,
+        lookup_input,
         quantized.palette_index,
         quantized.color[0],
         quantized.color[1],
         quantized.color[2],
+        mapping_status,
         lookup_route,
         expected_index,
         expected_color[0],
         expected_color[1],
         expected_color[2],
+        prequantization,
         delta_e_ok,
         delta_l.abs(),
         delta_a.abs(),
@@ -3554,13 +3727,11 @@ fn preview_expected_readout(
 }
 
 fn is_direct_output_overlay(
-    raw: &RawPixelDebug,
+    _raw: &RawPixelDebug,
     quantized: &QuantizedPixelDebug,
-    clicked_source: PreviewPixelSource,
+    _clicked_source: PreviewPixelSource,
 ) -> bool {
-    clicked_source == PreviewPixelSource::Quantized
-        && raw.lookup_route != PreviewLookupRoute::DirectTable
-        && raw.expected_index != Some(quantized.palette_index)
+    quantized.direct_overlay
 }
 
 #[cfg(test)]
@@ -3575,6 +3746,7 @@ mod preview_pixel_debug_tests {
             g: 0,
             r: 0,
             a: 255,
+            lookup_rgb: [0, 0, 0],
             lookup_key: 0,
             lookup_route: route,
             expected_index,
@@ -3586,6 +3758,7 @@ mod preview_pixel_debug_tests {
         QuantizedPixelDebug {
             palette_index: index,
             color: [4, 5, 6, 255],
+            direct_overlay: false,
         }
     }
 
@@ -3603,15 +3776,38 @@ mod preview_pixel_debug_tests {
     }
 
     #[test]
-    fn after_click_reports_direct_overlay_when_after_differs_from_altered_expectation() {
+    fn after_click_reports_mismatch_when_unmarked_output_differs_from_expectation() {
         let raw = raw_debug(PreviewLookupRoute::AlteredTable, Some(9));
         let quantized = quantized_debug(42);
 
         let (label, index, color) =
             preview_expected_readout(&raw, &quantized, PreviewPixelSource::Quantized);
 
+        assert_eq!(label, "altered/prequantized IPSMAP table");
+        assert_eq!(index, "9");
+        assert_eq!(color, [1, 2, 3, 255]);
+
+        let text = preview_pixel_pair_text(
+            &raw,
+            &quantized,
+            PreviewPixelSource::Quantized,
+            PaletteMatching::default(),
+        );
+        assert!(text.contains("mapping: [MISMATCH]"));
+        assert!(!text.contains("direct output overlay"));
+    }
+
+    #[test]
+    fn overlay_marker_identifies_direct_output_even_when_indices_match() {
+        let raw = raw_debug(PreviewLookupRoute::AlteredTable, Some(9));
+        let mut quantized = quantized_debug(9);
+        quantized.direct_overlay = true;
+
+        let (label, index, color) =
+            preview_expected_readout(&raw, &quantized, PreviewPixelSource::Raw);
+
         assert_eq!(label, "direct output overlay");
-        assert_eq!(index, "42");
+        assert_eq!(index, "9");
         assert_eq!(color, [4, 5, 6, 255]);
     }
 
@@ -3621,11 +3817,18 @@ mod preview_pixel_debug_tests {
         raw.r = 0x14;
         raw.g = 0x07;
         raw.b = 0x2A;
+        raw.lookup_rgb = [0x14, 0x07, 0x2A];
         raw.lookup_key = 1_312_554;
         let mut quantized = quantized_debug(169);
         quantized.color = [0x52, 0x45, 0xFC, 255];
+        quantized.direct_overlay = true;
 
-        let text = preview_pixel_pair_text(&raw, &quantized, PreviewPixelSource::Quantized);
+        let text = preview_pixel_pair_text(
+            &raw,
+            &quantized,
+            PreviewPixelSource::Quantized,
+            PaletteMatching::default(),
+        );
 
         assert!(text.contains("underlay raw: #14072A"));
         assert!(text.contains("overlay output: index 169 #5245FC"));
@@ -3633,6 +3836,42 @@ mod preview_pixel_debug_tests {
         assert!(text.contains("underlay lookup RGB key: 1312554"));
         assert!(!text.contains("OKLab dL/da/db"));
         assert!(!text.contains("OKLCH delta"));
+    }
+
+    #[test]
+    fn altered_lookup_prediction_uses_the_same_ordered_dither_input_as_the_shader() {
+        let dither = DirectStreamDitherSettings {
+            scale: 1.0,
+            intensity: 1.0,
+            value_strength: 0.2,
+            chroma_strength: 0.05,
+            hue_strength: 0.01,
+        };
+        let raw_rgb = [0x14, 0x07, 0x2A];
+        let lookup_rgb = apply_preview_dither(raw_rgb, 116, 33, dither);
+        assert_ne!(lookup_rgb, raw_rgb);
+
+        let lookup_key = rgb_key(lookup_rgb);
+        let mut lookup_entries = vec![0; lookup_key + 1];
+        lookup_entries[lookup_key] = 42;
+        let palette = [[1, 2, 3, 255]];
+
+        let expected = expected_preview_index(
+            raw_rgb[0],
+            raw_rgb[1],
+            raw_rgb[2],
+            255,
+            116,
+            33,
+            dither,
+            &lookup_entries,
+            &palette,
+        );
+
+        assert_eq!(
+            expected,
+            Some((PreviewLookupRoute::AlteredTable, 42, lookup_rgb))
+        );
     }
 
     #[test]

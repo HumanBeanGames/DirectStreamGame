@@ -33,6 +33,7 @@ pub(crate) const GPU_DIRECT_TEXT_LAYER: usize = 2;
 pub(crate) const GPU_PREVIEW_DISPLAY_LAYER: usize = 3;
 pub(crate) const GPU_PREVIEW_RAW_CAPTURE_LAYER: usize = 4;
 pub(crate) const GPU_DIRECT_RAW_TEXT_LAYER: usize = 5;
+pub(crate) const INDEXED_DIRECT_OVERLAY_MARKER: f32 = 1.0;
 const PALETTE_SHADER_HANDLE: Handle<Shader> = uuid_handle!("b69538c2-4fa1-4a12-89a5-32986e423f4d");
 const PALETTE_PREVIEW_DISPLAY_SHADER_HANDLE: Handle<Shader> =
     uuid_handle!("8ac093df-eddb-44f3-96c7-435d6c7e00a9");

@@ -151,7 +151,9 @@ mod tests {
 
     #[test]
     fn indexed_rgba8_readback_compacts_red_channel() {
-        let pixels = vec![3, 0, 0, 255, 17, 0, 0, 255, 89, 0, 0, 255, 241, 0, 0, 255];
+        let pixels = vec![
+            3, 255, 0, 255, 17, 0, 0, 255, 89, 255, 0, 255, 241, 0, 0, 255,
+        ];
 
         assert_eq!(compact_indexed_rgba8(&pixels, 2, 2), vec![3, 17, 89, 241]);
     }

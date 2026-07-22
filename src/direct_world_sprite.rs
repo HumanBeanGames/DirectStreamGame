@@ -1,5 +1,5 @@
 use crate::{
-    gpu_palette::GpuPalettePipeline,
+    gpu_palette::{GpuPalettePipeline, INDEXED_DIRECT_OVERLAY_MARKER},
     palette_lut::LUT_ENTRY_COUNT,
     public_types::{DirectColorLookup, DirectStreamTarget},
 };
@@ -447,7 +447,12 @@ fn build_overlay_pixels(
             let color = if let Some(entries) = direct_entries {
                 let index =
                     sprite_palette_index_at(source_image, source_rect, x, y, tint, entries)?;
-                Color::linear_rgba(f32::from(index) / 255.0, 0.0, 0.0, 1.0)
+                Color::linear_rgba(
+                    f32::from(index) / 255.0,
+                    INDEXED_DIRECT_OVERLAY_MARKER,
+                    0.0,
+                    1.0,
+                )
             } else {
                 Color::srgba(
                     f32::from(pixel[0]) / 255.0,
@@ -697,7 +702,7 @@ mod tests {
         assert_eq!(built.pixels.len(), 1);
         assert_eq!((built.pixels[0].x, built.pixels[0].y), (0, 0));
         assert!((color.red - (42.0 / 255.0)).abs() < 0.0001);
-        assert_eq!(color.green, 0.0);
+        assert_eq!(color.green, INDEXED_DIRECT_OVERLAY_MARKER);
         assert_eq!(color.blue, 0.0);
         assert_eq!(color.alpha, 1.0);
     }
@@ -781,7 +786,7 @@ mod tests {
 
         assert_eq!(built.pixels.len(), 1);
         assert!((color.red - (12.0 / 255.0)).abs() < 0.0001);
-        assert_eq!(color.green, 0.0);
+        assert_eq!(color.green, INDEXED_DIRECT_OVERLAY_MARKER);
         assert_eq!(color.blue, 0.0);
         assert_eq!(color.alpha, 1.0);
     }
@@ -826,7 +831,7 @@ mod tests {
 
         assert_eq!(built.pixels.len(), 1);
         assert!((color.red - (33.0 / 255.0)).abs() < 0.0001);
-        assert_eq!(color.green, 0.0);
+        assert_eq!(color.green, INDEXED_DIRECT_OVERLAY_MARKER);
         assert_eq!(color.blue, 0.0);
         assert_eq!(color.alpha, 1.0);
     }

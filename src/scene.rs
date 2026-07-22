@@ -40,6 +40,8 @@ use crossbeam_channel::Receiver;
 use std::{
     collections::HashMap,
     fs,
+    fs::OpenOptions,
+    io::{BufWriter, Write},
     path::PathBuf,
     sync::{
         Arc,
@@ -47,6 +49,9 @@ use std::{
     },
     time::{Duration, Instant},
 };
+
+const PREVIEW_PALETTE_VALIDATION_FRAMES: u32 = 30;
+const PREVIEW_PALETTE_MISMATCH_LOG: &str = "preview_palette_mismatches.txt";
 
 pub(crate) struct PendingReadback {
     pub(crate) captured_at: Instant,
@@ -418,6 +423,7 @@ struct PreviewPixelDebugReadback {
 #[derive(Component)]
 struct PreviewPaletteValidationReadback {
     source: PreviewPixelSource,
+    generation: u64,
     width: u32,
     height: u32,
     dither: DirectStreamDitherSettings,
@@ -450,6 +456,11 @@ pub(crate) struct PreviewPixelDebugState {
     validation_pending: bool,
     validation_warmup_updates: u32,
     validation_frames_checked: u32,
+    validation_total_mismatches: u64,
+    validation_total_mapping_mismatches: u64,
+    validation_total_fingerprint_mismatches: u64,
+    pub(crate) display_generation: u64,
+    validation_last_requested_generation: Option<u64>,
     validation_raw_data: Option<Vec<u8>>,
     validation_quantized_data: Option<Vec<u8>>,
     pixel_debug_raw: Option<RawPixelDebug>,
@@ -655,6 +666,7 @@ fn spawn_preview_comparison(
     Handle<RawPreviewDisplayMaterial>,
     PreviewPixelDebugState,
 ) {
+    reset_preview_palette_mismatch_log(width, height);
     let raw_output_images = pipeline.source_images.clone();
     let first_raw_output = raw_output_images[0].clone();
 
@@ -734,6 +746,11 @@ fn spawn_preview_comparison(
             validation_pending: false,
             validation_warmup_updates: 0,
             validation_frames_checked: 0,
+            validation_total_mismatches: 0,
+            validation_total_mapping_mismatches: 0,
+            validation_total_fingerprint_mismatches: 0,
+            display_generation: 0,
+            validation_last_requested_generation: None,
             validation_raw_data: None,
             validation_quantized_data: None,
             pixel_debug_raw: None,
@@ -743,6 +760,16 @@ fn spawn_preview_comparison(
             active_pixel_debug_request_id: None,
         },
     )
+}
+
+fn reset_preview_palette_mismatch_log(width: u32, height: u32) {
+    let header = format!(
+        "DirectStreamGame preview palette audit\nsize={width}x{height}\nframes={}\n\n",
+        PREVIEW_PALETTE_VALIDATION_FRAMES
+    );
+    if let Err(error) = fs::write(PREVIEW_PALETTE_MISMATCH_LOG, header) {
+        eprintln!("Could not reset {PREVIEW_PALETTE_MISMATCH_LOG}: {error}");
+    }
 }
 
 pub(crate) fn update_preview_layout(
@@ -3227,15 +3254,22 @@ pub(crate) fn request_preview_palette_validation(
     let Some(mut debug_state) = debug_state else {
         return;
     };
-    if debug_state.validation_pending || debug_state.validation_frames_checked >= 120 {
+    if debug_state.validation_pending
+        || debug_state.validation_frames_checked >= PREVIEW_PALETTE_VALIDATION_FRAMES
+    {
         return;
     }
     if debug_state.validation_warmup_updates < 60 {
         debug_state.validation_warmup_updates += 1;
         return;
     }
+    if debug_state.validation_last_requested_generation == Some(debug_state.display_generation) {
+        return;
+    }
 
     debug_state.validation_pending = true;
+    let generation = debug_state.display_generation;
+    debug_state.validation_last_requested_generation = Some(generation);
     debug_state.validation_raw_data = None;
     debug_state.validation_quantized_data = None;
     let raw_image = debug_state.raw_image.clone();
@@ -3243,6 +3277,7 @@ pub(crate) fn request_preview_palette_validation(
     commands
         .spawn(PreviewPaletteValidationReadback {
             source: PreviewPixelSource::Raw,
+            generation,
             width: config.stream_width,
             height: config.stream_height,
             dither: *dither,
@@ -3252,6 +3287,7 @@ pub(crate) fn request_preview_palette_validation(
     commands
         .spawn(PreviewPaletteValidationReadback {
             source: PreviewPixelSource::Quantized,
+            generation,
             width: config.stream_width,
             height: config.stream_height,
             dither: *dither,
@@ -3289,27 +3325,83 @@ fn handle_preview_palette_validation_readback(
         debug_state.validation_pending = false;
         debug_state.validation_frames_checked =
             debug_state.validation_frames_checked.saturating_add(1);
-        let report = validate_preview_palette_frame(
-            &raw,
-            &quantized,
-            readback.width,
-            readback.height,
-            &debug_state.lookup_entries,
-            &debug_state.palette_colors,
-            readback.dither,
-            debug_state.validation_frames_checked,
-        );
-        if let Some(report) = report {
-            eprintln!("{report}");
-            debug_state.output = report;
-            debug_state.validation_frames_checked = 120;
-        } else if debug_state.validation_frames_checked == 120 {
-            let report = "automatic preview palette validation: 120 full frames matched".to_owned();
+        let frame_number = debug_state.validation_frames_checked;
+        let log_result = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(PREVIEW_PALETTE_MISMATCH_LOG)
+            .map(BufWriter::new)
+            .and_then(|mut log| {
+                let summary = validate_preview_palette_frame(
+                    &raw,
+                    &quantized,
+                    readback.width,
+                    readback.height,
+                    &debug_state.lookup_entries,
+                    &debug_state.palette_colors,
+                    readback.dither,
+                    debug_state.matching,
+                    frame_number,
+                    readback.generation,
+                    &mut log,
+                )?;
+                writeln!(
+                    log,
+                    "FRAME {frame_number} generation={} mismatches={} mapping_mismatches={} fingerprint_mismatches={}",
+                    readback.generation,
+                    summary.mismatches,
+                    summary.mapping_mismatches,
+                    summary.fingerprint_mismatches,
+                )?;
+                Ok(summary)
+            });
+        match log_result {
+            Ok(summary) => {
+                debug_state.validation_total_mismatches += summary.mismatches;
+                debug_state.validation_total_mapping_mismatches += summary.mapping_mismatches;
+                debug_state.validation_total_fingerprint_mismatches +=
+                    summary.fingerprint_mismatches;
+                debug_state.output = format!(
+                    "Palette audit {}/{}: {} mismatches (see {})",
+                    frame_number,
+                    PREVIEW_PALETTE_VALIDATION_FRAMES,
+                    summary.mismatches,
+                    PREVIEW_PALETTE_MISMATCH_LOG,
+                );
+            }
+            Err(error) => {
+                debug_state.output =
+                    format!("Could not write {}: {error}", PREVIEW_PALETTE_MISMATCH_LOG);
+                eprintln!("{}", debug_state.output);
+            }
+        }
+        if frame_number == PREVIEW_PALETTE_VALIDATION_FRAMES {
+            let report = format!(
+                "automatic preview palette validation: {} frames, {} mismatches (mapping {}, fingerprint {})",
+                PREVIEW_PALETTE_VALIDATION_FRAMES,
+                debug_state.validation_total_mismatches,
+                debug_state.validation_total_mapping_mismatches,
+                debug_state.validation_total_fingerprint_mismatches,
+            );
+            if let Ok(mut log) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(PREVIEW_PALETTE_MISMATCH_LOG)
+            {
+                let _ = writeln!(log, "FINAL {report}");
+            }
             eprintln!("{report}");
             debug_state.output = report;
         }
     }
     commands.entity(event.entity).despawn();
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PreviewFrameValidationSummary {
+    mismatches: u64,
+    mapping_mismatches: u64,
+    fingerprint_mismatches: u64,
 }
 
 fn validate_preview_palette_frame(
@@ -3320,83 +3412,53 @@ fn validate_preview_palette_frame(
     lookup_entries: &[u8],
     palette_colors: &[[u8; 4]],
     dither: DirectStreamDitherSettings,
+    matching: PaletteMatching,
     frame_number: u32,
-) -> Option<String> {
-    let raw_row_bytes = width as usize * 4;
-    let raw_aligned_row_bytes =
-        bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(raw_row_bytes);
+    generation: u64,
+    log: &mut impl Write,
+) -> std::io::Result<PreviewFrameValidationSummary> {
+    let mut summary = PreviewFrameValidationSummary::default();
 
     for y in 0..height as usize {
         for x in 0..width as usize {
-            let raw_offset = y * raw_aligned_row_bytes + x * 4;
-            if raw_offset + 3 >= raw.len() {
-                return Some(format!(
-                    "automatic preview palette validation frame {frame_number}\nreadback out of range at ({x}, {y})"
-                ));
-            }
-
-            let b = raw[raw_offset];
-            let g = raw[raw_offset + 1];
-            let r = raw[raw_offset + 2];
-            let a = raw[raw_offset + 3];
-            let expected = expected_preview_index(
-                r,
-                g,
-                b,
-                a,
-                x as u32,
-                y as u32,
+            let readback = PreviewPixelDebugReadback {
+                request_id: 0,
+                source: PreviewPixelSource::Raw,
+                x: x as u32,
+                y: y as u32,
+                width,
                 dither,
-                lookup_entries,
-                palette_colors,
-            );
-            let expected_index = expected.map(|(_, index, _)| index).unwrap_or(0);
-            let lookup_rgb = expected
-                .map(|(_, _, lookup_rgb)| lookup_rgb)
-                .unwrap_or([r, g, b]);
-            let lookup_key = rgb_key(lookup_rgb);
-            if palette_colors.get(expected_index as usize).is_none() {
-                return Some(format!(
-                    "automatic preview palette validation frame {frame_number} [MISMATCH]\nraw preview ({x}, {y})\nraw BGRA: {b}, {g}, {r}, {a}\nraw RGB: #{r:02X}{g:02X}{b:02X}\nlookup RGB key: {lookup_key}\nlookup index {expected_index} is outside the loaded palette"
-                ));
-            }
-
-            let quantized_offset = y * raw_aligned_row_bytes + x * 4;
-            if quantized_offset + 3 >= quantized.len() {
-                return Some(format!(
-                    "automatic preview palette validation frame {frame_number}\nquantized readback out of range at ({x}, {y})"
-                ));
-            }
-            let actual_index = quantized[quantized_offset];
-            if quantized[quantized_offset + 1] != 0 {
+            };
+            let raw_debug =
+                preview_raw_pixel_debug(&readback, raw, lookup_entries, palette_colors, dither);
+            let quantized_debug =
+                preview_quantized_pixel_debug(&readback, quantized, palette_colors);
+            if quantized_debug.direct_overlay {
                 continue;
             }
-            if actual_index != expected_index {
-                let expected_fingerprint = lookup_fingerprint(lookup_rgb);
-                let actual_fingerprint = u16::from(quantized[quantized_offset + 2])
-                    | (u16::from(quantized[quantized_offset + 3]) << 8);
-                let expected_color = palette_colors
-                    .get(expected_index as usize)
-                    .copied()
-                    .unwrap_or([0, 0, 0, 255]);
-                let actual_color = palette_colors
-                    .get(actual_index as usize)
-                    .copied()
-                    .unwrap_or([0, 0, 0, 255]);
-                return Some(format!(
-                    "automatic preview palette validation frame {frame_number} [MISMATCH]\nraw preview ({x}, {y})\nraw BGRA: {b}, {g}, {r}, {a}\nraw RGB: #{r:02X}{g:02X}{b:02X}\nlookup RGB key: {lookup_key}\nlookup fingerprint CPU/GPU: {expected_fingerprint:04X}/{actual_fingerprint:04X}\nexpected index {expected_index} #{:02X}{:02X}{:02X}\nactual output index {actual_index} #{:02X}{:02X}{:02X}",
-                    expected_color[0],
-                    expected_color[1],
-                    expected_color[2],
-                    actual_color[0],
-                    actual_color[1],
-                    actual_color[2],
-                ));
+            let mapping_mismatch = raw_debug.expected_index != Some(quantized_debug.palette_index);
+            let fingerprint_mismatch =
+                lookup_fingerprint(raw_debug.lookup_rgb) != quantized_debug.lookup_fingerprint;
+            if !mapping_mismatch && !fingerprint_mismatch {
+                continue;
             }
+            summary.mismatches += 1;
+            summary.mapping_mismatches += u64::from(mapping_mismatch);
+            summary.fingerprint_mismatches += u64::from(fingerprint_mismatch);
+            writeln!(
+                log,
+                "FRAME {frame_number} generation={generation} pixel=({x},{y}) mapping_mismatch={mapping_mismatch} fingerprint_mismatch={fingerprint_mismatch}\n{}\n---",
+                preview_pixel_pair_text(
+                    &raw_debug,
+                    &quantized_debug,
+                    PreviewPixelSource::Raw,
+                    matching,
+                ),
+            )?;
         }
     }
 
-    None
+    Ok(summary)
 }
 
 fn expected_preview_index(
@@ -3451,7 +3513,7 @@ fn lookup_fingerprint([r, g, b]: [u8; 3]) -> u16 {
     for channel in [r, g, b] {
         hash = (hash ^ u32::from(channel)).wrapping_mul(16_777_619);
     }
-    (hash ^ (hash >> 16)) as u16
+    ((hash ^ (hash >> 16)) % (255 * 256)) as u16
 }
 
 fn apply_preview_dither(
@@ -3614,9 +3676,10 @@ fn preview_quantized_pixel_debug(
         bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(row_bytes);
     let offset = readback.y as usize * aligned_row_bytes + readback.x as usize * 4;
     let palette_index = data.get(offset).copied().unwrap_or(0);
-    let direct_overlay = data.get(offset + 1).copied().unwrap_or(0) != 0;
+    let marker_or_fingerprint_high = data.get(offset + 1).copied().unwrap_or(0);
+    let direct_overlay = marker_or_fingerprint_high == u8::MAX;
     let lookup_fingerprint = u16::from(data.get(offset + 2).copied().unwrap_or(0))
-        | (u16::from(data.get(offset + 3).copied().unwrap_or(0)) << 8);
+        | (u16::from(marker_or_fingerprint_high) << 8);
     let color = palette_colors
         .get(palette_index as usize)
         .copied()

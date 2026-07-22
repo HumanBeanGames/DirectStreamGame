@@ -783,6 +783,7 @@ fn throttle_preview_palette_cameras(
             if let Some(debug_state) = debug_state.as_deref_mut() {
                 debug_state.raw_image = pipeline.source_images[display_index].clone();
                 debug_state.quantized_image = pipeline.output_images[display_index].clone();
+                debug_state.display_generation = debug_state.display_generation.wrapping_add(1);
             }
         }
 

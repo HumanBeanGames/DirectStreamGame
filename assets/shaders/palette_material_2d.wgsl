@@ -309,16 +309,16 @@ fn lookup_fingerprint(source: vec3<f32>) -> u32 {
     hash = (hash ^ source_u8.r) * 16777619u;
     hash = (hash ^ source_u8.g) * 16777619u;
     hash = (hash ^ source_u8.b) * 16777619u;
-    return (hash ^ (hash >> 16u)) & 65535u;
+    return (hash ^ (hash >> 16u)) % 65280u;
 }
 
 fn indexed_output(palette_index: u32, lookup_source: vec3<f32>) -> vec4<f32> {
     let fingerprint = lookup_fingerprint(lookup_source);
     return vec4<f32>(
         f32(palette_index) / 255.0,
-        0.0,
-        f32(fingerprint & 255u) / 255.0,
         f32(fingerprint >> 8u) / 255.0,
+        f32(fingerprint & 255u) / 255.0,
+        1.0,
     );
 }
 

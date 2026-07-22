@@ -5,8 +5,8 @@ use crate::{
     constants::INITIAL_RENDER_SETTLE_FRAMES,
     frames::{RawFrame, RawFrameSenders},
     gpu_palette::{
-        GpuPalettePipeline, PaletteMaterial, RawPreviewCopyMaterial, make_stream_source_image,
-        retarget_custom_host_pipeline,
+        GpuPalettePipeline, PaletteMaterial, RawPreviewCopyMaterial, RawPreviewSnapshotMaterial,
+        make_stream_source_image, retarget_custom_host_pipeline,
     },
     palette::PaletteFrameHub,
     palette::load_palette_lookup_runtime,
@@ -45,6 +45,7 @@ pub(crate) struct StreamControlAssets<'w> {
     images: ResMut<'w, Assets<Image>>,
     palette_materials: ResMut<'w, Assets<PaletteMaterial>>,
     raw_copy_materials: ResMut<'w, Assets<RawPreviewCopyMaterial>>,
+    raw_snapshot_materials: ResMut<'w, Assets<RawPreviewSnapshotMaterial>>,
 }
 
 impl StreamControl {
@@ -80,6 +81,7 @@ impl StreamControl {
         images: &mut Assets<Image>,
         palette_materials: &mut Assets<PaletteMaterial>,
         raw_copy_materials: &mut Assets<RawPreviewCopyMaterial>,
+        raw_snapshot_materials: &mut Assets<RawPreviewSnapshotMaterial>,
         target: &mut DirectStreamTarget,
         direct_stream_state: &mut DirectStreamState,
         readback: &mut StreamReadback,
@@ -124,6 +126,7 @@ impl StreamControl {
             images,
             palette_materials,
             raw_copy_materials,
+            raw_snapshot_materials,
             camera_targets,
             quad_transforms,
             width,
@@ -540,6 +543,7 @@ pub(crate) fn handle_direct_stream_start_requests(
                         &mut assets.images,
                         &mut assets.palette_materials,
                         &mut assets.raw_copy_materials,
+                        &mut assets.raw_snapshot_materials,
                         &mut target,
                         &mut direct_stream_state,
                         readback,

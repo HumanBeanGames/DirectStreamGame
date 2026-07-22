@@ -33,6 +33,7 @@ pub(crate) const GPU_DIRECT_TEXT_LAYER: usize = 2;
 pub(crate) const GPU_PREVIEW_DISPLAY_LAYER: usize = 3;
 pub(crate) const GPU_PREVIEW_RAW_CAPTURE_LAYER: usize = 4;
 pub(crate) const GPU_DIRECT_RAW_TEXT_LAYER: usize = 5;
+pub(crate) const GPU_PREVIEW_RAW_SNAPSHOT_LAYER: usize = 6;
 pub(crate) const INDEXED_DIRECT_OVERLAY_MARKER: f32 = 1.0;
 const PALETTE_SHADER_HANDLE: Handle<Shader> = uuid_handle!("b69538c2-4fa1-4a12-89a5-32986e423f4d");
 const PALETTE_PREVIEW_DISPLAY_SHADER_HANDLE: Handle<Shader> =
@@ -41,6 +42,8 @@ const RAW_PREVIEW_COPY_SHADER_HANDLE: Handle<Shader> =
     uuid_handle!("2fe46520-bd33-4420-8c37-3961ce605e77");
 const RAW_PREVIEW_DISPLAY_SHADER_HANDLE: Handle<Shader> =
     uuid_handle!("52f15af4-c6dd-4ed7-bb24-113c21f862e7");
+const RAW_PREVIEW_SNAPSHOT_SHADER_HANDLE: Handle<Shader> =
+    uuid_handle!("68f56d29-7d23-475f-a3f0-fd0420c60de5");
 
 pub(crate) struct GpuPalettePlugin;
 
@@ -50,6 +53,12 @@ impl Plugin for GpuPalettePlugin {
             app,
             PALETTE_SHADER_HANDLE,
             "../assets/shaders/palette_material_2d.wgsl",
+            Shader::from_wgsl
+        );
+        load_internal_asset!(
+            app,
+            RAW_PREVIEW_SNAPSHOT_SHADER_HANDLE,
+            "../assets/shaders/raw_preview_snapshot_2d.wgsl",
             Shader::from_wgsl
         );
         load_internal_asset!(
@@ -77,6 +86,7 @@ impl Plugin for GpuPalettePlugin {
                 Material2dPlugin::<PalettePreviewDisplayMaterial>::default(),
                 Material2dPlugin::<RawPreviewCopyMaterial>::default(),
                 Material2dPlugin::<RawPreviewDisplayMaterial>::default(),
+                Material2dPlugin::<RawPreviewSnapshotMaterial>::default(),
             ))
             .add_systems(Update, sync_palette_material_bias)
             .add_systems(Update, sync_palette_material_dither)
@@ -167,6 +177,19 @@ pub(crate) struct RawPreviewDisplayMaterial {
     pub(crate) source_image: Handle<Image>,
 }
 
+#[derive(AsBindGroup, Debug, Clone, Asset, TypePath)]
+pub(crate) struct RawPreviewSnapshotMaterial {
+    #[texture(0)]
+    #[sampler(1)]
+    pub(crate) source_image: Handle<Image>,
+}
+
+impl Material2d for RawPreviewSnapshotMaterial {
+    fn fragment_shader() -> ShaderRef {
+        ShaderRef::Handle(RAW_PREVIEW_SNAPSHOT_SHADER_HANDLE)
+    }
+}
+
 impl Material2d for RawPreviewDisplayMaterial {
     fn fragment_shader() -> ShaderRef {
         ShaderRef::Handle(RAW_PREVIEW_DISPLAY_SHADER_HANDLE)
@@ -180,14 +203,18 @@ pub(crate) struct PreviewRawDisplay;
 pub(crate) struct GpuPalettePipeline {
     pub(crate) material: Handle<PaletteMaterial>,
     pub(crate) source_copy_material: Handle<RawPreviewCopyMaterial>,
+    pub(crate) raw_snapshot_material: Handle<RawPreviewSnapshotMaterial>,
     pub(crate) palette_texture: Handle<Image>,
     pub(crate) lookup_texture: Handle<Image>,
+    pub(crate) capture_image: Handle<Image>,
     pub(crate) source_copy_camera: Entity,
     pub(crate) palette_camera: Entity,
     pub(crate) raw_overlay_camera: Entity,
     pub(crate) overlay_camera: Entity,
+    pub(crate) raw_snapshot_camera: Entity,
     pub(crate) source_copy_quad_entity: Entity,
     pub(crate) quad_entity: Entity,
+    pub(crate) raw_snapshot_quad_entity: Entity,
     pub(crate) source_images: Vec<Handle<Image>>,
     pub(crate) output_images: Vec<Handle<Image>>,
     pub(crate) current_output_index: usize,
@@ -342,6 +369,7 @@ pub(crate) fn spawn_custom_host_pipeline(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<PaletteMaterial>,
     raw_copy_materials: &mut Assets<RawPreviewCopyMaterial>,
+    raw_snapshot_materials: &mut Assets<RawPreviewSnapshotMaterial>,
     width: u32,
     height: u32,
     source_image: Handle<Image>,
@@ -360,6 +388,7 @@ pub(crate) fn spawn_custom_host_pipeline(
         .collect();
     let first_output = output_images.first().cloned().unwrap();
     let first_source = source_images.first().cloned().unwrap();
+    let capture_image = images.add(make_palette_source_image(width, height));
     let palette_texture = images.add(make_palette_texture(palette_colors));
     let lookup_texture = images.add(make_lookup_texture(palette_lookup));
     let source_copy_material = raw_copy_materials.add(RawPreviewCopyMaterial {
@@ -367,9 +396,12 @@ pub(crate) fn spawn_custom_host_pipeline(
         dither_a: Vec4::ZERO,
         dither_b: Vec4::ZERO,
     });
+    let raw_snapshot_material = raw_snapshot_materials.add(RawPreviewSnapshotMaterial {
+        source_image: capture_image.clone(),
+    });
     let material = materials.add(PaletteMaterial {
         params: palette_material_params(&palette_bias, palette_colors.len()),
-        source_image: first_source.clone(),
+        source_image: capture_image.clone(),
         palette_texture: palette_texture.clone(),
         lookup_params: palette_lookup_params(),
         lookup_texture: lookup_texture.clone(),
@@ -388,7 +420,7 @@ pub(crate) fn spawn_custom_host_pipeline(
                 clear_color: ClearColorConfig::Custom(Color::BLACK),
                 ..default()
             },
-            RenderTarget::Image(first_source.clone().into()),
+            RenderTarget::Image(capture_image.clone().into()),
             RenderLayers::layer(GPU_PREVIEW_RAW_CAPTURE_LAYER),
         ))
         .id();
@@ -417,7 +449,7 @@ pub(crate) fn spawn_custom_host_pipeline(
                 is_active: overlay_enabled,
                 ..default()
             },
-            RenderTarget::Image(first_source.clone().into()),
+            RenderTarget::Image(capture_image.clone().into()),
             RenderLayers::layer(GPU_DIRECT_RAW_TEXT_LAYER),
         ))
         .id();
@@ -434,6 +466,21 @@ pub(crate) fn spawn_custom_host_pipeline(
             },
             RenderTarget::Image(first_output.clone().into()),
             RenderLayers::layer(GPU_DIRECT_TEXT_LAYER),
+        ))
+        .id();
+
+    let raw_snapshot_camera = commands
+        .spawn((
+            Camera2d,
+            Msaa::Off,
+            Camera {
+                order: 4,
+                clear_color: ClearColorConfig::Custom(Color::BLACK),
+                is_active: false,
+                ..default()
+            },
+            RenderTarget::Image(first_source.clone().into()),
+            RenderLayers::layer(GPU_PREVIEW_RAW_SNAPSHOT_LAYER),
         ))
         .id();
 
@@ -455,6 +502,15 @@ pub(crate) fn spawn_custom_host_pipeline(
         ))
         .id();
 
+    let raw_snapshot_quad_entity = commands
+        .spawn((
+            Mesh2d(meshes.add(Rectangle::default())),
+            MeshMaterial2d(raw_snapshot_material.clone()),
+            Transform::from_scale(Vec3::new(width as f32, height as f32, 1.0)),
+            RenderLayers::layer(GPU_PREVIEW_RAW_SNAPSHOT_LAYER),
+        ))
+        .id();
+
     target.output_image = first_output.clone();
     target.output_is_indexed = true;
     target.overlay_camera = overlay_camera;
@@ -464,14 +520,18 @@ pub(crate) fn spawn_custom_host_pipeline(
     GpuPalettePipeline {
         material,
         source_copy_material,
+        raw_snapshot_material,
         palette_texture,
         lookup_texture,
+        capture_image,
         source_copy_camera,
         palette_camera,
         raw_overlay_camera,
         overlay_camera,
+        raw_snapshot_camera,
         source_copy_quad_entity,
         quad_entity,
+        raw_snapshot_quad_entity,
         source_images,
         output_images,
         current_output_index: 0,
@@ -486,6 +546,7 @@ pub(crate) fn retarget_custom_host_pipeline(
     images: &mut Assets<Image>,
     materials: &mut Assets<PaletteMaterial>,
     raw_copy_materials: &mut Assets<RawPreviewCopyMaterial>,
+    raw_snapshot_materials: &mut Assets<RawPreviewSnapshotMaterial>,
     camera_targets: &mut Query<&mut RenderTarget>,
     quad_transforms: &mut Query<&mut Transform>,
     width: u32,
@@ -503,9 +564,10 @@ pub(crate) fn retarget_custom_host_pipeline(
         .collect();
     let first_output = output_images.first().cloned().unwrap();
     let first_source = source_images.first().cloned().unwrap();
+    let capture_image = images.add(make_palette_source_image(width, height));
 
     if let Ok(mut camera_target) = camera_targets.get_mut(pipeline.source_copy_camera) {
-        *camera_target = RenderTarget::Image(first_source.clone().into());
+        *camera_target = RenderTarget::Image(capture_image.clone().into());
     } else {
         return Err(());
     }
@@ -517,13 +579,19 @@ pub(crate) fn retarget_custom_host_pipeline(
     }
 
     if let Ok(mut camera_target) = camera_targets.get_mut(pipeline.raw_overlay_camera) {
-        *camera_target = RenderTarget::Image(first_source.clone().into());
+        *camera_target = RenderTarget::Image(capture_image.clone().into());
     } else {
         return Err(());
     }
 
     if let Ok(mut camera_target) = camera_targets.get_mut(pipeline.overlay_camera) {
         *camera_target = RenderTarget::Image(first_output.clone().into());
+    } else {
+        return Err(());
+    }
+
+    if let Ok(mut camera_target) = camera_targets.get_mut(pipeline.raw_snapshot_camera) {
+        *camera_target = RenderTarget::Image(first_source.clone().into());
     } else {
         return Err(());
     }
@@ -535,12 +603,18 @@ pub(crate) fn retarget_custom_host_pipeline(
     }
 
     if let Some(material) = materials.get_mut(&pipeline.material) {
-        material.source_image = first_source.clone();
+        material.source_image = capture_image.clone();
         let lookup_texture = images.add(make_lookup_texture(palette_lookup));
         material.lookup_texture = lookup_texture.clone();
         material.lookup_params = palette_lookup_params();
         pipeline.lookup_texture = lookup_texture;
         pipeline.lookup_entries = lookup_entries_arc(palette_lookup);
+    } else {
+        return Err(());
+    }
+
+    if let Some(material) = raw_snapshot_materials.get_mut(&pipeline.raw_snapshot_material) {
+        material.source_image = capture_image.clone();
     } else {
         return Err(());
     }
@@ -557,6 +631,13 @@ pub(crate) fn retarget_custom_host_pipeline(
         return Err(());
     }
 
+    if let Ok(mut transform) = quad_transforms.get_mut(pipeline.raw_snapshot_quad_entity) {
+        transform.scale = Vec3::new(width as f32, height as f32, 1.0);
+    } else {
+        return Err(());
+    }
+
+    pipeline.capture_image = capture_image;
     pipeline.source_images = source_images;
     pipeline.output_images = output_images;
     pipeline.current_output_index = 0;
@@ -631,7 +712,6 @@ fn throttle_preview_palette_cameras(
     config: Res<AppConfig>,
     pipeline: Option<ResMut<GpuPalettePipeline>>,
     throttle: Option<ResMut<PreviewPaletteThrottle>>,
-    mut palette_materials: ResMut<Assets<PaletteMaterial>>,
     mut display_materials: ResMut<Assets<PalettePreviewDisplayMaterial>>,
     mut raw_display_materials: ResMut<Assets<RawPreviewDisplayMaterial>>,
     mut debug_state: Option<ResMut<PreviewPixelDebugState>>,
@@ -664,20 +744,14 @@ fn throttle_preview_palette_cameras(
         let output_index = pipeline.current_output_index;
         let output_image = pipeline.output_images[output_index].clone();
         let source_image = pipeline.source_images[output_index].clone();
-        if let Ok(mut raw_target) = camera_targets.get_mut(pipeline.source_copy_camera) {
-            *raw_target = RenderTarget::Image(source_image.clone().into());
-        }
         if let Ok(mut palette_target) = camera_targets.get_mut(pipeline.palette_camera) {
             *palette_target = RenderTarget::Image(output_image.clone().into());
-        }
-        if let Ok(mut raw_overlay_target) = camera_targets.get_mut(pipeline.raw_overlay_camera) {
-            *raw_overlay_target = RenderTarget::Image(source_image.clone().into());
         }
         if let Ok(mut overlay_target) = camera_targets.get_mut(pipeline.overlay_camera) {
             *overlay_target = RenderTarget::Image(output_image.clone().into());
         }
-        if let Some(material) = palette_materials.get_mut(&pipeline.material) {
-            material.source_image = source_image.clone();
+        if let Ok(mut raw_snapshot_target) = camera_targets.get_mut(pipeline.raw_snapshot_camera) {
+            *raw_snapshot_target = RenderTarget::Image(source_image.clone().into());
         }
 
         throttle.queued_output_indices.push_back(output_index);
@@ -720,6 +794,7 @@ fn throttle_preview_palette_cameras(
         pipeline.source_copy_camera,
         pipeline.raw_overlay_camera,
         pipeline.palette_camera,
+        pipeline.raw_snapshot_camera,
     ] {
         if let Ok(mut camera) = cameras.get_mut(entity) {
             camera.is_active = should_render;
@@ -734,7 +809,6 @@ pub(crate) fn cycle_camera_render_targets(
     time: Res<Time>,
     stream_control: Res<StreamControl>,
     pipeline: Option<ResMut<GpuPalettePipeline>>,
-    mut materials: ResMut<Assets<PaletteMaterial>>,
     mut camera_targets: Query<&mut RenderTarget>,
     readback: Option<ResMut<StreamReadback>>,
     stats: Res<crate::stats::SharedStats>,
@@ -822,25 +896,13 @@ pub(crate) fn cycle_camera_render_targets(
     }
 
     let current_texture = pipeline.output_images[current_output_index].clone();
-    let current_source = pipeline.source_images[current_output_index].clone();
-
-    if let Ok(mut source_target) = camera_targets.get_mut(pipeline.source_copy_camera) {
-        *source_target = RenderTarget::Image(current_source.clone().into());
-    }
 
     if let Ok(mut palette_target) = camera_targets.get_mut(pipeline.palette_camera) {
         *palette_target = RenderTarget::Image(current_texture.clone().into());
     }
 
-    if let Ok(mut raw_overlay_target) = camera_targets.get_mut(pipeline.raw_overlay_camera) {
-        *raw_overlay_target = RenderTarget::Image(current_source.clone().into());
-    }
-
     if let Ok(mut overlay_target) = camera_targets.get_mut(pipeline.overlay_camera) {
         *overlay_target = RenderTarget::Image(current_texture.clone().into());
-    }
-    if let Some(material) = materials.get_mut(&pipeline.material) {
-        material.source_image = current_source;
     }
 
     pipeline.current_output_index =

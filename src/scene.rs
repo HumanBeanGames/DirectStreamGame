@@ -8,7 +8,8 @@ use crate::{
     gpu_palette::{
         GPU_PREVIEW_DISPLAY_LAYER, PaletteMaterial, PalettePreviewDisplayMaterial,
         PreviewPaletteThrottle, PreviewRawDisplay, RawPreviewCopyMaterial,
-        RawPreviewDisplayMaterial, make_stream_source_image, spawn_custom_host_pipeline,
+        RawPreviewDisplayMaterial, RawPreviewSnapshotMaterial, make_stream_source_image,
+        spawn_custom_host_pipeline,
     },
     palette::load_palette_lookup_runtime,
     palette_lut::{
@@ -506,6 +507,7 @@ pub(crate) fn setup_direct_stream_scene(
     mut preview_display_materials: ResMut<Assets<PalettePreviewDisplayMaterial>>,
     mut raw_copy_materials: ResMut<Assets<RawPreviewCopyMaterial>>,
     mut raw_display_materials: ResMut<Assets<RawPreviewDisplayMaterial>>,
+    mut raw_snapshot_materials: ResMut<Assets<RawPreviewSnapshotMaterial>>,
     config: Res<AppConfig>,
     window_layout: Res<DirectStreamWindowLayout>,
 ) {
@@ -570,6 +572,7 @@ pub(crate) fn setup_direct_stream_scene(
             &mut meshes,
             &mut palette_materials,
             &mut raw_copy_materials,
+            &mut raw_snapshot_materials,
             config.stream_width,
             config.stream_height,
             stream_image.clone(),

@@ -269,7 +269,7 @@ fn stable_quantize_srgb(source: vec3<f32>) -> vec3<f32> {
     let scaled = clamp(source, vec3<f32>(0.0), vec3<f32>(1.0)) * 255.0;
     let lower = floor(scaled);
     let fraction = scaled - lower;
-    let near_boundary = abs(fraction - vec3<f32>(0.5)) <= vec3<f32>(0.0625);
+    let near_boundary = abs(fraction - vec3<f32>(0.5)) <= vec3<f32>(0.25);
     let quantized = select(floor(scaled + vec3<f32>(0.5)), lower, near_boundary);
     return quantized / 255.0;
 }

@@ -3196,7 +3196,7 @@ fn stable_srgb_byte(srgb: f32) -> u8 {
     let scaled = srgb.clamp(0.0, 1.0) * 255.0;
     let lower = scaled.floor();
     let fraction = scaled - lower;
-    let quantized = if (fraction - 0.5).abs() <= 0.0625 {
+    let quantized = if (fraction - 0.5).abs() <= 0.25 {
         lower
     } else {
         (scaled + 0.5).floor()
@@ -4300,7 +4300,7 @@ mod preview_pixel_debug_tests {
     fn stable_srgb_quantization_resolves_half_step_drift_consistently() {
         assert_eq!(stable_srgb_byte(10.49 / 255.0), 10);
         assert_eq!(stable_srgb_byte(10.51 / 255.0), 10);
-        assert_eq!(stable_srgb_byte(10.57 / 255.0), 11);
+        assert_eq!(stable_srgb_byte(10.80 / 255.0), 11);
     }
 
     #[test]

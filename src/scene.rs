@@ -463,7 +463,6 @@ pub(crate) struct PreviewPixelDebugState {
     validation_frames_checked: u32,
     validation_total_mismatches: u64,
     validation_total_mapping_mismatches: u64,
-    validation_total_fingerprint_mismatches: u64,
     pub(crate) display_generation: u64,
     validation_last_requested_generation: Option<u64>,
     validation_raw_data: HashMap<u64, Vec<u8>>,
@@ -503,16 +502,13 @@ struct RawPixelDebug {
     lookup_rgb: [u8; 3],
     lookup_key: usize,
     lookup_route: PreviewLookupRoute,
-    expected_index: Option<u8>,
-    expected_color: [u8; 4],
 }
 
 #[derive(Clone)]
 struct QuantizedPixelDebug {
     palette_index: u8,
     color: [u8; 4],
-    direct_overlay: bool,
-    lookup_fingerprint: u16,
+    lookup_rgb: [u8; 3],
 }
 
 pub(crate) fn setup_direct_stream_scene(
@@ -759,7 +755,6 @@ fn spawn_preview_comparison(
             validation_frames_checked: 0,
             validation_total_mismatches: 0,
             validation_total_mapping_mismatches: 0,
-            validation_total_fingerprint_mismatches: 0,
             display_generation: 0,
             validation_last_requested_generation: None,
             validation_raw_data: HashMap::new(),
@@ -2241,7 +2236,6 @@ fn commit_loaded_preview_lookup_to_pipeline(
         debug_state.validation_frames_checked = 0;
         debug_state.validation_total_mismatches = 0;
         debug_state.validation_total_mapping_mismatches = 0;
-        debug_state.validation_total_fingerprint_mismatches = 0;
         debug_state.validation_last_requested_generation = None;
         debug_state.validation_raw_data.clear();
         debug_state.validation_quantized_data.clear();
@@ -2354,7 +2348,6 @@ pub(crate) fn process_preview_palette_rebake(
                 debug_state.validation_frames_checked = 0;
                 debug_state.validation_total_mismatches = 0;
                 debug_state.validation_total_mapping_mismatches = 0;
-                debug_state.validation_total_fingerprint_mismatches = 0;
                 debug_state.validation_last_requested_generation = None;
                 debug_state.validation_raw_data.clear();
                 debug_state.validation_quantized_data.clear();
@@ -3298,8 +3291,14 @@ fn handle_preview_pixel_debug_readback(
             .pixel_debug_clicked_source
             .take()
             .unwrap_or(PreviewPixelSource::Raw);
-        debug_state.output =
-            preview_pixel_pair_text(&raw, &quantized, clicked_source, debug_state.matching);
+        debug_state.output = preview_pixel_pair_text(
+            &raw,
+            &quantized,
+            clicked_source,
+            debug_state.matching,
+            &debug_state.lookup_entries,
+            &debug_state.palette_colors,
+        );
         debug_state.active_pixel_debug_request_id = None;
     }
     commands.entity(event.entity).despawn();
@@ -3424,11 +3423,8 @@ fn handle_preview_palette_validation_readback(
                 )?;
                 writeln!(
                     log,
-                    "FRAME {frame_number} generation={} mismatches={} mapping_mismatches={} fingerprint_mismatches={}",
-                    readback.generation,
-                    summary.mismatches,
-                    summary.mapping_mismatches,
-                    summary.fingerprint_mismatches,
+                    "FRAME {frame_number} generation={} mismatches={} mapping_mismatches={}",
+                    readback.generation, summary.mismatches, summary.mapping_mismatches,
                 )?;
                 Ok(summary)
             });
@@ -3436,8 +3432,6 @@ fn handle_preview_palette_validation_readback(
             Ok(summary) => {
                 debug_state.validation_total_mismatches += summary.mismatches;
                 debug_state.validation_total_mapping_mismatches += summary.mapping_mismatches;
-                debug_state.validation_total_fingerprint_mismatches +=
-                    summary.fingerprint_mismatches;
                 debug_state.output = format!(
                     "Palette audit {}/{}: {} mismatches (see {})",
                     debug_state.validation_frames_checked,
@@ -3454,11 +3448,10 @@ fn handle_preview_palette_validation_readback(
         }
         if debug_state.validation_frames_checked == PREVIEW_PALETTE_VALIDATION_FRAMES {
             let report = format!(
-                "automatic preview palette validation: {} frames, {} mismatches (mapping {}, fingerprint {})",
+                "automatic preview palette validation: {} frames, {} mismatches (mapping {})",
                 PREVIEW_PALETTE_VALIDATION_FRAMES,
                 debug_state.validation_total_mismatches,
                 debug_state.validation_total_mapping_mismatches,
-                debug_state.validation_total_fingerprint_mismatches,
             );
             if let Ok(mut log) = OpenOptions::new()
                 .create(true)
@@ -3478,7 +3471,6 @@ fn handle_preview_palette_validation_readback(
 struct PreviewFrameValidationSummary {
     mismatches: u64,
     mapping_mismatches: u64,
-    fingerprint_mismatches: u64,
 }
 
 fn validate_preview_palette_frame(
@@ -3510,32 +3502,54 @@ fn validate_preview_palette_frame(
                 preview_raw_pixel_debug(&readback, raw, lookup_entries, palette_colors, dither);
             let quantized_debug =
                 preview_quantized_pixel_debug(&readback, quantized, palette_colors);
-            if quantized_debug.direct_overlay {
+            if is_direct_output_overlay(&raw_debug, &quantized_debug, PreviewPixelSource::Raw) {
                 continue;
             }
-            let mapping_mismatch = raw_debug.expected_index != Some(quantized_debug.palette_index);
-            let fingerprint_mismatch =
-                lookup_fingerprint(raw_debug.lookup_rgb) != quantized_debug.lookup_fingerprint;
-            if !mapping_mismatch && !fingerprint_mismatch {
+            let gpu_expected_index = expected_gpu_lookup_index(
+                &raw_debug,
+                &quantized_debug,
+                lookup_entries,
+                palette_colors,
+            );
+            let mapping_mismatch = gpu_expected_index != Some(quantized_debug.palette_index);
+            if !mapping_mismatch {
                 continue;
             }
             summary.mismatches += 1;
-            summary.mapping_mismatches += u64::from(mapping_mismatch);
-            summary.fingerprint_mismatches += u64::from(fingerprint_mismatch);
+            summary.mapping_mismatches += 1;
             writeln!(
                 log,
-                "FRAME {frame_number} generation={generation} pixel=({x},{y}) mapping_mismatch={mapping_mismatch} fingerprint_mismatch={fingerprint_mismatch}\n{}\n---",
+                "FRAME {frame_number} generation={generation} pixel=({x},{y}) mapping_mismatch=true\n{}\n---",
                 preview_pixel_pair_text(
                     &raw_debug,
                     &quantized_debug,
                     PreviewPixelSource::Raw,
                     matching,
+                    lookup_entries,
+                    palette_colors,
                 ),
             )?;
         }
     }
 
     Ok(summary)
+}
+
+fn expected_gpu_lookup_index(
+    raw: &RawPixelDebug,
+    quantized: &QuantizedPixelDebug,
+    lookup_entries: &[u8],
+    palette_colors: &[[u8; 4]],
+) -> Option<u8> {
+    if raw.lookup_route == PreviewLookupRoute::ExactPalette {
+        return exact_palette_index(raw.r, raw.g, raw.b, palette_colors);
+    }
+
+    let mut lookup_key = rgb_key(quantized.lookup_rgb);
+    if raw.lookup_route == PreviewLookupRoute::DirectTable {
+        lookup_key = lookup_key.checked_add(crate::palette_lut::LUT_ENTRY_COUNT)?;
+    }
+    lookup_entries.get(lookup_key).copied()
 }
 
 fn expected_preview_index(
@@ -3583,14 +3597,6 @@ fn expected_preview_index(
 
 fn rgb_key([r, g, b]: [u8; 3]) -> usize {
     (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b)
-}
-
-fn lookup_fingerprint([r, g, b]: [u8; 3]) -> u16 {
-    let mut hash = 2_166_136_261u32;
-    for channel in [r, g, b] {
-        hash = (hash ^ u32::from(channel)).wrapping_mul(16_777_619);
-    }
-    ((hash ^ (hash >> 16)) % (255 * 256)) as u16
 }
 
 fn apply_preview_dither(
@@ -3703,13 +3709,9 @@ fn preview_raw_pixel_debug(
     let lookup_route = expected
         .map(|(route, _, _)| route)
         .unwrap_or(PreviewLookupRoute::AlteredTable);
-    let expected_index = expected.map(|(_, index, _)| index);
     let lookup_rgb = expected
         .map(|(_, _, lookup_rgb)| lookup_rgb)
         .unwrap_or([r, g, b]);
-    let expected_color = expected_index
-        .and_then(|index| palette_colors.get(index as usize).copied())
-        .unwrap_or([0, 0, 0, 255]);
     RawPixelDebug {
         x: readback.x,
         y: readback.y,
@@ -3720,8 +3722,6 @@ fn preview_raw_pixel_debug(
         lookup_rgb,
         lookup_key: rgb_key(lookup_rgb),
         lookup_route,
-        expected_index,
-        expected_color,
     }
 }
 
@@ -3737,8 +3737,6 @@ impl RawPixelDebug {
             lookup_rgb: [0, 0, 0],
             lookup_key: 0,
             lookup_route: PreviewLookupRoute::AlteredTable,
-            expected_index: None,
-            expected_color: [0, 0, 0, 255],
         }
     }
 }
@@ -3753,10 +3751,9 @@ fn preview_quantized_pixel_debug(
         bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(row_bytes);
     let offset = readback.y as usize * aligned_row_bytes + readback.x as usize * 4;
     let palette_index = data.get(offset).copied().unwrap_or(0);
-    let marker_or_fingerprint_high = data.get(offset + 1).copied().unwrap_or(0);
-    let direct_overlay = marker_or_fingerprint_high == u8::MAX;
-    let lookup_fingerprint = u16::from(data.get(offset + 2).copied().unwrap_or(0))
-        | (u16::from(marker_or_fingerprint_high) << 8);
+    let metadata_r = data.get(offset + 1).copied().unwrap_or(0);
+    let metadata_g = data.get(offset + 2).copied().unwrap_or(0);
+    let metadata_b = data.get(offset + 3).copied().unwrap_or(0);
     let color = palette_colors
         .get(palette_index as usize)
         .copied()
@@ -3764,8 +3761,7 @@ fn preview_quantized_pixel_debug(
     QuantizedPixelDebug {
         palette_index,
         color,
-        direct_overlay,
-        lookup_fingerprint,
+        lookup_rgb: [metadata_r, metadata_g, metadata_b],
     }
 }
 
@@ -3774,6 +3770,8 @@ fn preview_pixel_pair_text(
     quantized: &QuantizedPixelDebug,
     clicked_source: PreviewPixelSource,
     matching: PaletteMatching,
+    lookup_entries: &[u8],
+    palette_colors: &[[u8; 4]],
 ) -> String {
     let lookup_input = if raw.lookup_rgb != [raw.r, raw.g, raw.b] {
         format!(
@@ -3808,8 +3806,13 @@ fn preview_pixel_pair_text(
         );
     }
 
-    let (lookup_route, expected_index, expected_color) =
-        preview_expected_readout(raw, quantized, clicked_source);
+    let (lookup_route, expected_index, expected_color) = preview_expected_readout(
+        raw,
+        quantized,
+        clicked_source,
+        lookup_entries,
+        palette_colors,
+    );
     let raw_oklab = rgb_to_oklab(raw.r, raw.g, raw.b);
     let quantized_oklab = rgb_to_oklab(quantized.color[0], quantized.color[1], quantized.color[2]);
     let delta_l = raw_oklab.l - quantized_oklab.l;
@@ -3835,19 +3838,20 @@ fn preview_pixel_pair_text(
     } else {
         String::new()
     };
-    let mapping_status = if raw.expected_index == Some(quantized.palette_index) {
+    let gpu_expected_index =
+        expected_gpu_lookup_index(raw, quantized, lookup_entries, palette_colors);
+    let mapping_status = if gpu_expected_index == Some(quantized.palette_index) {
         "MATCH"
     } else {
         "MISMATCH"
     };
-    let expected_fingerprint = lookup_fingerprint(raw.lookup_rgb);
-    let fingerprint_status = if expected_fingerprint == quantized.lookup_fingerprint {
+    let lookup_input_status = if raw.lookup_rgb == quantized.lookup_rgb {
         "MATCH"
     } else {
-        "MISMATCH"
+        "DRIFT"
     };
     format!(
-        "Preview sample ({}, {})\nbefore raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}{}\nafter actual: index {} #{:02X}{:02X}{:02X}\nmapping: [{}]\nlookup fingerprint CPU/GPU: {:04X}/{:04X} [{}]\nexpected: {} index {} #{:02X}{:02X}{:02X}{}\nDelta E OK: {:.5}  OKLab dL/da/db: {:.4} / {:.4} / {:.4}\nOKLCH delta L/C/H: {:.4} / {:.4} / {:.1}deg\nlookup RGB key: {}",
+        "Preview sample ({}, {})\nbefore raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}{}\nafter actual: index {} #{:02X}{:02X}{:02X}\nmapping: [{}]\nlookup input CPU/GPU: #{:02X}{:02X}{:02X}/#{:02X}{:02X}{:02X} [{}]\nexpected: {} index {} #{:02X}{:02X}{:02X}{}\nDelta E OK: {:.5}  OKLab dL/da/db: {:.4} / {:.4} / {:.4}\nOKLCH delta L/C/H: {:.4} / {:.4} / {:.1}deg\nlookup RGB key: {}",
         raw.x,
         raw.y,
         raw.r,
@@ -3863,9 +3867,13 @@ fn preview_pixel_pair_text(
         quantized.color[1],
         quantized.color[2],
         mapping_status,
-        expected_fingerprint,
-        quantized.lookup_fingerprint,
-        fingerprint_status,
+        raw.lookup_rgb[0],
+        raw.lookup_rgb[1],
+        raw.lookup_rgb[2],
+        quantized.lookup_rgb[0],
+        quantized.lookup_rgb[1],
+        quantized.lookup_rgb[2],
+        lookup_input_status,
         lookup_route,
         expected_index,
         expected_color[0],
@@ -3879,7 +3887,7 @@ fn preview_pixel_pair_text(
         dl.abs(),
         dc.abs(),
         dh_degrees.abs(),
-        raw.lookup_key,
+        rgb_key(quantized.lookup_rgb),
     )
 }
 
@@ -3887,6 +3895,8 @@ fn preview_expected_readout(
     raw: &RawPixelDebug,
     quantized: &QuantizedPixelDebug,
     clicked_source: PreviewPixelSource,
+    lookup_entries: &[u8],
+    palette_colors: &[[u8; 4]],
 ) -> (&'static str, String, [u8; 4]) {
     if is_direct_output_overlay(raw, quantized, clicked_source) {
         return (
@@ -3896,28 +3906,32 @@ fn preview_expected_readout(
         );
     }
 
+    let expected_index = expected_gpu_lookup_index(raw, quantized, lookup_entries, palette_colors);
+    let expected_color = expected_index
+        .and_then(|index| palette_colors.get(index as usize).copied())
+        .unwrap_or([0, 0, 0, 255]);
     (
         raw.lookup_route.label(),
-        raw.expected_index
+        expected_index
             .map(|index| index.to_string())
             .unwrap_or_else(|| "out of range".to_owned()),
-        raw.expected_color,
+        expected_color,
     )
 }
 
 fn is_direct_output_overlay(
-    _raw: &RawPixelDebug,
-    quantized: &QuantizedPixelDebug,
+    raw: &RawPixelDebug,
+    _quantized: &QuantizedPixelDebug,
     _clicked_source: PreviewPixelSource,
 ) -> bool {
-    quantized.direct_overlay
+    raw.a == 254
 }
 
 #[cfg(test)]
 mod preview_pixel_debug_tests {
     use super::*;
 
-    fn raw_debug(route: PreviewLookupRoute, expected_index: Option<u8>) -> RawPixelDebug {
+    fn raw_debug(route: PreviewLookupRoute, _expected_index: Option<u8>) -> RawPixelDebug {
         RawPixelDebug {
             x: 0,
             y: 0,
@@ -3928,8 +3942,6 @@ mod preview_pixel_debug_tests {
             lookup_rgb: [0, 0, 0],
             lookup_key: 0,
             lookup_route: route,
-            expected_index,
-            expected_color: [1, 2, 3, 255],
         }
     }
 
@@ -3937,18 +3949,30 @@ mod preview_pixel_debug_tests {
         QuantizedPixelDebug {
             palette_index: index,
             color: [4, 5, 6, 255],
-            direct_overlay: false,
-            lookup_fingerprint: 0,
+            lookup_rgb: [0, 0, 0],
         }
+    }
+
+    fn altered_fixtures(index: u8) -> (Vec<u8>, Vec<[u8; 4]>) {
+        let lookup = vec![index];
+        let mut palette = vec![[0, 0, 0, 255]; usize::from(index) + 1];
+        palette[usize::from(index)] = [1, 2, 3, 255];
+        (lookup, palette)
     }
 
     #[test]
     fn after_click_keeps_altered_label_when_after_matches_altered_expectation() {
         let raw = raw_debug(PreviewLookupRoute::AlteredTable, Some(9));
         let quantized = quantized_debug(9);
+        let (lookup, palette) = altered_fixtures(9);
 
-        let (label, index, color) =
-            preview_expected_readout(&raw, &quantized, PreviewPixelSource::Quantized);
+        let (label, index, color) = preview_expected_readout(
+            &raw,
+            &quantized,
+            PreviewPixelSource::Quantized,
+            &lookup,
+            &palette,
+        );
 
         assert_eq!(label, "altered/prequantized IPSMAP table");
         assert_eq!(index, "9");
@@ -3959,9 +3983,15 @@ mod preview_pixel_debug_tests {
     fn after_click_reports_mismatch_when_unmarked_output_differs_from_expectation() {
         let raw = raw_debug(PreviewLookupRoute::AlteredTable, Some(9));
         let quantized = quantized_debug(42);
+        let (lookup, palette) = altered_fixtures(9);
 
-        let (label, index, color) =
-            preview_expected_readout(&raw, &quantized, PreviewPixelSource::Quantized);
+        let (label, index, color) = preview_expected_readout(
+            &raw,
+            &quantized,
+            PreviewPixelSource::Quantized,
+            &lookup,
+            &palette,
+        );
 
         assert_eq!(label, "altered/prequantized IPSMAP table");
         assert_eq!(index, "9");
@@ -3972,6 +4002,8 @@ mod preview_pixel_debug_tests {
             &quantized,
             PreviewPixelSource::Quantized,
             PaletteMatching::default(),
+            &lookup,
+            &palette,
         );
         assert!(text.contains("mapping: [MISMATCH]"));
         assert!(!text.contains("direct output overlay"));
@@ -3979,12 +4011,12 @@ mod preview_pixel_debug_tests {
 
     #[test]
     fn overlay_marker_identifies_direct_output_even_when_indices_match() {
-        let raw = raw_debug(PreviewLookupRoute::AlteredTable, Some(9));
-        let mut quantized = quantized_debug(9);
-        quantized.direct_overlay = true;
+        let mut raw = raw_debug(PreviewLookupRoute::AlteredTable, Some(9));
+        let quantized = quantized_debug(9);
+        raw.a = 254;
 
         let (label, index, color) =
-            preview_expected_readout(&raw, &quantized, PreviewPixelSource::Raw);
+            preview_expected_readout(&raw, &quantized, PreviewPixelSource::Raw, &[], &[]);
 
         assert_eq!(label, "direct output overlay");
         assert_eq!(index, "9");
@@ -4001,13 +4033,15 @@ mod preview_pixel_debug_tests {
         raw.lookup_key = 1_312_554;
         let mut quantized = quantized_debug(169);
         quantized.color = [0x52, 0x45, 0xFC, 255];
-        quantized.direct_overlay = true;
+        raw.a = 254;
 
         let text = preview_pixel_pair_text(
             &raw,
             &quantized,
             PreviewPixelSource::Quantized,
             PaletteMatching::default(),
+            &[],
+            &[],
         );
 
         assert!(text.contains("underlay raw: #14072A"));
@@ -4055,6 +4089,42 @@ mod preview_pixel_debug_tests {
     }
 
     #[test]
+    fn gpu_lookup_metadata_is_the_authority_for_audited_mapping() {
+        let mut raw = raw_debug(PreviewLookupRoute::AlteredTable, None);
+        raw.lookup_rgb = [62, 68, 18];
+        let mut quantized = quantized_debug(73);
+        quantized.lookup_rgb = [63, 68, 18];
+        let gpu_key = rgb_key(quantized.lookup_rgb);
+        let mut lookup = vec![0; gpu_key + 1];
+        lookup[gpu_key] = 73;
+
+        assert_eq!(
+            expected_gpu_lookup_index(&raw, &quantized, &lookup, &[]),
+            Some(73)
+        );
+    }
+
+    #[test]
+    fn quantized_readback_contains_exact_gpu_lookup_rgb() {
+        let readback = PreviewPixelDebugReadback {
+            request_id: 0,
+            source: PreviewPixelSource::Quantized,
+            x: 0,
+            y: 0,
+            width: 1,
+            dither: DirectStreamDitherSettings::default(),
+        };
+        let mut data = vec![0; 256];
+        data[..4].copy_from_slice(&[73, 63, 68, 18]);
+        let palette = vec![[0, 0, 0, 255]; 74];
+
+        let debug = preview_quantized_pixel_debug(&readback, &data, &palette);
+
+        assert_eq!(debug.palette_index, 73);
+        assert_eq!(debug.lookup_rgb, [63, 68, 18]);
+    }
+
+    #[test]
     fn palette_shader_anchors_dither_to_framebuffer_coordinates() {
         let shader = include_str!("../assets/shaders/palette_material_2d.wgsl");
 
@@ -4068,9 +4138,18 @@ mod preview_pixel_debug_tests {
     fn after_click_preserves_direct_table_label_for_raw_direct_text() {
         let raw = raw_debug(PreviewLookupRoute::DirectTable, Some(12));
         let quantized = quantized_debug(12);
+        let mut lookup = vec![0; crate::palette_lut::LUT_ENTRY_COUNT + 1];
+        lookup[crate::palette_lut::LUT_ENTRY_COUNT] = 12;
+        let mut palette = vec![[0, 0, 0, 255]; 13];
+        palette[12] = [1, 2, 3, 255];
 
-        let (label, index, color) =
-            preview_expected_readout(&raw, &quantized, PreviewPixelSource::Quantized);
+        let (label, index, color) = preview_expected_readout(
+            &raw,
+            &quantized,
+            PreviewPixelSource::Quantized,
+            &lookup,
+            &palette,
+        );
 
         assert_eq!(label, "direct IPSMAP table");
         assert_eq!(index, "12");

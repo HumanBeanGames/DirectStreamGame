@@ -309,22 +309,13 @@ fn encode_indexed_byte(value: u32) -> f32 {
     return srgb_to_linear_channel(encoded);
 }
 
-fn lookup_fingerprint(source: vec3<f32>) -> u32 {
-    let source_u8 = vec3<u32>(round(source * 255.0));
-    var hash = 2166136261u;
-    hash = (hash ^ source_u8.r) * 16777619u;
-    hash = (hash ^ source_u8.g) * 16777619u;
-    hash = (hash ^ source_u8.b) * 16777619u;
-    return (hash ^ (hash >> 16u)) % 65280u;
-}
-
 fn indexed_output(palette_index: u32, lookup_source: vec3<f32>) -> vec4<f32> {
-    let fingerprint = lookup_fingerprint(lookup_source);
+    let lookup_rgb = vec3<u32>(round(lookup_source * 255.0));
     return vec4<f32>(
         encode_indexed_byte(palette_index),
-        encode_indexed_byte(fingerprint >> 8u),
-        encode_indexed_byte(fingerprint & 255u),
-        1.0,
+        encode_indexed_byte(lookup_rgb.r),
+        encode_indexed_byte(lookup_rgb.g),
+        min((f32(lookup_rgb.b) + 0.25) / 255.0, 1.0),
     );
 }
 

@@ -446,12 +446,14 @@ struct PreviewLookupTextureAudit {
 enum PreviewPixelSource {
     Raw,
     Quantized,
+    Audit,
 }
 
 #[derive(Resource)]
 pub(crate) struct PreviewPixelDebugState {
     pub(crate) raw_image: Handle<Image>,
     pub(crate) quantized_image: Handle<Image>,
+    pub(crate) audit_image: Handle<Image>,
     pub(crate) palette_colors: Vec<[u8; 4]>,
     pub(crate) lookup_entries: Arc<[u8]>,
     matching: PaletteMatching,
@@ -467,8 +469,10 @@ pub(crate) struct PreviewPixelDebugState {
     validation_last_requested_generation: Option<u64>,
     validation_raw_data: HashMap<u64, Vec<u8>>,
     validation_quantized_data: HashMap<u64, Vec<u8>>,
+    validation_audit_data: HashMap<u64, Vec<u8>>,
     pixel_debug_raw: Option<RawPixelDebug>,
     pixel_debug_quantized: Option<QuantizedPixelDebug>,
+    pixel_debug_audit: Option<QuantizedPixelDebug>,
     pixel_debug_clicked_source: Option<PreviewPixelSource>,
     next_pixel_debug_request_id: u64,
     active_pixel_debug_request_id: Option<u64>,
@@ -507,6 +511,7 @@ struct RawPixelDebug {
 #[derive(Clone)]
 struct QuantizedPixelDebug {
     palette_index: u8,
+    shader_palette_index: u8,
     color: [u8; 4],
     lookup_rgb: [u8; 3],
 }
@@ -595,6 +600,7 @@ pub(crate) fn setup_direct_stream_scene(
             &mut target,
             batch_size,
             overlay_enabled,
+            config.window_mode == WindowMode::Preview,
         );
         if config.window_mode == WindowMode::Preview {
             let (display_material, raw_display_material, debug_state) = spawn_preview_comparison(
@@ -742,6 +748,7 @@ fn spawn_preview_comparison(
         PreviewPixelDebugState {
             raw_image: raw_output_images[0].clone(),
             quantized_image: pipeline.output_images[0].clone(),
+            audit_image: pipeline.audit_images[0].clone(),
             palette_colors: pipeline.palette_colors.clone(),
             lookup_entries,
             matching,
@@ -759,8 +766,10 @@ fn spawn_preview_comparison(
             validation_last_requested_generation: None,
             validation_raw_data: HashMap::new(),
             validation_quantized_data: HashMap::new(),
+            validation_audit_data: HashMap::new(),
             pixel_debug_raw: None,
             pixel_debug_quantized: None,
+            pixel_debug_audit: None,
             pixel_debug_clicked_source: None,
             next_pixel_debug_request_id: 0,
             active_pixel_debug_request_id: None,
@@ -1646,6 +1655,7 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
 
     let raw_image = debug_state.raw_image.clone();
     let quantized_image = debug_state.quantized_image.clone();
+    let audit_image = debug_state.audit_image.clone();
 
     if let Some(mut palette_editor) = palette_editor
         && palette_editor.pick_raw_next_click
@@ -1684,6 +1694,7 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
     debug_state.pixel_debug_clicked_source = Some(source);
     debug_state.pixel_debug_raw = None;
     debug_state.pixel_debug_quantized = None;
+    debug_state.pixel_debug_audit = None;
     let request_id = debug_state.next_pixel_debug_request_id;
     debug_state.next_pixel_debug_request_id = request_id.wrapping_add(1);
     debug_state.active_pixel_debug_request_id = Some(request_id);
@@ -1710,6 +1721,17 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
         })
         .observe(handle_preview_pixel_debug_readback)
         .insert(Readback::texture(quantized_image));
+    commands
+        .spawn(PreviewPixelDebugReadback {
+            request_id,
+            source: PreviewPixelSource::Audit,
+            x,
+            y,
+            width: config.stream_width,
+            dither: *dither,
+        })
+        .observe(handle_preview_pixel_debug_readback)
+        .insert(Readback::texture(audit_image));
 }
 
 fn handle_preview_palette_pick_readback(
@@ -2239,8 +2261,10 @@ fn commit_loaded_preview_lookup_to_pipeline(
         debug_state.validation_last_requested_generation = None;
         debug_state.validation_raw_data.clear();
         debug_state.validation_quantized_data.clear();
+        debug_state.validation_audit_data.clear();
         debug_state.pixel_debug_raw = None;
         debug_state.pixel_debug_quantized = None;
+        debug_state.pixel_debug_audit = None;
         debug_state.pixel_debug_clicked_source = None;
     }
 }
@@ -2351,8 +2375,10 @@ pub(crate) fn process_preview_palette_rebake(
                 debug_state.validation_last_requested_generation = None;
                 debug_state.validation_raw_data.clear();
                 debug_state.validation_quantized_data.clear();
+                debug_state.validation_audit_data.clear();
                 debug_state.pixel_debug_raw = None;
                 debug_state.pixel_debug_quantized = None;
+                debug_state.pixel_debug_audit = None;
                 debug_state.pixel_debug_clicked_source = None;
             }
         }
@@ -3277,16 +3303,32 @@ fn handle_preview_pixel_debug_readback(
                 &debug_state.palette_colors,
             ));
         }
+        PreviewPixelSource::Audit => {
+            debug_state.pixel_debug_audit = Some(preview_quantized_pixel_debug(
+                readback,
+                &event.data,
+                &debug_state.palette_colors,
+            ));
+        }
     }
-    if debug_state.pixel_debug_raw.is_some() && debug_state.pixel_debug_quantized.is_some() {
+    if debug_state.pixel_debug_raw.is_some()
+        && debug_state.pixel_debug_quantized.is_some()
+        && debug_state.pixel_debug_audit.is_some()
+    {
         let raw = debug_state
             .pixel_debug_raw
             .take()
             .expect("raw pixel debug checked above");
-        let quantized = debug_state
+        let mut quantized = debug_state
             .pixel_debug_quantized
             .take()
             .expect("quantized pixel debug checked above");
+        let audit = debug_state
+            .pixel_debug_audit
+            .take()
+            .expect("audit pixel debug checked above");
+        quantized.lookup_rgb = audit.lookup_rgb;
+        quantized.shader_palette_index = audit.palette_index;
         let clicked_source = debug_state
             .pixel_debug_clicked_source
             .take()
@@ -3332,6 +3374,7 @@ pub(crate) fn request_preview_palette_validation(
     let frame_number = debug_state.validation_frames_requested;
     let raw_image = debug_state.raw_image.clone();
     let quantized_image = debug_state.quantized_image.clone();
+    let audit_image = debug_state.audit_image.clone();
     commands
         .spawn(PreviewPaletteValidationReadback {
             source: PreviewPixelSource::Raw,
@@ -3354,6 +3397,17 @@ pub(crate) fn request_preview_palette_validation(
         })
         .observe(handle_preview_palette_validation_readback)
         .insert(Readback::texture(quantized_image));
+    commands
+        .spawn(PreviewPaletteValidationReadback {
+            source: PreviewPixelSource::Audit,
+            generation,
+            frame_number,
+            width: config.stream_width,
+            height: config.stream_height,
+            dither: *dither,
+        })
+        .observe(handle_preview_palette_validation_readback)
+        .insert(Readback::texture(audit_image));
 }
 
 fn handle_preview_palette_validation_readback(
@@ -3382,6 +3436,11 @@ fn handle_preview_palette_validation_readback(
                 .validation_quantized_data
                 .insert(readback.generation, event.data.clone());
         }
+        PreviewPixelSource::Audit => {
+            debug_state
+                .validation_audit_data
+                .insert(readback.generation, event.data.clone());
+        }
     }
 
     if debug_state
@@ -3389,6 +3448,9 @@ fn handle_preview_palette_validation_readback(
         .contains_key(&readback.generation)
         && debug_state
             .validation_quantized_data
+            .contains_key(&readback.generation)
+        && debug_state
+            .validation_audit_data
             .contains_key(&readback.generation)
     {
         let raw = debug_state
@@ -3399,6 +3461,10 @@ fn handle_preview_palette_validation_readback(
             .validation_quantized_data
             .remove(&readback.generation)
             .expect("quantized validation data checked above");
+        let audit = debug_state
+            .validation_audit_data
+            .remove(&readback.generation)
+            .expect("audit validation data checked above");
         debug_state.validation_frames_checked =
             debug_state.validation_frames_checked.saturating_add(1);
         let frame_number = readback.frame_number;
@@ -3411,6 +3477,7 @@ fn handle_preview_palette_validation_readback(
                 let summary = validate_preview_palette_frame(
                     &raw,
                     &quantized,
+                    &audit,
                     readback.width,
                     readback.height,
                     &debug_state.lookup_entries,
@@ -3476,6 +3543,7 @@ struct PreviewFrameValidationSummary {
 fn validate_preview_palette_frame(
     raw: &[u8],
     quantized: &[u8],
+    audit: &[u8],
     width: u32,
     height: u32,
     lookup_entries: &[u8],
@@ -3500,8 +3568,11 @@ fn validate_preview_palette_frame(
             };
             let raw_debug =
                 preview_raw_pixel_debug(&readback, raw, lookup_entries, palette_colors, dither);
-            let quantized_debug =
+            let mut quantized_debug =
                 preview_quantized_pixel_debug(&readback, quantized, palette_colors);
+            let audit_debug = preview_quantized_pixel_debug(&readback, audit, palette_colors);
+            quantized_debug.lookup_rgb = audit_debug.lookup_rgb;
+            quantized_debug.shader_palette_index = audit_debug.palette_index;
             if is_direct_output_overlay(&raw_debug, &quantized_debug, PreviewPixelSource::Raw) {
                 continue;
             }
@@ -3511,7 +3582,8 @@ fn validate_preview_palette_frame(
                 lookup_entries,
                 palette_colors,
             );
-            let mapping_mismatch = gpu_expected_index != Some(quantized_debug.palette_index);
+            let mapping_mismatch = gpu_expected_index != Some(quantized_debug.palette_index)
+                || quantized_debug.shader_palette_index != quantized_debug.palette_index;
             if !mapping_mismatch {
                 continue;
             }
@@ -3760,6 +3832,7 @@ fn preview_quantized_pixel_debug(
         .unwrap_or([0, 0, 0, 255]);
     QuantizedPixelDebug {
         palette_index,
+        shader_palette_index: palette_index,
         color,
         lookup_rgb: [metadata_r, metadata_g, metadata_b],
     }
@@ -3840,7 +3913,9 @@ fn preview_pixel_pair_text(
     };
     let gpu_expected_index =
         expected_gpu_lookup_index(raw, quantized, lookup_entries, palette_colors);
-    let mapping_status = if gpu_expected_index == Some(quantized.palette_index) {
+    let mapping_status = if gpu_expected_index == Some(quantized.palette_index)
+        && quantized.shader_palette_index == quantized.palette_index
+    {
         "MATCH"
     } else {
         "MISMATCH"
@@ -3851,7 +3926,7 @@ fn preview_pixel_pair_text(
         "DRIFT"
     };
     format!(
-        "Preview sample ({}, {})\nbefore raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}{}\nafter actual: index {} #{:02X}{:02X}{:02X}\nmapping: [{}]\nlookup input CPU/GPU: #{:02X}{:02X}{:02X}/#{:02X}{:02X}{:02X} [{}]\nexpected: {} index {} #{:02X}{:02X}{:02X}{}\nDelta E OK: {:.5}  OKLab dL/da/db: {:.4} / {:.4} / {:.4}\nOKLCH delta L/C/H: {:.4} / {:.4} / {:.1}deg\nlookup RGB key: {}",
+        "Preview sample ({}, {})\nbefore raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}{}\nafter actual: index {} #{:02X}{:02X}{:02X}\nshader pre-overlay index: {}\nmapping: [{}]\nlookup input CPU/GPU: #{:02X}{:02X}{:02X}/#{:02X}{:02X}{:02X} [{}]\nexpected: {} index {} #{:02X}{:02X}{:02X}{}\nDelta E OK: {:.5}  OKLab dL/da/db: {:.4} / {:.4} / {:.4}\nOKLCH delta L/C/H: {:.4} / {:.4} / {:.1}deg\nlookup RGB key: {}",
         raw.x,
         raw.y,
         raw.r,
@@ -3866,6 +3941,7 @@ fn preview_pixel_pair_text(
         quantized.color[0],
         quantized.color[1],
         quantized.color[2],
+        quantized.shader_palette_index,
         mapping_status,
         raw.lookup_rgb[0],
         raw.lookup_rgb[1],
@@ -3948,6 +4024,7 @@ mod preview_pixel_debug_tests {
     fn quantized_debug(index: u8) -> QuantizedPixelDebug {
         QuantizedPixelDebug {
             palette_index: index,
+            shader_palette_index: index,
             color: [4, 5, 6, 255],
             lookup_rgb: [0, 0, 0],
         }

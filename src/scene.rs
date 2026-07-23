@@ -3141,7 +3141,7 @@ fn srgb_byte(value: f32) -> u8 {
     } else {
         1.055 * value.powf(1.0 / 2.4) - 0.055
     };
-    (srgb * 255.0).round().clamp(0.0, 255.0) as u8
+    (srgb * 255.0 + 0.500_1).floor().clamp(0.0, 255.0) as u8
 }
 
 fn rgb_to_oklab(r: u8, g: u8, b: u8) -> Oklab {

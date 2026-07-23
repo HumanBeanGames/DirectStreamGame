@@ -240,6 +240,7 @@ pub(crate) struct PreviewPaletteThrottle {
     queued_output_indices: VecDeque<usize>,
     pub(crate) display_material: Handle<PalettePreviewDisplayMaterial>,
     pub(crate) raw_display_material: Handle<RawPreviewDisplayMaterial>,
+    warmup_frames_remaining: usize,
     delay_filled: bool,
 }
 
@@ -258,6 +259,7 @@ impl PreviewPaletteThrottle {
             queued_output_indices: VecDeque::with_capacity(batch_size.max(1)),
             display_material,
             raw_display_material,
+            warmup_frames_remaining: batch_size.max(1),
             delay_filled: false,
         }
     }
@@ -765,22 +767,29 @@ fn throttle_preview_palette_cameras(
             *raw_snapshot_target = RenderTarget::Image(source_image.clone().into());
         }
 
-        throttle.queued_output_indices.push_back(output_index);
-        let display_index = if throttle.queued_output_indices.len() >= throttle.batch_size {
-            if !throttle.delay_filled {
-                throttle.delay_filled = true;
-                for mut visibility in &mut preview_visuals {
-                    *visibility = Visibility::Inherited;
-                }
-                for mut visibility in &mut loading_text {
-                    *visibility = Visibility::Hidden;
-                }
-            }
-            throttle.queued_output_indices.pop_front()
-        } else if throttle.delay_filled {
+        let warming_up = throttle.warmup_frames_remaining > 0;
+        if warming_up {
+            throttle.warmup_frames_remaining -= 1;
+        }
+
+        let display_index = if warming_up {
             None
         } else {
-            None
+            throttle.queued_output_indices.push_back(output_index);
+            if throttle.queued_output_indices.len() >= throttle.batch_size {
+                if !throttle.delay_filled {
+                    throttle.delay_filled = true;
+                    for mut visibility in &mut preview_visuals {
+                        *visibility = Visibility::Inherited;
+                    }
+                    for mut visibility in &mut loading_text {
+                        *visibility = Visibility::Hidden;
+                    }
+                }
+                throttle.queued_output_indices.pop_front()
+            } else {
+                None
+            }
         };
         if let Some(display_index) = display_index
             && let Some(display_material) = display_materials.get_mut(&throttle.display_material)

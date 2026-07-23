@@ -265,7 +265,8 @@ fn apply_dither(source: vec3<f32>, source_coord: vec2<i32>) -> vec3<f32> {
     oklch.y = max(oklch.y + chroma_noise * dither_params_a.values.w * intensity, 0.0);
     oklch.z = oklch.z + hue_noise * dither_params_b.values.x * intensity * 2.0 * 3.14159265;
     oklch.y = clamp_chroma_to_srgb_gamut(oklch);
-    return clamp(linear_to_srgb(oklch_to_linear_srgb(oklch)), vec3<f32>(0.0), vec3<f32>(1.0));
+    let transformed = clamp(linear_to_srgb(oklch_to_linear_srgb(oklch)), vec3<f32>(0.0), vec3<f32>(1.0));
+    return floor(transformed * 255.0 + vec3<f32>(0.5001)) / 255.0;
 }
 
 fn lookup_palette_index(source: vec3<f32>, direct: bool) -> u32 {

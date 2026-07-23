@@ -582,8 +582,7 @@ pub(crate) fn setup_direct_stream_scene(
         } else {
             effective_custom_batch_size(config.custom_host_batch_size, config.stream_fps)
         };
-        let overlay_enabled =
-            std::env::var_os("DIRECT_STREAM_AUDIT_DISABLE_OVERLAYS").is_none();
+        let overlay_enabled = std::env::var_os("DIRECT_STREAM_AUDIT_DISABLE_OVERLAYS").is_none();
         let pipeline = spawn_custom_host_pipeline(
             &mut commands,
             &mut images,

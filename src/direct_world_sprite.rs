@@ -885,6 +885,7 @@ mod tests {
             palette_count: 256,
             palette_colors: Vec::new(),
             lookup_entries: std::sync::Arc::from(entries.into_boxed_slice()),
+            overlay_enabled: true,
         }
     }
 }

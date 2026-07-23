@@ -514,6 +514,7 @@ mod tests {
             palette_count: 0,
             palette_colors: Vec::new(),
             lookup_entries: std::sync::Arc::from(entries.into_boxed_slice()),
+            overlay_enabled: true,
         };
         let text = DirectText::new("!", 0, 0)
             .with_color(Srgba::RED)

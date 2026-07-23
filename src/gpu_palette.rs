@@ -224,6 +224,7 @@ pub(crate) struct GpuPalettePipeline {
     pub(crate) palette_count: usize,
     pub(crate) palette_colors: Vec<[u8; 4]>,
     pub(crate) lookup_entries: Arc<[u8]>,
+    pub(crate) overlay_enabled: bool,
 }
 
 #[derive(Resource)]
@@ -542,6 +543,7 @@ pub(crate) fn spawn_custom_host_pipeline(
         palette_count: palette_colors.len(),
         palette_colors: palette_colors.to_vec(),
         lookup_entries: lookup_entries_arc(palette_lookup),
+        overlay_enabled,
     }
 }
 
@@ -797,7 +799,6 @@ fn throttle_preview_palette_cameras(
 
     for entity in [
         pipeline.source_copy_camera,
-        pipeline.raw_overlay_camera,
         pipeline.palette_camera,
         pipeline.raw_snapshot_camera,
     ] {
@@ -805,8 +806,11 @@ fn throttle_preview_palette_cameras(
             camera.is_active = should_render;
         }
     }
+    if let Ok(mut camera) = cameras.get_mut(pipeline.raw_overlay_camera) {
+        camera.is_active = should_render && pipeline.overlay_enabled;
+    }
     if let Ok(mut camera) = cameras.get_mut(pipeline.overlay_camera) {
-        camera.is_active = should_render;
+        camera.is_active = should_render && pipeline.overlay_enabled;
     }
 }
 

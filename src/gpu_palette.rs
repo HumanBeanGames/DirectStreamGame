@@ -362,7 +362,8 @@ pub(crate) fn make_lookup_texture_from_entries(entries: &[u8]) -> Image {
         TextureFormat::R8Uint,
         RenderAssetUsages::default(),
     );
-    image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
+    image.texture_descriptor.usage =
+        TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::COPY_SRC;
     image
 }
 

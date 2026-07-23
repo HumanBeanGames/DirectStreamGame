@@ -222,6 +222,7 @@ pub(crate) struct GpuPalettePipeline {
     pub(crate) overlay_camera: Entity,
     pub(crate) raw_snapshot_camera: Entity,
     pub(crate) audit_camera: Option<Entity>,
+    pub(crate) overlay_mask_camera: Option<Entity>,
     pub(crate) source_copy_quad_entity: Entity,
     pub(crate) quad_entity: Entity,
     pub(crate) raw_snapshot_quad_entity: Entity,
@@ -229,6 +230,7 @@ pub(crate) struct GpuPalettePipeline {
     pub(crate) source_images: Vec<Handle<Image>>,
     pub(crate) output_images: Vec<Handle<Image>>,
     pub(crate) audit_images: Vec<Handle<Image>>,
+    pub(crate) overlay_mask_images: Vec<Handle<Image>>,
     pub(crate) current_output_index: usize,
     pub(crate) palette_count: usize,
     pub(crate) palette_colors: Vec<[u8; 4]>,
@@ -304,6 +306,22 @@ pub(crate) fn make_stream_output_image(width: u32, height: u32) -> Image {
         | TextureUsages::COPY_DST
         | TextureUsages::COPY_SRC
         | TextureUsages::RENDER_ATTACHMENT;
+    image
+}
+
+fn make_overlay_mask_image(width: u32, height: u32) -> Image {
+    let mut image = Image::new_fill(
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &[0, 0, 0, 0],
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    image.texture_descriptor.usage = TextureUsages::COPY_SRC | TextureUsages::RENDER_ATTACHMENT;
     image
 }
 
@@ -410,9 +428,17 @@ pub(crate) fn spawn_custom_host_pipeline(
     } else {
         Vec::new()
     };
+    let overlay_mask_images: Vec<Handle<Image>> = if audit_enabled {
+        (0..output_image_count(batch_size))
+            .map(|_| images.add(make_overlay_mask_image(width, height)))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let first_output = output_images.first().cloned().unwrap();
     let first_source = source_images.first().cloned().unwrap();
     let first_audit = audit_images.first().cloned();
+    let first_overlay_mask = overlay_mask_images.first().cloned();
     let capture_image = images.add(make_palette_source_image(width, height));
     let palette_texture = images.add(make_palette_texture(palette_colors));
     let lookup_texture = images.add(make_lookup_texture(palette_lookup));
@@ -524,6 +550,21 @@ pub(crate) fn spawn_custom_host_pipeline(
             ))
             .id()
     });
+    let overlay_mask_camera = first_overlay_mask.as_ref().map(|first_overlay_mask| {
+        commands
+            .spawn((
+                Camera2d,
+                Msaa::Off,
+                Camera {
+                    order: 3,
+                    clear_color: ClearColorConfig::Custom(Color::NONE),
+                    ..default()
+                },
+                RenderTarget::Image(first_overlay_mask.clone().into()),
+                RenderLayers::layer(GPU_DIRECT_TEXT_LAYER),
+            ))
+            .id()
+    });
 
     let source_copy_quad_entity = commands
         .spawn((
@@ -581,6 +622,7 @@ pub(crate) fn spawn_custom_host_pipeline(
         overlay_camera,
         raw_snapshot_camera,
         audit_camera,
+        overlay_mask_camera,
         source_copy_quad_entity,
         quad_entity,
         raw_snapshot_quad_entity,
@@ -588,6 +630,7 @@ pub(crate) fn spawn_custom_host_pipeline(
         source_images,
         output_images,
         audit_images,
+        overlay_mask_images,
         current_output_index: 0,
         palette_count: palette_colors.len(),
         palette_colors: palette_colors.to_vec(),
@@ -624,9 +667,17 @@ pub(crate) fn retarget_custom_host_pipeline(
     } else {
         Vec::new()
     };
+    let overlay_mask_images: Vec<Handle<Image>> = if pipeline.overlay_mask_camera.is_some() {
+        (0..output_image_count(batch_size))
+            .map(|_| images.add(make_overlay_mask_image(width, height)))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let first_output = output_images.first().cloned().unwrap();
     let first_source = source_images.first().cloned().unwrap();
     let first_audit = audit_images.first().cloned();
+    let first_overlay_mask = overlay_mask_images.first().cloned();
     let capture_image = images.add(make_palette_source_image(width, height));
 
     if let Ok(mut camera_target) = camera_targets.get_mut(pipeline.source_copy_camera) {
@@ -663,6 +714,13 @@ pub(crate) fn retarget_custom_host_pipeline(
         && let Ok(mut camera_target) = camera_targets.get_mut(audit_camera)
     {
         *camera_target = RenderTarget::Image(first_audit.into());
+    }
+
+    if let (Some(mask_camera), Some(first_overlay_mask)) =
+        (pipeline.overlay_mask_camera, first_overlay_mask)
+        && let Ok(mut camera_target) = camera_targets.get_mut(mask_camera)
+    {
+        *camera_target = RenderTarget::Image(first_overlay_mask.into());
     }
 
     if let Some(material) = raw_copy_materials.get_mut(&pipeline.source_copy_material) {
@@ -716,6 +774,7 @@ pub(crate) fn retarget_custom_host_pipeline(
     pipeline.source_images = source_images;
     pipeline.output_images = output_images;
     pipeline.audit_images = audit_images;
+    pipeline.overlay_mask_images = overlay_mask_images;
     pipeline.current_output_index = 0;
     target.output_image = first_output;
     target.output_is_indexed = true;
@@ -836,6 +895,13 @@ fn throttle_preview_palette_cameras(
         {
             *audit_target = RenderTarget::Image(audit_image.into());
         }
+        if let (Some(mask_camera), Some(mask_image)) = (
+            pipeline.overlay_mask_camera,
+            pipeline.overlay_mask_images.get(output_index).cloned(),
+        ) && let Ok(mut mask_target) = camera_targets.get_mut(mask_camera)
+        {
+            *mask_target = RenderTarget::Image(mask_image.into());
+        }
 
         let warming_up = throttle.warmup_frames_remaining > 0;
         if warming_up {
@@ -876,6 +942,9 @@ fn throttle_preview_palette_cameras(
                 if let Some(audit_image) = pipeline.audit_images.get(display_index) {
                     debug_state.audit_image = audit_image.clone();
                 }
+                if let Some(mask_image) = pipeline.overlay_mask_images.get(display_index) {
+                    debug_state.overlay_mask_image = mask_image.clone();
+                }
                 debug_state.display_generation = debug_state.display_generation.wrapping_add(1);
             }
         }
@@ -897,6 +966,11 @@ fn throttle_preview_palette_cameras(
         && let Ok(mut camera) = cameras.get_mut(audit_camera)
     {
         camera.is_active = should_render;
+    }
+    if let Some(mask_camera) = pipeline.overlay_mask_camera
+        && let Ok(mut camera) = cameras.get_mut(mask_camera)
+    {
+        camera.is_active = should_render && pipeline.overlay_enabled;
     }
     if let Ok(mut camera) = cameras.get_mut(pipeline.raw_overlay_camera) {
         camera.is_active = should_render && pipeline.overlay_enabled;

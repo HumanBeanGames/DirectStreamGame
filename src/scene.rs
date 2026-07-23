@@ -447,6 +447,7 @@ enum PreviewPixelSource {
     Raw,
     Quantized,
     Audit,
+    OverlayMask,
 }
 
 #[derive(Resource)]
@@ -454,6 +455,7 @@ pub(crate) struct PreviewPixelDebugState {
     pub(crate) raw_image: Handle<Image>,
     pub(crate) quantized_image: Handle<Image>,
     pub(crate) audit_image: Handle<Image>,
+    pub(crate) overlay_mask_image: Handle<Image>,
     pub(crate) palette_colors: Vec<[u8; 4]>,
     pub(crate) lookup_entries: Arc<[u8]>,
     matching: PaletteMatching,
@@ -470,9 +472,11 @@ pub(crate) struct PreviewPixelDebugState {
     validation_raw_data: HashMap<u64, Vec<u8>>,
     validation_quantized_data: HashMap<u64, Vec<u8>>,
     validation_audit_data: HashMap<u64, Vec<u8>>,
+    validation_overlay_mask_data: HashMap<u64, Vec<u8>>,
     pixel_debug_raw: Option<RawPixelDebug>,
     pixel_debug_quantized: Option<QuantizedPixelDebug>,
     pixel_debug_audit: Option<QuantizedPixelDebug>,
+    pixel_debug_overlay_mask: Option<bool>,
     pixel_debug_clicked_source: Option<PreviewPixelSource>,
     next_pixel_debug_request_id: u64,
     active_pixel_debug_request_id: Option<u64>,
@@ -514,6 +518,7 @@ struct QuantizedPixelDebug {
     shader_palette_index: u8,
     color: [u8; 4],
     lookup_rgb: [u8; 3],
+    direct_overlay: bool,
 }
 
 pub(crate) fn setup_direct_stream_scene(
@@ -749,6 +754,7 @@ fn spawn_preview_comparison(
             raw_image: raw_output_images[0].clone(),
             quantized_image: pipeline.output_images[0].clone(),
             audit_image: pipeline.audit_images[0].clone(),
+            overlay_mask_image: pipeline.overlay_mask_images[0].clone(),
             palette_colors: pipeline.palette_colors.clone(),
             lookup_entries,
             matching,
@@ -767,9 +773,11 @@ fn spawn_preview_comparison(
             validation_raw_data: HashMap::new(),
             validation_quantized_data: HashMap::new(),
             validation_audit_data: HashMap::new(),
+            validation_overlay_mask_data: HashMap::new(),
             pixel_debug_raw: None,
             pixel_debug_quantized: None,
             pixel_debug_audit: None,
+            pixel_debug_overlay_mask: None,
             pixel_debug_clicked_source: None,
             next_pixel_debug_request_id: 0,
             active_pixel_debug_request_id: None,
@@ -1656,6 +1664,7 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
     let raw_image = debug_state.raw_image.clone();
     let quantized_image = debug_state.quantized_image.clone();
     let audit_image = debug_state.audit_image.clone();
+    let overlay_mask_image = debug_state.overlay_mask_image.clone();
 
     if let Some(mut palette_editor) = palette_editor
         && palette_editor.pick_raw_next_click
@@ -1695,6 +1704,7 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
     debug_state.pixel_debug_raw = None;
     debug_state.pixel_debug_quantized = None;
     debug_state.pixel_debug_audit = None;
+    debug_state.pixel_debug_overlay_mask = None;
     let request_id = debug_state.next_pixel_debug_request_id;
     debug_state.next_pixel_debug_request_id = request_id.wrapping_add(1);
     debug_state.active_pixel_debug_request_id = Some(request_id);
@@ -1732,6 +1742,17 @@ pub(crate) fn handle_preview_pixel_debug_clicks(
         })
         .observe(handle_preview_pixel_debug_readback)
         .insert(Readback::texture(audit_image));
+    commands
+        .spawn(PreviewPixelDebugReadback {
+            request_id,
+            source: PreviewPixelSource::OverlayMask,
+            x,
+            y,
+            width: config.stream_width,
+            dither: *dither,
+        })
+        .observe(handle_preview_pixel_debug_readback)
+        .insert(Readback::texture(overlay_mask_image));
 }
 
 fn handle_preview_palette_pick_readback(
@@ -2262,9 +2283,11 @@ fn commit_loaded_preview_lookup_to_pipeline(
         debug_state.validation_raw_data.clear();
         debug_state.validation_quantized_data.clear();
         debug_state.validation_audit_data.clear();
+        debug_state.validation_overlay_mask_data.clear();
         debug_state.pixel_debug_raw = None;
         debug_state.pixel_debug_quantized = None;
         debug_state.pixel_debug_audit = None;
+        debug_state.pixel_debug_overlay_mask = None;
         debug_state.pixel_debug_clicked_source = None;
     }
 }
@@ -2376,9 +2399,11 @@ pub(crate) fn process_preview_palette_rebake(
                 debug_state.validation_raw_data.clear();
                 debug_state.validation_quantized_data.clear();
                 debug_state.validation_audit_data.clear();
+                debug_state.validation_overlay_mask_data.clear();
                 debug_state.pixel_debug_raw = None;
                 debug_state.pixel_debug_quantized = None;
                 debug_state.pixel_debug_audit = None;
+                debug_state.pixel_debug_overlay_mask = None;
                 debug_state.pixel_debug_clicked_source = None;
             }
         }
@@ -3310,10 +3335,15 @@ fn handle_preview_pixel_debug_readback(
                 &debug_state.palette_colors,
             ));
         }
+        PreviewPixelSource::OverlayMask => {
+            debug_state.pixel_debug_overlay_mask =
+                Some(preview_overlay_mask_pixel(readback, &event.data));
+        }
     }
     if debug_state.pixel_debug_raw.is_some()
         && debug_state.pixel_debug_quantized.is_some()
         && debug_state.pixel_debug_audit.is_some()
+        && debug_state.pixel_debug_overlay_mask.is_some()
     {
         let raw = debug_state
             .pixel_debug_raw
@@ -3329,6 +3359,10 @@ fn handle_preview_pixel_debug_readback(
             .expect("audit pixel debug checked above");
         quantized.lookup_rgb = audit.lookup_rgb;
         quantized.shader_palette_index = audit.palette_index;
+        quantized.direct_overlay = debug_state
+            .pixel_debug_overlay_mask
+            .take()
+            .expect("overlay mask pixel debug checked above");
         let clicked_source = debug_state
             .pixel_debug_clicked_source
             .take()
@@ -3375,6 +3409,7 @@ pub(crate) fn request_preview_palette_validation(
     let raw_image = debug_state.raw_image.clone();
     let quantized_image = debug_state.quantized_image.clone();
     let audit_image = debug_state.audit_image.clone();
+    let overlay_mask_image = debug_state.overlay_mask_image.clone();
     commands
         .spawn(PreviewPaletteValidationReadback {
             source: PreviewPixelSource::Raw,
@@ -3408,6 +3443,17 @@ pub(crate) fn request_preview_palette_validation(
         })
         .observe(handle_preview_palette_validation_readback)
         .insert(Readback::texture(audit_image));
+    commands
+        .spawn(PreviewPaletteValidationReadback {
+            source: PreviewPixelSource::OverlayMask,
+            generation,
+            frame_number,
+            width: config.stream_width,
+            height: config.stream_height,
+            dither: *dither,
+        })
+        .observe(handle_preview_palette_validation_readback)
+        .insert(Readback::texture(overlay_mask_image));
 }
 
 fn handle_preview_palette_validation_readback(
@@ -3441,6 +3487,11 @@ fn handle_preview_palette_validation_readback(
                 .validation_audit_data
                 .insert(readback.generation, event.data.clone());
         }
+        PreviewPixelSource::OverlayMask => {
+            debug_state
+                .validation_overlay_mask_data
+                .insert(readback.generation, event.data.clone());
+        }
     }
 
     if debug_state
@@ -3451,6 +3502,9 @@ fn handle_preview_palette_validation_readback(
             .contains_key(&readback.generation)
         && debug_state
             .validation_audit_data
+            .contains_key(&readback.generation)
+        && debug_state
+            .validation_overlay_mask_data
             .contains_key(&readback.generation)
     {
         let raw = debug_state
@@ -3465,6 +3519,10 @@ fn handle_preview_palette_validation_readback(
             .validation_audit_data
             .remove(&readback.generation)
             .expect("audit validation data checked above");
+        let overlay_mask = debug_state
+            .validation_overlay_mask_data
+            .remove(&readback.generation)
+            .expect("overlay mask validation data checked above");
         debug_state.validation_frames_checked =
             debug_state.validation_frames_checked.saturating_add(1);
         let frame_number = readback.frame_number;
@@ -3478,6 +3536,7 @@ fn handle_preview_palette_validation_readback(
                     &raw,
                     &quantized,
                     &audit,
+                    &overlay_mask,
                     readback.width,
                     readback.height,
                     &debug_state.lookup_entries,
@@ -3544,6 +3603,7 @@ fn validate_preview_palette_frame(
     raw: &[u8],
     quantized: &[u8],
     audit: &[u8],
+    overlay_mask: &[u8],
     width: u32,
     height: u32,
     lookup_entries: &[u8],
@@ -3573,6 +3633,7 @@ fn validate_preview_palette_frame(
             let audit_debug = preview_quantized_pixel_debug(&readback, audit, palette_colors);
             quantized_debug.lookup_rgb = audit_debug.lookup_rgb;
             quantized_debug.shader_palette_index = audit_debug.palette_index;
+            quantized_debug.direct_overlay = preview_overlay_mask_pixel(&readback, overlay_mask);
             if is_direct_output_overlay(&raw_debug, &quantized_debug, PreviewPixelSource::Raw) {
                 continue;
             }
@@ -3835,7 +3896,16 @@ fn preview_quantized_pixel_debug(
         shader_palette_index: palette_index,
         color,
         lookup_rgb: [metadata_r, metadata_g, metadata_b],
+        direct_overlay: false,
     }
+}
+
+fn preview_overlay_mask_pixel(readback: &PreviewPixelDebugReadback, data: &[u8]) -> bool {
+    let row_bytes = readback.width as usize * 4;
+    let aligned_row_bytes =
+        bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(row_bytes);
+    let offset = readback.y as usize * aligned_row_bytes + readback.x as usize * 4;
+    data.get(offset + 3).copied().unwrap_or(0) > 0
 }
 
 fn preview_pixel_pair_text(
@@ -3996,11 +4066,11 @@ fn preview_expected_readout(
 }
 
 fn is_direct_output_overlay(
-    raw: &RawPixelDebug,
-    _quantized: &QuantizedPixelDebug,
+    _raw: &RawPixelDebug,
+    quantized: &QuantizedPixelDebug,
     _clicked_source: PreviewPixelSource,
 ) -> bool {
-    raw.a == 254
+    quantized.direct_overlay
 }
 
 #[cfg(test)]
@@ -4027,6 +4097,7 @@ mod preview_pixel_debug_tests {
             shader_palette_index: index,
             color: [4, 5, 6, 255],
             lookup_rgb: [0, 0, 0],
+            direct_overlay: false,
         }
     }
 
@@ -4088,9 +4159,9 @@ mod preview_pixel_debug_tests {
 
     #[test]
     fn overlay_marker_identifies_direct_output_even_when_indices_match() {
-        let mut raw = raw_debug(PreviewLookupRoute::AlteredTable, Some(9));
-        let quantized = quantized_debug(9);
-        raw.a = 254;
+        let raw = raw_debug(PreviewLookupRoute::AlteredTable, Some(9));
+        let mut quantized = quantized_debug(9);
+        quantized.direct_overlay = true;
 
         let (label, index, color) =
             preview_expected_readout(&raw, &quantized, PreviewPixelSource::Raw, &[], &[]);
@@ -4110,7 +4181,7 @@ mod preview_pixel_debug_tests {
         raw.lookup_key = 1_312_554;
         let mut quantized = quantized_debug(169);
         quantized.color = [0x52, 0x45, 0xFC, 255];
-        raw.a = 254;
+        quantized.direct_overlay = true;
 
         let text = preview_pixel_pair_text(
             &raw,

@@ -51,7 +51,7 @@ use std::{
 };
 
 const PREVIEW_PALETTE_VALIDATION_FRAMES: u32 = 30;
-const PREVIEW_PALETTE_MISMATCH_LOG: &str = "preview_palette_mismatches.txt";
+const PREVIEW_PALETTE_MISMATCH_LOG: &str = "preview_palette_audit.txt";
 
 pub(crate) struct PendingReadback {
     pub(crate) captured_at: Instant,

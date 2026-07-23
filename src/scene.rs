@@ -458,7 +458,7 @@ pub(crate) struct PreviewPixelDebugState {
     validation_frames_checked: u32,
     validation_total_mismatches: u64,
     validation_total_mapping_mismatches: u64,
-    validation_total_fingerprint_mismatches: u64,
+    validation_total_lookup_input_mismatches: u64,
     pub(crate) display_generation: u64,
     validation_last_requested_generation: Option<u64>,
     validation_raw_data: HashMap<u64, Vec<u8>>,
@@ -507,7 +507,7 @@ struct QuantizedPixelDebug {
     palette_index: u8,
     color: [u8; 4],
     direct_overlay: bool,
-    lookup_fingerprint: u16,
+    lookup_rgb: [u8; 3],
 }
 
 pub(crate) fn setup_direct_stream_scene(
@@ -747,7 +747,7 @@ fn spawn_preview_comparison(
             validation_frames_checked: 0,
             validation_total_mismatches: 0,
             validation_total_mapping_mismatches: 0,
-            validation_total_fingerprint_mismatches: 0,
+            validation_total_lookup_input_mismatches: 0,
             display_generation: 0,
             validation_last_requested_generation: None,
             validation_raw_data: HashMap::new(),
@@ -2183,7 +2183,7 @@ fn commit_loaded_preview_lookup_to_pipeline(
         debug_state.validation_frames_checked = 0;
         debug_state.validation_total_mismatches = 0;
         debug_state.validation_total_mapping_mismatches = 0;
-        debug_state.validation_total_fingerprint_mismatches = 0;
+        debug_state.validation_total_lookup_input_mismatches = 0;
         debug_state.validation_last_requested_generation = None;
         debug_state.validation_raw_data.clear();
         debug_state.validation_quantized_data.clear();
@@ -2296,7 +2296,7 @@ pub(crate) fn process_preview_palette_rebake(
                 debug_state.validation_frames_checked = 0;
                 debug_state.validation_total_mismatches = 0;
                 debug_state.validation_total_mapping_mismatches = 0;
-                debug_state.validation_total_fingerprint_mismatches = 0;
+                debug_state.validation_total_lookup_input_mismatches = 0;
                 debug_state.validation_last_requested_generation = None;
                 debug_state.validation_raw_data.clear();
                 debug_state.validation_quantized_data.clear();
@@ -3366,11 +3366,11 @@ fn handle_preview_palette_validation_readback(
                 )?;
                 writeln!(
                     log,
-                    "FRAME {frame_number} generation={} mismatches={} mapping_mismatches={} fingerprint_mismatches={}",
+                    "FRAME {frame_number} generation={} mismatches={} mapping_mismatches={} lookup_input_mismatches={}",
                     readback.generation,
                     summary.mismatches,
                     summary.mapping_mismatches,
-                    summary.fingerprint_mismatches,
+                    summary.lookup_input_mismatches,
                 )?;
                 Ok(summary)
             });
@@ -3378,8 +3378,8 @@ fn handle_preview_palette_validation_readback(
             Ok(summary) => {
                 debug_state.validation_total_mismatches += summary.mismatches;
                 debug_state.validation_total_mapping_mismatches += summary.mapping_mismatches;
-                debug_state.validation_total_fingerprint_mismatches +=
-                    summary.fingerprint_mismatches;
+                debug_state.validation_total_lookup_input_mismatches +=
+                    summary.lookup_input_mismatches;
                 debug_state.output = format!(
                     "Palette audit {}/{}: {} mismatches (see {})",
                     debug_state.validation_frames_checked,
@@ -3396,11 +3396,11 @@ fn handle_preview_palette_validation_readback(
         }
         if debug_state.validation_frames_checked == PREVIEW_PALETTE_VALIDATION_FRAMES {
             let report = format!(
-                "automatic preview palette validation: {} frames, {} mismatches (mapping {}, fingerprint {})",
+                "automatic preview palette validation: {} frames, {} mismatches (mapping {}, lookup input {})",
                 PREVIEW_PALETTE_VALIDATION_FRAMES,
                 debug_state.validation_total_mismatches,
                 debug_state.validation_total_mapping_mismatches,
-                debug_state.validation_total_fingerprint_mismatches,
+                debug_state.validation_total_lookup_input_mismatches,
             );
             if let Ok(mut log) = OpenOptions::new()
                 .create(true)
@@ -3420,7 +3420,7 @@ fn handle_preview_palette_validation_readback(
 struct PreviewFrameValidationSummary {
     mismatches: u64,
     mapping_mismatches: u64,
-    fingerprint_mismatches: u64,
+    lookup_input_mismatches: u64,
 }
 
 fn validate_preview_palette_frame(
@@ -3456,17 +3456,16 @@ fn validate_preview_palette_frame(
                 continue;
             }
             let mapping_mismatch = raw_debug.expected_index != Some(quantized_debug.palette_index);
-            let fingerprint_mismatch =
-                lookup_fingerprint(raw_debug.lookup_rgb) != quantized_debug.lookup_fingerprint;
-            if !mapping_mismatch && !fingerprint_mismatch {
+            let lookup_input_mismatch = raw_debug.lookup_rgb != quantized_debug.lookup_rgb;
+            if !mapping_mismatch && !lookup_input_mismatch {
                 continue;
             }
             summary.mismatches += 1;
             summary.mapping_mismatches += u64::from(mapping_mismatch);
-            summary.fingerprint_mismatches += u64::from(fingerprint_mismatch);
+            summary.lookup_input_mismatches += u64::from(lookup_input_mismatch);
             writeln!(
                 log,
-                "FRAME {frame_number} generation={generation} pixel=({x},{y}) mapping_mismatch={mapping_mismatch} fingerprint_mismatch={fingerprint_mismatch}\n{}\n---",
+                "FRAME {frame_number} generation={generation} pixel=({x},{y}) mapping_mismatch={mapping_mismatch} lookup_input_mismatch={lookup_input_mismatch}\n{}\n---",
                 preview_pixel_pair_text(
                     &raw_debug,
                     &quantized_debug,
@@ -3525,14 +3524,6 @@ fn expected_preview_index(
 
 fn rgb_key([r, g, b]: [u8; 3]) -> usize {
     (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b)
-}
-
-fn lookup_fingerprint([r, g, b]: [u8; 3]) -> u16 {
-    let mut hash = 2_166_136_261u32;
-    for channel in [r, g, b] {
-        hash = (hash ^ u32::from(channel)).wrapping_mul(16_777_619);
-    }
-    ((hash ^ (hash >> 16)) % (255 * 256)) as u16
 }
 
 fn apply_preview_dither(
@@ -3695,10 +3686,12 @@ fn preview_quantized_pixel_debug(
         bevy::render::renderer::RenderDevice::align_copy_bytes_per_row(row_bytes);
     let offset = readback.y as usize * aligned_row_bytes + readback.x as usize * 4;
     let palette_index = data.get(offset).copied().unwrap_or(0);
-    let marker_or_fingerprint_high = data.get(offset + 1).copied().unwrap_or(0);
-    let direct_overlay = marker_or_fingerprint_high == u8::MAX;
-    let lookup_fingerprint = u16::from(data.get(offset + 2).copied().unwrap_or(0))
-        | (u16::from(marker_or_fingerprint_high) << 8);
+    let lookup_rgb = [
+        data.get(offset + 1).copied().unwrap_or(0),
+        data.get(offset + 2).copied().unwrap_or(0),
+        data.get(offset + 3).copied().unwrap_or(0),
+    ];
+    let direct_overlay = lookup_rgb == [u8::MAX, 0, u8::MAX];
     let color = palette_colors
         .get(palette_index as usize)
         .copied()
@@ -3707,7 +3700,7 @@ fn preview_quantized_pixel_debug(
         palette_index,
         color,
         direct_overlay,
-        lookup_fingerprint,
+        lookup_rgb,
     }
 }
 
@@ -3782,14 +3775,13 @@ fn preview_pixel_pair_text(
     } else {
         "MISMATCH"
     };
-    let expected_fingerprint = lookup_fingerprint(raw.lookup_rgb);
-    let fingerprint_status = if expected_fingerprint == quantized.lookup_fingerprint {
+    let lookup_input_status = if raw.lookup_rgb == quantized.lookup_rgb {
         "MATCH"
     } else {
         "MISMATCH"
     };
     format!(
-        "Preview sample ({}, {})\nbefore raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}{}\nafter actual: index {} #{:02X}{:02X}{:02X}\nmapping: [{}]\nlookup fingerprint CPU/GPU: {:04X}/{:04X} [{}]\nexpected: {} index {} #{:02X}{:02X}{:02X}{}\nDelta E OK: {:.5}  OKLab dL/da/db: {:.4} / {:.4} / {:.4}\nOKLCH delta L/C/H: {:.4} / {:.4} / {:.1}deg\nlookup RGB key: {}",
+        "Preview sample ({}, {})\nbefore raw: #{:02X}{:02X}{:02X}  BGRA {}, {}, {}, {}{}\nafter actual: index {} #{:02X}{:02X}{:02X}\nmapping: [{}]\nlookup RGB CPU/GPU: #{:02X}{:02X}{:02X}/#{:02X}{:02X}{:02X} [{}]\nexpected: {} index {} #{:02X}{:02X}{:02X}{}\nDelta E OK: {:.5}  OKLab dL/da/db: {:.4} / {:.4} / {:.4}\nOKLCH delta L/C/H: {:.4} / {:.4} / {:.1}deg\nlookup RGB key: {}",
         raw.x,
         raw.y,
         raw.r,
@@ -3805,9 +3797,13 @@ fn preview_pixel_pair_text(
         quantized.color[1],
         quantized.color[2],
         mapping_status,
-        expected_fingerprint,
-        quantized.lookup_fingerprint,
-        fingerprint_status,
+        raw.lookup_rgb[0],
+        raw.lookup_rgb[1],
+        raw.lookup_rgb[2],
+        quantized.lookup_rgb[0],
+        quantized.lookup_rgb[1],
+        quantized.lookup_rgb[2],
+        lookup_input_status,
         lookup_route,
         expected_index,
         expected_color[0],
@@ -3880,7 +3876,7 @@ mod preview_pixel_debug_tests {
             palette_index: index,
             color: [4, 5, 6, 255],
             direct_overlay: false,
-            lookup_fingerprint: 0,
+            lookup_rgb: [0, 0, 0],
         }
     }
 
@@ -4004,15 +4000,6 @@ mod preview_pixel_debug_tests {
         assert!(shader.contains("textureLoad(source_image, source_coord, 0)"));
         assert!(shader.contains("apply_dither(raw_source, framebuffer_coord)"));
         assert!(!shader.contains("source_uv"));
-    }
-
-    #[test]
-    fn lookup_fingerprint_covers_all_lookup_channels() {
-        let original = lookup_fingerprint([21, 7, 37]);
-
-        assert_ne!(lookup_fingerprint([22, 7, 37]), original);
-        assert_ne!(lookup_fingerprint([21, 8, 37]), original);
-        assert_ne!(lookup_fingerprint([21, 7, 38]), original);
     }
 
     #[test]

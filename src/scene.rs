@@ -437,6 +437,11 @@ struct PreviewPalettePickReadback {
     width: u32,
 }
 
+#[derive(Component)]
+struct PreviewLookupTextureAudit {
+    expected: Arc<[u8]>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PreviewPixelSource {
     Raw,
@@ -667,6 +672,12 @@ fn spawn_preview_comparison(
     PreviewPixelDebugState,
 ) {
     reset_preview_palette_mismatch_log(width, height);
+    commands
+        .spawn(PreviewLookupTextureAudit {
+            expected: lookup_entries.clone(),
+        })
+        .observe(handle_preview_lookup_texture_audit)
+        .insert(Readback::texture(pipeline.lookup_texture.clone()));
     let raw_output_images = pipeline.source_images.clone();
     let first_raw_output = raw_output_images[0].clone();
 
@@ -769,6 +780,52 @@ fn reset_preview_palette_mismatch_log(width: u32, height: u32) {
     if let Err(error) = fs::write(PREVIEW_PALETTE_MISMATCH_LOG, header) {
         eprintln!("Could not reset {PREVIEW_PALETTE_MISMATCH_LOG}: {error}");
     }
+}
+
+fn handle_preview_lookup_texture_audit(
+    event: On<ReadbackComplete>,
+    mut commands: Commands,
+    audits: Query<&PreviewLookupTextureAudit>,
+) {
+    let Ok(audit) = audits.get(event.entity) else {
+        commands.entity(event.entity).despawn();
+        return;
+    };
+    let mut mismatch_count = 0usize;
+    let mut examples = Vec::new();
+    for index in 0..audit.expected.len().max(event.data.len()) {
+        let expected = audit.expected.get(index).copied();
+        let actual = event.data.get(index).copied();
+        if expected == actual {
+            continue;
+        }
+        mismatch_count += 1;
+        if examples.len() < 32 {
+            examples.push(format!(
+                "LOOKUP_TEXTURE_MISMATCH index={index} expected={expected:?} actual={actual:?}"
+            ));
+        }
+    }
+    let result = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(PREVIEW_PALETTE_MISMATCH_LOG)
+        .map(BufWriter::new)
+        .and_then(|mut log| {
+            for example in &examples {
+                writeln!(log, "{example}")?;
+            }
+            writeln!(
+                log,
+                "LOOKUP_TEXTURE expected_bytes={} actual_bytes={} mismatches={mismatch_count}",
+                audit.expected.len(),
+                event.data.len(),
+            )
+        });
+    if let Err(error) = result {
+        eprintln!("Could not write lookup texture audit: {error}");
+    }
+    commands.entity(event.entity).despawn();
 }
 
 pub(crate) fn update_preview_layout(

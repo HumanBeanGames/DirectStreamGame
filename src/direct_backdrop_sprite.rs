@@ -24,7 +24,7 @@ pub struct DirectBackdropSpritePlugin;
 
 const DIRECT_BACKDROP_MARKER_SHADER_HANDLE: Handle<Shader> =
     uuid_handle!("5706e440-f61e-46db-92b2-f5979f4d48e1");
-const DIRECT_LOOKUP_ALPHA: f32 = 254.0 / 255.0;
+const DIRECT_LOOKUP_ALPHA: f32 = (254.0 + 0.25) / 255.0;
 const MARKER_DEPTH_OFFSET: f32 = 0.01;
 
 impl Plugin for DirectBackdropSpritePlugin {

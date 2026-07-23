@@ -35,6 +35,9 @@ pub(crate) const GPU_PREVIEW_RAW_CAPTURE_LAYER: usize = 4;
 pub(crate) const GPU_DIRECT_RAW_TEXT_LAYER: usize = 5;
 pub(crate) const GPU_PREVIEW_RAW_SNAPSHOT_LAYER: usize = 6;
 pub(crate) const INDEXED_DIRECT_OVERLAY_MARKER: f32 = 1.0;
+pub(crate) fn indexed_unorm_byte(value: u8) -> f32 {
+    ((f32::from(value) + 0.25) / 255.0).min(1.0)
+}
 const PALETTE_SHADER_HANDLE: Handle<Shader> = uuid_handle!("b69538c2-4fa1-4a12-89a5-32986e423f4d");
 const PALETTE_PREVIEW_DISPLAY_SHADER_HANDLE: Handle<Shader> =
     uuid_handle!("8ac093df-eddb-44f3-96c7-435d6c7e00a9");
@@ -974,4 +977,18 @@ fn palette_input_offset_a(bias: &crate::palette::PaletteBias) -> Vec4 {
 
 fn palette_input_offset_b(bias: &crate::palette::PaletteBias) -> Vec4 {
     Vec4::new(bias.hue_add, 0.0, 0.0, 0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::indexed_unorm_byte;
+
+    #[test]
+    fn indexed_bytes_encode_inside_their_unorm_bins() {
+        for byte in 0..=u8::MAX {
+            let encoded = indexed_unorm_byte(byte);
+            let decoded = (encoded * 255.0).round().clamp(0.0, 255.0) as u8;
+            assert_eq!(decoded, byte, "indexed byte {byte} did not round-trip");
+        }
+    }
 }

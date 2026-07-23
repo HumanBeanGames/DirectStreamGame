@@ -1,5 +1,5 @@
 use crate::{
-    gpu_palette::{GpuPalettePipeline, INDEXED_DIRECT_OVERLAY_MARKER},
+    gpu_palette::{GpuPalettePipeline, INDEXED_DIRECT_OVERLAY_MARKER, indexed_unorm_byte},
     palette_lut::LUT_ENTRY_COUNT,
     public_types::{DirectColorLookup, DirectStreamTarget},
 };
@@ -321,7 +321,7 @@ fn indexed_overlay_color(
             })
         });
         let palette_index = palette_index.unwrap_or(0);
-        let index_value = f32::from(palette_index) / 255.0;
+        let index_value = indexed_unorm_byte(palette_index);
         return Color::linear_rgba(index_value, INDEXED_DIRECT_OVERLAY_MARKER, 0.0, 1.0);
     }
 
@@ -520,7 +520,7 @@ mod tests {
             .with_palette_index(9);
 
         let color = indexed_overlay_color(&text, &target, Some(&gpu_palette)).to_linear();
-        assert!((color.red - (9.0 / 255.0)).abs() < 0.0001);
+        assert_eq!(color.red, indexed_unorm_byte(9));
         assert_eq!(color.green, INDEXED_DIRECT_OVERLAY_MARKER);
         assert_eq!(color.alpha, 1.0);
     }
@@ -544,7 +544,7 @@ mod tests {
             .with_palette_index(37);
 
         let color = final_overlay_color(&text, &target, None).to_linear();
-        assert!((color.red - (37.0 / 255.0)).abs() < 0.0001);
+        assert_eq!(color.red, indexed_unorm_byte(37));
         assert_eq!(color.green, INDEXED_DIRECT_OVERLAY_MARKER);
         assert!((color.alpha - 1.0).abs() < 0.0001);
     }

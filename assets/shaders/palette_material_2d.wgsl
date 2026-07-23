@@ -265,6 +265,15 @@ fn ordered_dither(cell: vec2<i32>, offset: vec2<i32>) -> f32 {
     return bayer8(shifted) * 2.0 - 1.0;
 }
 
+fn stable_quantize_srgb(source: vec3<f32>) -> vec3<f32> {
+    let scaled = clamp(source, vec3<f32>(0.0), vec3<f32>(1.0)) * 255.0;
+    let lower = floor(scaled);
+    let fraction = scaled - lower;
+    let near_boundary = abs(fraction - vec3<f32>(0.5)) <= vec3<f32>(0.0625);
+    let quantized = select(floor(scaled + vec3<f32>(0.5)), lower, near_boundary);
+    return quantized / 255.0;
+}
+
 fn apply_dither(source: vec3<f32>, source_coord: vec2<i32>) -> vec3<f32> {
     let scale = max(dither_params_a.values.x, 0.125);
     let intensity = max(dither_params_a.values.y, 0.0);
@@ -282,7 +291,7 @@ fn apply_dither(source: vec3<f32>, source_coord: vec2<i32>) -> vec3<f32> {
     oklch.z = oklch.z + hue_noise * dither_params_b.values.x * intensity * 2.0 * 3.14159265;
     oklch.y = clamp_chroma_to_srgb_gamut(oklch);
     let transformed = clamp(linear_to_srgb(oklch_to_linear_srgb(oklch)), vec3<f32>(0.0), vec3<f32>(1.0));
-    return floor(transformed * 255.0 + vec3<f32>(0.5001)) / 255.0;
+    return stable_quantize_srgb(transformed);
 }
 
 fn lookup_palette_index(source: vec3<f32>, direct: bool) -> u32 {

@@ -467,6 +467,7 @@ pub(crate) struct PreviewPixelDebugState {
     validation_frames_checked: u32,
     validation_total_mismatches: u64,
     validation_total_mapping_mismatches: u64,
+    validation_total_drifts: u64,
     pub(crate) display_generation: u64,
     validation_last_requested_generation: Option<u64>,
     validation_raw_data: HashMap<u64, Vec<u8>>,
@@ -768,6 +769,7 @@ fn spawn_preview_comparison(
             validation_frames_checked: 0,
             validation_total_mismatches: 0,
             validation_total_mapping_mismatches: 0,
+            validation_total_drifts: 0,
             display_generation: 0,
             validation_last_requested_generation: None,
             validation_raw_data: HashMap::new(),
@@ -2279,6 +2281,7 @@ fn commit_loaded_preview_lookup_to_pipeline(
         debug_state.validation_frames_checked = 0;
         debug_state.validation_total_mismatches = 0;
         debug_state.validation_total_mapping_mismatches = 0;
+        debug_state.validation_total_drifts = 0;
         debug_state.validation_last_requested_generation = None;
         debug_state.validation_raw_data.clear();
         debug_state.validation_quantized_data.clear();
@@ -2395,6 +2398,7 @@ pub(crate) fn process_preview_palette_rebake(
                 debug_state.validation_frames_checked = 0;
                 debug_state.validation_total_mismatches = 0;
                 debug_state.validation_total_mapping_mismatches = 0;
+                debug_state.validation_total_drifts = 0;
                 debug_state.validation_last_requested_generation = None;
                 debug_state.validation_raw_data.clear();
                 debug_state.validation_quantized_data.clear();
@@ -3185,7 +3189,19 @@ fn srgb_byte(value: f32) -> u8 {
     } else {
         1.055 * value.powf(1.0 / 2.4) - 0.055
     };
-    (srgb * 255.0 + 0.500_1).floor().clamp(0.0, 255.0) as u8
+    stable_srgb_byte(srgb)
+}
+
+fn stable_srgb_byte(srgb: f32) -> u8 {
+    let scaled = srgb.clamp(0.0, 1.0) * 255.0;
+    let lower = scaled.floor();
+    let fraction = scaled - lower;
+    let quantized = if (fraction - 0.5).abs() <= 0.0625 {
+        lower
+    } else {
+        (scaled + 0.5).floor()
+    };
+    quantized.clamp(0.0, 255.0) as u8
 }
 
 fn rgb_to_oklab(r: u8, g: u8, b: u8) -> Oklab {
@@ -3549,8 +3565,11 @@ fn handle_preview_palette_validation_readback(
                 )?;
                 writeln!(
                     log,
-                    "FRAME {frame_number} generation={} mismatches={} mapping_mismatches={}",
-                    readback.generation, summary.mismatches, summary.mapping_mismatches,
+                    "FRAME {frame_number} generation={} mismatches={} mapping_mismatches={} drifts={}",
+                    readback.generation,
+                    summary.mismatches,
+                    summary.mapping_mismatches,
+                    summary.drifts,
                 )?;
                 Ok(summary)
             });
@@ -3558,6 +3577,7 @@ fn handle_preview_palette_validation_readback(
             Ok(summary) => {
                 debug_state.validation_total_mismatches += summary.mismatches;
                 debug_state.validation_total_mapping_mismatches += summary.mapping_mismatches;
+                debug_state.validation_total_drifts += summary.drifts;
                 debug_state.output = format!(
                     "Palette audit {}/{}: {} mismatches (see {})",
                     debug_state.validation_frames_checked,
@@ -3574,10 +3594,11 @@ fn handle_preview_palette_validation_readback(
         }
         if debug_state.validation_frames_checked == PREVIEW_PALETTE_VALIDATION_FRAMES {
             let report = format!(
-                "automatic preview palette validation: {} frames, {} mismatches (mapping {})",
+                "automatic preview palette validation: {} frames, {} mismatches (mapping {}), {} drifts",
                 PREVIEW_PALETTE_VALIDATION_FRAMES,
                 debug_state.validation_total_mismatches,
                 debug_state.validation_total_mapping_mismatches,
+                debug_state.validation_total_drifts,
             );
             if let Ok(mut log) = OpenOptions::new()
                 .create(true)
@@ -3597,6 +3618,7 @@ fn handle_preview_palette_validation_readback(
 struct PreviewFrameValidationSummary {
     mismatches: u64,
     mapping_mismatches: u64,
+    drifts: u64,
 }
 
 fn validate_preview_palette_frame(
@@ -3645,14 +3667,16 @@ fn validate_preview_palette_frame(
             );
             let mapping_mismatch = gpu_expected_index != Some(quantized_debug.palette_index)
                 || quantized_debug.shader_palette_index != quantized_debug.palette_index;
-            if !mapping_mismatch {
+            let drift = raw_debug.lookup_rgb != quantized_debug.lookup_rgb;
+            if !mapping_mismatch && !drift {
                 continue;
             }
-            summary.mismatches += 1;
-            summary.mapping_mismatches += 1;
+            summary.mismatches += u64::from(mapping_mismatch);
+            summary.mapping_mismatches += u64::from(mapping_mismatch);
+            summary.drifts += u64::from(drift);
             writeln!(
                 log,
-                "FRAME {frame_number} generation={generation} pixel=({x},{y}) mapping_mismatch=true\n{}\n---",
+                "FRAME {frame_number} generation={generation} pixel=({x},{y}) mapping_mismatch={mapping_mismatch} drift={drift}\n{}\n---",
                 preview_pixel_pair_text(
                     &raw_debug,
                     &quantized_debug,
@@ -4270,6 +4294,13 @@ mod preview_pixel_debug_tests {
 
         assert_eq!(debug.palette_index, 73);
         assert_eq!(debug.lookup_rgb, [63, 68, 18]);
+    }
+
+    #[test]
+    fn stable_srgb_quantization_resolves_half_step_drift_consistently() {
+        assert_eq!(stable_srgb_byte(10.49 / 255.0), 10);
+        assert_eq!(stable_srgb_byte(10.51 / 255.0), 10);
+        assert_eq!(stable_srgb_byte(10.57 / 255.0), 11);
     }
 
     #[test]

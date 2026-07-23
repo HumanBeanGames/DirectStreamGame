@@ -304,7 +304,8 @@ fn lookup_has_direct_entries() -> bool {
 }
 
 fn encode_indexed_byte(value: u32) -> f32 {
-    return min((f32(value) + 0.25) / 255.0, 1.0);
+    let encoded = min((f32(value) + 0.25) / 255.0, 1.0);
+    return srgb_to_linear_channel(encoded);
 }
 
 fn lookup_fingerprint(source: vec3<f32>) -> u32 {

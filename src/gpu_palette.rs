@@ -36,7 +36,12 @@ pub(crate) const GPU_DIRECT_RAW_TEXT_LAYER: usize = 5;
 pub(crate) const GPU_PREVIEW_RAW_SNAPSHOT_LAYER: usize = 6;
 pub(crate) const INDEXED_DIRECT_OVERLAY_MARKER: f32 = 1.0;
 pub(crate) fn indexed_unorm_byte(value: u8) -> f32 {
-    ((f32::from(value) + 0.25) / 255.0).min(1.0)
+    let encoded = ((f32::from(value) + 0.25) / 255.0).min(1.0);
+    if encoded <= 0.04045 {
+        encoded / 12.92
+    } else {
+        ((encoded + 0.055) / 1.055).powf(2.4)
+    }
 }
 const PALETTE_SHADER_HANDLE: Handle<Shader> = uuid_handle!("b69538c2-4fa1-4a12-89a5-32986e423f4d");
 const PALETTE_PREVIEW_DISPLAY_SHADER_HANDLE: Handle<Shader> =
@@ -286,7 +291,7 @@ pub(crate) fn make_stream_output_image(width: u32, height: u32) -> Image {
         },
         TextureDimension::D2,
         &[0, 0, 0, 255],
-        TextureFormat::Rgba8Unorm,
+        TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::default(),
     );
     image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING
@@ -992,7 +997,12 @@ mod tests {
     fn indexed_bytes_encode_inside_their_unorm_bins() {
         for byte in 0..=u8::MAX {
             let encoded = indexed_unorm_byte(byte);
-            let decoded = (encoded * 255.0).round().clamp(0.0, 255.0) as u8;
+            let srgb = if encoded <= 0.003_130_8 {
+                encoded * 12.92
+            } else {
+                1.055 * encoded.powf(1.0 / 2.4) - 0.055
+            };
+            let decoded = (srgb * 255.0).round().clamp(0.0, 255.0) as u8;
             assert_eq!(decoded, byte, "indexed byte {byte} did not round-trip");
         }
     }

@@ -301,7 +301,8 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     let raw_source = clamp(raw_sample.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
     let palette_width = textureDimensions(palette_texture).x;
     if lookup_params.flags.y > 0.5 {
-        let palette_index = min(u32(round(raw_source.r * 255.0)), palette_width - 1u);
+        let encoded_index = linear_to_srgb_channel(raw_source.r);
+        let palette_index = min(u32(round(encoded_index * 255.0)), palette_width - 1u);
         return display_palette_color(palette_index);
     }
     let direct_index = abs(raw_sample.a - (254.0 / 255.0)) <= (0.5 / 255.0);

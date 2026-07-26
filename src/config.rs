@@ -20,8 +20,13 @@ pub(crate) struct AppConfig {
 
 impl AppConfig {
     pub(crate) fn from_args() -> Self {
-        let mut window_mode = WindowMode::Preview;
+        Self::from_args_iter(env::args().skip(1))
+    }
+
+    fn from_args_iter(args: impl IntoIterator<Item = String>) -> Self {
+        let mut window_mode = WindowMode::Stats;
         let mut custom_host = false;
+        let mut stats_requested = false;
         let mut stream_width = STREAM_WIDTH;
         let mut stream_height = STREAM_HEIGHT;
         let mut stream_fps = STREAM_FPS;
@@ -30,9 +35,12 @@ impl AppConfig {
         let mut stream_height_set = false;
         let mut palette_lookup_path = PathBuf::from("palette.ipsmap");
 
-        for arg in env::args().skip(1) {
-            if arg == "--stats-window" || arg == "--headless-window" {
+        for arg in args {
+            if arg == "--preview" {
+                window_mode = WindowMode::Preview;
+            } else if arg == "--stats-window" || arg == "--headless-window" {
                 window_mode = WindowMode::Stats;
+                stats_requested = true;
             } else if arg == "--custom-host" {
                 custom_host = true;
                 window_mode = WindowMode::Stats;
@@ -53,6 +61,9 @@ impl AppConfig {
             }
         }
 
+        if custom_host || stats_requested {
+            window_mode = WindowMode::Stats;
+        }
         if custom_host {
             if !stream_width_set && !stream_height_set {
                 stream_width = 128;
@@ -85,4 +96,29 @@ impl AppConfig {
 
 pub(crate) fn effective_custom_batch_size(requested_batch_size: usize, _fps: u32) -> usize {
     requested_batch_size.max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(args: &[&str]) -> AppConfig {
+        AppConfig::from_args_iter(args.iter().map(|arg| (*arg).to_owned()))
+    }
+
+    #[test]
+    fn stats_window_is_the_default() {
+        assert!(config(&[]).window_mode == WindowMode::Stats);
+    }
+
+    #[test]
+    fn preview_requires_the_explicit_flag() {
+        assert!(config(&["--preview"]).window_mode == WindowMode::Preview);
+    }
+
+    #[test]
+    fn stats_and_custom_host_override_preview() {
+        assert!(config(&["--preview", "--stats-window"]).window_mode == WindowMode::Stats);
+        assert!(config(&["--preview", "--custom-host"]).window_mode == WindowMode::Stats);
+    }
 }

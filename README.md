@@ -81,6 +81,7 @@ http://127.0.0.1:8080
 Useful flags:
 
 ```text
+--preview
 --stats-window
 --headless-window
 --custom-host

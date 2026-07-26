@@ -20,7 +20,6 @@ use crate::{
 };
 use bevy::{
     camera::RenderTarget, ecs::system::SystemParam, input::keyboard::KeyboardInput, prelude::*,
-    window::WindowOccluded,
 };
 use crossbeam_channel::Sender;
 use std::sync::{
@@ -488,27 +487,6 @@ pub(crate) fn handle_stream_stop_interactions(
             requests.write(DirectStreamStopRequest);
         }
         *color = button_color(*interaction, Color::srgb(0.21, 0.06, 0.07));
-    }
-}
-
-pub(crate) fn keep_custom_host_alive_when_window_occluded(
-    mut occluded_events: MessageReader<WindowOccluded>,
-    mut windows: Query<&mut Window>,
-    control: Res<StreamControl>,
-) {
-    if !control.is_streaming() {
-        for _ in occluded_events.read() {}
-        return;
-    }
-
-    for event in occluded_events.read() {
-        if !event.occluded {
-            continue;
-        }
-
-        if let Ok(mut window) = windows.get_mut(event.window) {
-            window.visible = false;
-        }
     }
 }
 

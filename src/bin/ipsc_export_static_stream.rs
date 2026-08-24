@@ -6,10 +6,10 @@ fn main() -> Result<(), String> {
     let mut branding = CustomHostBranding::default();
     let mut layout = CustomHostLayout::default();
     let mut args = env::args().skip(1).peekable();
-    if let Some(first) = args.peek() {
-        if !first.starts_with("--") {
-            backend = args.next().unwrap_or(backend);
-        }
+    if let Some(first) = args.peek()
+        && !first.starts_with("--")
+    {
+        backend = args.next().unwrap_or(backend);
     }
     while let Some(arg) = args.next() {
         match arg.as_str() {

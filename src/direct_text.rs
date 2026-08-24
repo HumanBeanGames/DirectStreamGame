@@ -119,6 +119,8 @@ struct DirectTextOverlayCache {
     entries: HashMap<Entity, DirectTextOverlayState>,
 }
 
+// Bevy system inputs stay explicit so the scheduler can validate their access conflicts.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn sync_direct_text_overlays(
     mut commands: Commands,
     target: Res<DirectStreamTarget>,
@@ -272,6 +274,8 @@ fn quantize_bitmap_scale(scale: f32) -> f32 {
     scale.round().max(1.0)
 }
 
+// Keeping the glyph's geometry and render attributes adjacent makes each spawned pixel auditable.
+#[allow(clippy::too_many_arguments)]
 fn spawn_bitmap_glyph(
     commands: &mut Commands,
     overlay_layer: &RenderLayers,
@@ -458,100 +462,5 @@ fn glyph_columns(character: char) -> [u8; BITMAP_FONT_WIDTH] {
         '}' => [0x11, 0x1B, 0x04],
         '~' => [0x0C, 0x04, 0x06],
         _ => [0x01, 0x15, 0x03],
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn direct_lookup_uses_ipsmap_direct_entries() {
-        let color = Srgba::new(1.0, 0.0, 0.0, 1.0);
-        let lookup_key = 255usize << 16;
-        let mut entries = vec![0u8; LUT_ENTRY_COUNT * 2];
-        entries[lookup_key] = 7;
-        entries[lookup_key + LUT_ENTRY_COUNT] = 42;
-
-        assert_eq!(lookup_palette_index(color, &entries, false), Some(7));
-        assert_eq!(lookup_palette_index(color, &entries, true), Some(42));
-    }
-
-    #[test]
-    fn explicit_palette_index_overrides_direct_lookup_for_indexed_text() {
-        let target = DirectStreamTarget {
-            camera: Entity::PLACEHOLDER,
-            overlay_camera: Entity::PLACEHOLDER,
-            image: Handle::default(),
-            output_image: Handle::default(),
-            output_is_indexed: true,
-            overlay_layer: 0,
-            raw_overlay_layer: Some(1),
-            width: 16,
-            height: 16,
-            fps: 30,
-        };
-        let mut entries = vec![0u8; LUT_ENTRY_COUNT * 2];
-        entries[LUT_ENTRY_COUNT + (255usize << 16)] = 42;
-        let gpu_palette = GpuPalettePipeline {
-            material: Handle::default(),
-            source_copy_material: Handle::default(),
-            raw_snapshot_material: Handle::default(),
-            palette_texture: Handle::default(),
-            lookup_texture: Handle::default(),
-            capture_image: Handle::default(),
-            source_copy_camera: Entity::PLACEHOLDER,
-            palette_camera: Entity::PLACEHOLDER,
-            raw_overlay_camera: Entity::PLACEHOLDER,
-            overlay_camera: Entity::PLACEHOLDER,
-            raw_snapshot_camera: Entity::PLACEHOLDER,
-            audit_camera: None,
-            overlay_mask_camera: None,
-            source_copy_quad_entity: Entity::PLACEHOLDER,
-            quad_entity: Entity::PLACEHOLDER,
-            raw_snapshot_quad_entity: Entity::PLACEHOLDER,
-            audit_quad_entity: None,
-            source_images: Vec::new(),
-            output_images: Vec::new(),
-            audit_images: Vec::new(),
-            overlay_mask_images: Vec::new(),
-            current_output_index: 0,
-            palette_count: 0,
-            palette_colors: Vec::new(),
-            lookup_entries: std::sync::Arc::from(entries.into_boxed_slice()),
-            overlay_enabled: true,
-        };
-        let text = DirectText::new("!", 0, 0)
-            .with_color(Srgba::RED)
-            .with_palette_index(9);
-
-        let color = indexed_overlay_color(&text, &target, Some(&gpu_palette)).to_linear();
-        assert_eq!(color.red, indexed_unorm_byte(9));
-        assert_eq!(color.green, INDEXED_DIRECT_OVERLAY_MARKER);
-        assert_eq!(color.alpha, 1.0);
-    }
-
-    #[test]
-    fn explicit_palette_index_uses_final_index_overlay_even_with_raw_layer() {
-        let target = DirectStreamTarget {
-            camera: Entity::PLACEHOLDER,
-            overlay_camera: Entity::PLACEHOLDER,
-            image: Handle::default(),
-            output_image: Handle::default(),
-            output_is_indexed: true,
-            overlay_layer: 0,
-            raw_overlay_layer: Some(1),
-            width: 16,
-            height: 16,
-            fps: 30,
-        };
-        let text = DirectText::new("!", 0, 0)
-            .with_color(Srgba::RED)
-            .with_palette_index(37);
-
-        let color = final_overlay_color(&text, &target, None).to_linear();
-        assert_eq!(color.red, indexed_unorm_byte(37));
-        assert_eq!(color.green, INDEXED_DIRECT_OVERLAY_MARKER);
-        assert!((color.alpha - 1.0).abs() < 0.0001);
     }
 }

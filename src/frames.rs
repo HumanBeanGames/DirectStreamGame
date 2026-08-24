@@ -26,6 +26,7 @@ impl EncodedFrameHub {
         }
     }
 
+    #[cfg(feature = "ffmpeg-media")]
     pub(crate) fn publish(&self, jpeg: Vec<u8>) {
         let (lock, ready) = &*self.inner;
         if let Ok(mut latest) = lock.lock() {

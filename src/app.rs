@@ -27,6 +27,11 @@ use std::num::NonZeroU32;
 
 pub fn direct_stream_app() -> App {
     let config = AppConfig::from_args();
+    if config.window_mode == WindowMode::Preview && !cfg!(feature = "ffmpeg-media") {
+        panic!(
+            "--preview requires the `ffmpeg-media` Cargo feature; rebuild with `--features ffmpeg-media`"
+        );
+    }
     let frame_hub = EncodedFrameHub::new();
     let palette_frame_hub = PaletteFrameHub::new();
     let audio_target = DirectStreamAudioTarget::new();

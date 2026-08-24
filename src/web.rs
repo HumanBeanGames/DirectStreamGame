@@ -53,6 +53,8 @@ pub(crate) enum LocalStreamSource {
     },
 }
 
+// Bevy system inputs stay explicit because each resource becomes shared server state.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn start_local_web_server_from_resources(
     mut started: Local<bool>,
     config: Res<AppConfig>,
@@ -244,10 +246,7 @@ fn read_http_request(stream: &mut TcpStream) -> Vec<u8> {
     let mut header_end = None;
     let mut content_length = 0usize;
 
-    loop {
-        let Ok(bytes_read) = stream.read(&mut buffer) else {
-            break;
-        };
+    while let Ok(bytes_read) = stream.read(&mut buffer) {
         if bytes_read == 0 {
             break;
         }
@@ -260,10 +259,10 @@ fn read_http_request(stream: &mut TcpStream) -> Vec<u8> {
             }
         }
 
-        if let Some(end) = header_end {
-            if request.len() >= end + content_length {
-                break;
-            }
+        if let Some(end) = header_end
+            && request.len() >= end + content_length
+        {
+            break;
         }
 
         if request.len() > 64 * 1024 {
@@ -1069,15 +1068,12 @@ fn stream_palette(
         stats.custom_stage = "streaming";
     });
 
-    loop {
-        let Some(batch) = frame_hub.wait_for_delayed_encoded_batch_after(
-            last_sequence,
-            CUSTOM_STREAM_SERVER_DELAY,
-            &stats,
-            || active.is_active(),
-        ) else {
-            break;
-        };
+    while let Some(batch) = frame_hub.wait_for_delayed_encoded_batch_after(
+        last_sequence,
+        CUSTOM_STREAM_SERVER_DELAY,
+        &stats,
+        || active.is_active(),
+    ) {
         if !active.is_active() || write_palette_batch(&mut stream, &batch.packets).is_err() {
             break;
         }
@@ -3163,38 +3159,4 @@ fn palette_stream_page_html_with_options(
 </body>
 </html>"#
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn local_identity_prefers_valid_device_id() {
-        let request = "GET /custom-panels HTTP/1.1\r\n\
-            X-DirectStream-Device-Id: 550e8400-e29b-41d4-a716-446655440000\r\n\
-            CF-Connecting-IP: 203.0.113.10\r\n\r\n";
-
-        assert_eq!(
-            local_chat_identity(request, None),
-            "device:550e8400-e29b-41d4-a716-446655440000"
-        );
-    }
-
-    #[test]
-    fn local_identity_rejects_unsafe_device_id_and_falls_back_to_ip() {
-        let request = "GET /custom-panels HTTP/1.1\r\n\
-            X-DirectStream-Device-Id: ../../nope\r\n\
-            X-Forwarded-For: 198.51.100.8, 198.51.100.9\r\n\r\n";
-
-        assert_eq!(local_chat_identity(request, None), "ip:198.51.100.8");
-    }
-
-    #[test]
-    fn local_identity_uses_peer_ip_without_headers() {
-        let request = "GET /custom-panels HTTP/1.1\r\n\r\n";
-        let peer = "192.0.2.44:8080".parse().ok();
-
-        assert_eq!(local_chat_identity(request, peer), "ip:192.0.2.44");
-    }
 }

@@ -477,9 +477,11 @@ fn average_alpha(
         }
     }
 
-    if count > 0 { (total / count) as u8 } else { 0 }
+    total.checked_div(count).unwrap_or(0) as u8
 }
 
+// Pixel bounds, palette state, and vote mode are explicit inputs to this sampling operation.
+#[allow(clippy::too_many_arguments)]
 fn vote_or_palette_average(
     image: &image::RgbaImage,
     x_start: u32,
@@ -612,7 +614,7 @@ fn solve_2x2_palette_downscale(image: PreparedImage, palette_oklab: &[Oklab]) ->
             if candidates.is_empty() {
                 image.colors[index]
             } else {
-                average_oklch_values(candidates.into_iter())
+                average_oklch_values(candidates)
             }
         })
         .collect();
@@ -655,7 +657,7 @@ fn solve_2x2_hue_downscale(image: PreparedImage, palette_oklab: &[Oklab]) -> Pre
                 return base;
             }
 
-            if let Some(hue) = average_hue(candidates.into_iter()) {
+            if let Some(hue) = average_hue(candidates) {
                 Oklab {
                     l: base.l,
                     a: hue.cos() * chroma,

@@ -70,6 +70,8 @@ impl StreamControl {
         self.custom_stream_state.is_active()
     }
 
+    // Starting a stream is one transaction over the live render and transport resources.
+    #[allow(clippy::too_many_arguments)]
     fn start_custom_host(
         &mut self,
         width: u32,
@@ -338,7 +340,7 @@ fn valid_custom_dimensions(width: u32, height: u32, fps: u32) -> bool {
     width == height
         && (64..=256).contains(&width)
         && (64..=256).contains(&height)
-        && width % 8 == 0
+        && width.is_multiple_of(8)
         && (1..=60).contains(&fps)
 }
 
@@ -357,9 +359,9 @@ pub(crate) struct CustomFpsInputText;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StreamControlInput {
-    CustomWidth,
-    CustomHeight,
-    CustomFps,
+    Width,
+    Height,
+    Fps,
 }
 
 #[derive(Component)]
@@ -418,6 +420,8 @@ pub(crate) fn handle_stream_key_typing(
     }
 }
 
+// ParamSet keeps otherwise-conflicting Bevy UI queries disjoint at runtime.
+#[allow(clippy::type_complexity)]
 pub(crate) fn handle_stream_input_box_interactions(
     mut control: ResMut<StreamControl>,
     mut input_boxes: ParamSet<(
@@ -438,20 +442,18 @@ pub(crate) fn handle_stream_input_box_interactions(
     handle_input_box_interactions(
         &mut control,
         &mut input_boxes.p0(),
-        StreamControlInput::CustomWidth,
+        StreamControlInput::Width,
     );
     handle_input_box_interactions(
         &mut control,
         &mut input_boxes.p1(),
-        StreamControlInput::CustomHeight,
+        StreamControlInput::Height,
     );
-    handle_input_box_interactions(
-        &mut control,
-        &mut input_boxes.p2(),
-        StreamControlInput::CustomFps,
-    );
+    handle_input_box_interactions(&mut control, &mut input_boxes.p2(), StreamControlInput::Fps);
 }
 
+// This Bevy query encodes the button's change filter and marker in its type.
+#[allow(clippy::type_complexity)]
 pub(crate) fn handle_stream_start_interactions(
     mut control: ResMut<StreamControl>,
     mut requests: MessageWriter<DirectStreamStartRequest>,
@@ -475,6 +477,8 @@ pub(crate) fn handle_stream_start_interactions(
     }
 }
 
+// This Bevy query encodes the button's change filter and marker in its type.
+#[allow(clippy::type_complexity)]
 pub(crate) fn handle_stream_stop_interactions(
     mut requests: MessageWriter<DirectStreamStopRequest>,
     mut stop_buttons: Query<
@@ -490,6 +494,8 @@ pub(crate) fn handle_stream_stop_interactions(
     }
 }
 
+// Bevy system inputs stay explicit because stream start mutates one coordinated resource graph.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_direct_stream_start_requests(
     mut control: ResMut<StreamControl>,
     mut requests: MessageReader<DirectStreamStartRequest>,
@@ -547,6 +553,8 @@ pub(crate) fn handle_direct_stream_start_requests(
     }
 }
 
+// Bevy system inputs stay explicit because stream stop mutates coordinated live resources.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_direct_stream_stop_requests(
     mut control: ResMut<StreamControl>,
     mut requests: MessageReader<DirectStreamStopRequest>,
@@ -574,6 +582,8 @@ pub(crate) fn handle_direct_stream_stop_requests(
     }
 }
 
+// ParamSet keeps otherwise-conflicting Bevy button queries disjoint at runtime.
+#[allow(clippy::type_complexity)]
 pub(crate) fn handle_stream_misc_button_interactions(
     mut control: ResMut<StreamControl>,
     local_chat: Option<Res<LocalChatHub>>,
@@ -590,16 +600,18 @@ pub(crate) fn handle_stream_misc_button_interactions(
     }
 
     for (interaction, mut color) in &mut buttons.p1() {
-        if *interaction == Interaction::Pressed {
-            if let Some(chat) = &local_chat {
-                chat.purge();
-                control.status = "Purged local chat".to_owned();
-            }
+        if *interaction == Interaction::Pressed
+            && let Some(chat) = &local_chat
+        {
+            chat.purge();
+            control.status = "Purged local chat".to_owned();
         }
         *color = button_color(*interaction, Color::srgb(0.17, 0.10, 0.04));
     }
 }
 
+// ParamSet keeps otherwise-conflicting mutable text queries disjoint at runtime.
+#[allow(clippy::type_complexity)]
 pub(crate) fn update_stream_control_ui(
     control: Res<StreamControl>,
     mut texts: ParamSet<(
@@ -635,6 +647,8 @@ pub(crate) fn update_stream_control_ui(
     }
 }
 
+// The generic Bevy query carries both its change filter and marker component.
+#[allow(clippy::type_complexity)]
 fn handle_input_box_interactions<T: Component>(
     control: &mut StreamControl,
     query: &mut Query<(&Interaction, &mut BackgroundColor), (Changed<Interaction>, With<T>)>,
@@ -651,22 +665,22 @@ fn handle_input_box_interactions<T: Component>(
 fn push_focused_text(control: &mut StreamControl, focused_input: StreamControlInput, text: &str) {
     for ch in text.chars().filter(|ch| ch.is_ascii_digit()) {
         match focused_input {
-            StreamControlInput::CustomWidth => control.custom_width.push(ch),
-            StreamControlInput::CustomHeight => control.custom_height.push(ch),
-            StreamControlInput::CustomFps => control.custom_fps.push(ch),
+            StreamControlInput::Width => control.custom_width.push(ch),
+            StreamControlInput::Height => control.custom_height.push(ch),
+            StreamControlInput::Fps => control.custom_fps.push(ch),
         }
     }
 }
 
 fn pop_focused_text(control: &mut StreamControl, focused_input: StreamControlInput) {
     match focused_input {
-        StreamControlInput::CustomWidth => {
+        StreamControlInput::Width => {
             control.custom_width.pop();
         }
-        StreamControlInput::CustomHeight => {
+        StreamControlInput::Height => {
             control.custom_height.pop();
         }
-        StreamControlInput::CustomFps => {
+        StreamControlInput::Fps => {
             control.custom_fps.pop();
         }
     }

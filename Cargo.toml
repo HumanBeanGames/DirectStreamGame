@@ -2,6 +2,11 @@
 name = "DirectStreamGame"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.95"
+description = "Bevy library and tools for low-bandwidth indexed-pixel browser game streams"
+repository = "https://github.com/HumanBeanGames/DirectStreamGame"
+publish = false
+default-run = "DirectStreamGame"
 
 [lib]
 name = "direct_stream_game"
@@ -9,7 +14,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
-cpu-palette-encoder = []
+ffmpeg-media = ["dep:ffmpeg-next"]
 
 [dependencies]
 arboard = "3.4.0"
@@ -20,7 +25,7 @@ crossbeam-channel = "0.5.15"
 # Dynamically link LGPL-compatible FFmpeg shared libraries. Do not enable
 # ffmpeg-next's "static", "build", "build-license-gpl", or
 # "build-license-nonfree" features for proprietary distribution.
-ffmpeg-next = { version = "=8.1.0", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
+ffmpeg-next = { version = "=8.1.0", optional = true, default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
 image = { version = "0.25.9", default-features = false, features = ["png"] }
 open = "5.3"
 pollster = "0.4"

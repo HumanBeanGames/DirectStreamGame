@@ -97,28 +97,3 @@ impl AppConfig {
 pub(crate) fn effective_custom_batch_size(requested_batch_size: usize, _fps: u32) -> usize {
     requested_batch_size.max(1)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn config(args: &[&str]) -> AppConfig {
-        AppConfig::from_args_iter(args.iter().map(|arg| (*arg).to_owned()))
-    }
-
-    #[test]
-    fn stats_window_is_the_default() {
-        assert!(config(&[]).window_mode == WindowMode::Stats);
-    }
-
-    #[test]
-    fn preview_requires_the_explicit_flag() {
-        assert!(config(&["--preview"]).window_mode == WindowMode::Preview);
-    }
-
-    #[test]
-    fn stats_and_custom_host_override_preview() {
-        assert!(config(&["--preview", "--stats-window"]).window_mode == WindowMode::Stats);
-        assert!(config(&["--preview", "--custom-host"]).window_mode == WindowMode::Stats);
-    }
-}

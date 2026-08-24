@@ -1,16 +1,21 @@
+#[cfg(feature = "ffmpeg-media")]
+use crate::frames::RawFramePixels;
 use crate::{
-    frames::{EncodedFrameHub, RawFrame, RawFramePixels},
+    frames::{EncodedFrameHub, RawFrame},
     stats::SharedStats,
 };
 use crossbeam_channel::Receiver;
+#[cfg(feature = "ffmpeg-media")]
 use ffmpeg::{
     Packet, Rational, codec, encoder, frame,
     software::scaling::{context::Context as ScaleContext, flag::Flags as ScaleFlags},
     util::format::Pixel,
 };
+#[cfg(feature = "ffmpeg-media")]
 use ffmpeg_next as ffmpeg;
 use std::thread;
 
+#[cfg(feature = "ffmpeg-media")]
 pub(crate) fn start_preview_encoder(
     receiver: Receiver<RawFrame>,
     frame_hub: EncodedFrameHub,
@@ -47,6 +52,22 @@ pub(crate) fn start_preview_encoder(
     });
 }
 
+#[cfg(not(feature = "ffmpeg-media"))]
+pub(crate) fn start_preview_encoder(
+    receiver: Receiver<RawFrame>,
+    _frame_hub: EncodedFrameHub,
+    _stats: SharedStats,
+    _width: u32,
+    _height: u32,
+    _fps: u32,
+) {
+    thread::spawn(move || {
+        drop(receiver);
+        eprintln!("Preview mode requires the `ffmpeg-media` Cargo feature");
+    });
+}
+
+#[cfg(feature = "ffmpeg-media")]
 struct JpegPreviewEncoder {
     encoder: encoder::Video,
     scaler: ScaleContext,
@@ -55,6 +76,7 @@ struct JpegPreviewEncoder {
     height: u32,
 }
 
+#[cfg(feature = "ffmpeg-media")]
 impl JpegPreviewEncoder {
     fn new(width: u32, height: u32, fps: u32) -> Result<Self, ffmpeg::Error> {
         ffmpeg::init()?;
@@ -126,6 +148,7 @@ impl JpegPreviewEncoder {
     }
 }
 
+#[cfg(feature = "ffmpeg-media")]
 fn copy_bgra_into_frame(source: &[u8], destination: &mut frame::Video, width: u32, height: u32) {
     let source_row_bytes = width as usize * 4;
     let destination_stride = destination.stride(0);

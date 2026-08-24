@@ -35,18 +35,23 @@ host.
 - Rust stable, currently verified with `rustc 1.95.0`.
 - Bevy `0.18.1`.
 - Windows/MSVC receives the most testing.
-- Dynamic FFmpeg libraries with headers/import libs available at build time and
-  DLLs available at runtime.
+- Optional: dynamic FFmpeg libraries for MJPEG preview, demo video playback,
+  and additional media decoding.
 
-The app does not launch `ffmpeg.exe`. It links to FFmpeg through
-`ffmpeg-next`/`ffmpeg-sys-next` for local preview/media tooling. For
-closed-source distribution, keep FFmpeg dynamically linked and use an
-LGPL-compatible FFmpeg build. Do not enable `ffmpeg-next` static, GPL, or
-nonfree build features. See `FFMPEG-LGPL-COMPLIANCE.md`.
+The default feature set does not link FFmpeg, so normal downstream library and
+custom-host builds do not require FFmpeg DLLs. Enable the `ffmpeg-media` Cargo
+feature for the local MJPEG preview, drag-and-drop demo video, or FFmpeg-backed
+media decoding. The app does not launch `ffmpeg.exe`; that feature links through
+`ffmpeg-next`/`ffmpeg-sys-next`.
 
-## FFmpeg Setup On Windows
+For closed-source distribution with `ffmpeg-media`, keep FFmpeg dynamically
+linked and use an LGPL-compatible FFmpeg build. Do not enable `ffmpeg-next`
+static, GPL, or nonfree build features. See `FFMPEG-LGPL-COMPLIANCE.md`.
 
-The recommended route is vcpkg with the included `vcpkg.json` manifest.
+## Optional FFmpeg Setup On Windows
+
+The recommended route for `ffmpeg-media` builds is vcpkg with the included
+`vcpkg.json` manifest.
 
 ```powershell
 git clone https://github.com/microsoft/vcpkg C:\vcpkg
@@ -58,12 +63,13 @@ $env:VCPKG_DEFAULT_TRIPLET = "x64-windows"
 C:\vcpkg\vcpkg.exe install "ffmpeg[avcodec,avformat,openh264,swresample,swscale]:x64-windows" --classic
 ```
 
-Then keep vcpkg on the environment when building/running:
+Then keep vcpkg on the environment and enable the feature when building or
+running FFmpeg-backed modes:
 
 ```powershell
 $env:VCPKG_ROOT = "C:\vcpkg"
 $env:PATH = "C:\vcpkg\installed\x64-windows\bin;$env:PATH"
-cargo run --bin DirectStreamGame -- --stats-window --custom-host
+cargo run --features ffmpeg-media --bin DirectStreamGame -- --preview
 ```
 
 ## Running The Demo
@@ -92,6 +98,8 @@ Useful flags:
 --batch-size=30
 ```
 
+`--preview` requires `--features ffmpeg-media`. The custom-host stream does not.
+
 In custom-host mode, width and height must be equal, 8-aligned, and between
 `64` and `256`. The default stream rate is `5fps`.
 
@@ -101,7 +109,14 @@ The demo starts with a hue-gradient background and `HelloWorld` text. It also:
 
 - Loops `music/Elijah_K - Iron.wav` as backing music when present.
 - Plays `sfx/boing_x.wav` when chat sends `!boing`.
-- Accepts video files dragged onto the Bevy window.
+- Accepts video files dragged onto the Bevy window when built with
+  `ffmpeg-media`.
+
+Enable demo video playback with:
+
+```powershell
+cargo run --features ffmpeg-media --bin DirectStreamGame -- --stats-window --custom-host
+```
 
 Supported demo video extensions:
 
@@ -126,6 +141,13 @@ Add the library to your game:
 [dependencies]
 bevy = "0.18.1"
 direct_stream_game = { package = "DirectStreamGame", git = "https://github.com/HumanBeanGames/DirectStreamGame" }
+```
+
+This default dependency does not link FFmpeg. Apps that use MJPEG preview,
+demo video, or FFmpeg-backed decoding can opt in:
+
+```toml
+direct_stream_game = { package = "DirectStreamGame", git = "https://github.com/HumanBeanGames/DirectStreamGame", features = ["ffmpeg-media"] }
 ```
 
 For local development, a path dependency also works:
@@ -283,10 +305,11 @@ fn play_hit(sound: Res<HitSound>, mut sounds: MessageWriter<PlayStreamSound>) {
 }
 ```
 
-You can also load WAV files with `StreamAudioClip::from_wav_file`. The mixer
-handles common WAV formats and caches the decode path per file. Lower-level
-audio engines can push samples directly into `DirectStreamAudioTarget` with
-`push_stereo_f32` or `push_mono_f32`.
+You can also load WAV files with `StreamAudioClip::from_wav_file`. The built-in
+decoder handles common PCM and IEEE-float WAV formats without FFmpeg. With
+`ffmpeg-media`, FFmpeg decoding is attempted first. Lower-level audio engines
+can push samples directly into `DirectStreamAudioTarget` with `push_stereo_f32`
+or `push_mono_f32`.
 
 The stream target expects `48_000 Hz`, stereo, `f32` samples in `[-1.0, 1.0]`.
 Custom-host output currently sends browser audio as 8 kHz mono mu-law to keep
@@ -959,15 +982,15 @@ src/bin/ipsc_png_to_ipsi.rs
   backend origin unless you pass another origin to `ipsc_export_static_stream`.
 - The demo video player is intentionally simple and demo-only. It decodes on the
   main thread and is best tested with small H.264 MP4 files.
-- FFmpeg is still used for local media/preview tooling; removing that is a
-  separate dependency-reduction pass.
+- FFmpeg-backed preview and demo media remain optional and require compatible
+  dynamic libraries at build and runtime.
 
 ## Checks
 
 Useful local checks:
 
 ```powershell
-cargo check --bin DirectStreamGame
-cargo check --bin ipsc_lab --bin ipsc_export_static_stream
-cargo test --lib
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo build --release --workspace --all-targets --all-features --locked
 ```

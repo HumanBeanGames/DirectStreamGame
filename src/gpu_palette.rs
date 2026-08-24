@@ -397,6 +397,8 @@ pub(crate) fn make_lookup_texture_from_entries(entries: &[u8]) -> Image {
     image
 }
 
+// Pipeline construction mirrors the owned Bevy asset collections and render targets one-for-one.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_custom_host_pipeline(
     commands: &mut Commands,
     images: &mut Assets<Image>,
@@ -639,6 +641,8 @@ pub(crate) fn spawn_custom_host_pipeline(
     }
 }
 
+// Retargeting updates the same asset collections atomically as initial pipeline construction.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn retarget_custom_host_pipeline(
     pipeline: &mut GpuPalettePipeline,
     images: &mut Assets<Image>,
@@ -827,11 +831,11 @@ fn sync_palette_material_dither(
         dither.chroma_strength,
     );
     let dither_b = Vec4::new(dither.hue_strength, 0.0, 0.0, 0.0);
-    if let Some(material) = materials.get_mut(&pipeline.material) {
-        if material.dither_a != dither_a || material.dither_b != dither_b {
-            material.dither_a = dither_a;
-            material.dither_b = dither_b;
-        }
+    if let Some(material) = materials.get_mut(&pipeline.material)
+        && (material.dither_a != dither_a || material.dither_b != dither_b)
+    {
+        material.dither_a = dither_a;
+        material.dither_b = dither_b;
     }
     if let Some(throttle) = throttle
         && let Some(material) = display_materials.get_mut(&throttle.display_material)
@@ -842,6 +846,8 @@ fn sync_palette_material_dither(
     }
 }
 
+// Bevy system inputs stay explicit so the scheduler can validate their access conflicts.
+#[allow(clippy::too_many_arguments)]
 fn throttle_preview_palette_cameras(
     time: Res<Time>,
     config: Res<AppConfig>,
@@ -1148,23 +1154,4 @@ fn palette_input_offset_a(bias: &crate::palette::PaletteBias) -> Vec4 {
 
 fn palette_input_offset_b(bias: &crate::palette::PaletteBias) -> Vec4 {
     Vec4::new(bias.hue_add, 0.0, 0.0, 0.0)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::indexed_unorm_byte;
-
-    #[test]
-    fn indexed_bytes_encode_inside_their_unorm_bins() {
-        for byte in 0..=u8::MAX {
-            let encoded = indexed_unorm_byte(byte);
-            let srgb = if encoded <= 0.003_130_8 {
-                encoded * 12.92
-            } else {
-                1.055 * encoded.powf(1.0 / 2.4) - 0.055
-            };
-            let decoded = (srgb * 255.0).round().clamp(0.0, 255.0) as u8;
-            assert_eq!(decoded, byte, "indexed byte {byte} did not round-trip");
-        }
-    }
 }

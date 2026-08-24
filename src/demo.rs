@@ -3,15 +3,19 @@ use crate::{
     StreamChatSender, StreamCommandAppExt, app::direct_stream_app,
     public_types::DirectStreamTarget,
 };
+#[cfg(feature = "ffmpeg-media")]
+use bevy::window::FileDragAndDrop;
 use bevy::{
     asset::RenderAssetUsages,
     ecs::system::In,
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
-    window::FileDragAndDrop,
 };
+#[cfg(feature = "ffmpeg-media")]
 use crossbeam_channel::Receiver;
+#[cfg(feature = "ffmpeg-media")]
 use ffmpeg_next as ffmpeg;
+#[cfg(feature = "ffmpeg-media")]
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -37,25 +41,20 @@ pub struct DemoSfxClip(Handle<StreamAudioClip>);
 #[derive(Resource, Default)]
 pub struct DemoMusicStarted(bool);
 
+#[derive(Default)]
 pub struct DemoVideoBackground {
     image: Handle<Image>,
+    #[cfg(feature = "ffmpeg-media")]
     worker: Option<DemoVideoWorker>,
 }
 
-impl Default for DemoVideoBackground {
-    fn default() -> Self {
-        Self {
-            image: Handle::default(),
-            worker: None,
-        }
-    }
-}
-
+#[cfg(feature = "ffmpeg-media")]
 pub struct DemoVideoWorker {
     receiver: Receiver<Vec<u8>>,
     stop: Arc<AtomicBool>,
 }
 
+#[cfg(feature = "ffmpeg-media")]
 impl Drop for DemoVideoWorker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
@@ -67,15 +66,12 @@ pub fn run_demo() {
     app.insert_non_send_resource(DemoVideoBackground::default())
         .add_stream_command("boing", handle_demo_boing_command)
         .add_systems(Startup, setup_demo_scene.after(DirectStreamSet::Setup))
-        .add_systems(
-            Update,
-            (
-                pulse_hello_world_text,
-                start_demo_music,
-                handle_demo_video_drop,
-                update_demo_video_background,
-            ),
-        );
+        .add_systems(Update, (pulse_hello_world_text, start_demo_music));
+    #[cfg(feature = "ffmpeg-media")]
+    app.add_systems(
+        Update,
+        (handle_demo_video_drop, update_demo_video_background),
+    );
     app.run();
 }
 
@@ -98,7 +94,10 @@ pub fn setup_demo_scene(
     ));
     if let Some(video_background) = video_background.as_mut() {
         video_background.image = background;
-        video_background.worker = None;
+        #[cfg(feature = "ffmpeg-media")]
+        {
+            video_background.worker = None;
+        }
     }
 
     commands
@@ -149,6 +148,7 @@ pub fn setup_demo_scene(
     }
 }
 
+#[cfg(feature = "ffmpeg-media")]
 pub fn handle_demo_video_drop(
     mut drops: MessageReader<FileDragAndDrop>,
     mut background: Option<NonSendMut<DemoVideoBackground>>,
@@ -177,6 +177,7 @@ pub fn handle_demo_video_drop(
     }
 }
 
+#[cfg(feature = "ffmpeg-media")]
 pub fn update_demo_video_background(
     mut background: Option<NonSendMut<DemoVideoBackground>>,
     mut images: ResMut<Assets<Image>>,
@@ -202,6 +203,7 @@ pub fn update_demo_video_background(
     }
 }
 
+#[cfg(feature = "ffmpeg-media")]
 impl DemoVideoWorker {
     fn spawn(path: PathBuf, output_width: u32, output_height: u32) -> Result<Self, String> {
         let frame_seconds =
@@ -246,6 +248,7 @@ impl DemoVideoWorker {
     }
 }
 
+#[cfg(feature = "ffmpeg-media")]
 fn is_supported_demo_video(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
@@ -258,6 +261,7 @@ fn is_supported_demo_video(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(feature = "ffmpeg-media")]
 pub struct DemoVideoDecoder {
     path: PathBuf,
     output_width: u32,
@@ -269,6 +273,7 @@ pub struct DemoVideoDecoder {
     scaler: ffmpeg::software::scaling::context::Context,
 }
 
+#[cfg(feature = "ffmpeg-media")]
 impl DemoVideoDecoder {
     fn open(path: &Path, output_width: u32, output_height: u32) -> Result<Self, String> {
         ffmpeg::init().map_err(|err| err.to_string())?;
@@ -371,6 +376,7 @@ impl DemoVideoDecoder {
     }
 }
 
+#[cfg(feature = "ffmpeg-media")]
 fn convert_frame(
     scaler: &mut ffmpeg::software::scaling::context::Context,
     output_width: u32,
@@ -386,6 +392,7 @@ fn convert_frame(
     Some(tightly_packed_rgba(&rgba, output_width, output_height))
 }
 
+#[cfg(feature = "ffmpeg-media")]
 fn frame_seconds_from_rate(rate: ffmpeg::Rational) -> f32 {
     let numerator = rate.numerator();
     let denominator = rate.denominator();
@@ -396,6 +403,7 @@ fn frame_seconds_from_rate(rate: ffmpeg::Rational) -> f32 {
     }
 }
 
+#[cfg(feature = "ffmpeg-media")]
 fn tightly_packed_rgba(frame: &ffmpeg::frame::Video, width: u32, height: u32) -> Vec<u8> {
     let stride = frame.stride(0);
     let row_bytes = width as usize * 4;

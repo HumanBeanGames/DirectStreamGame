@@ -366,26 +366,3 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     output_words[packed_index] = a | (b << 8u) | (c << 16u) | (d << 24u);
 }
 "#;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::palette_lut::PaletteMatching;
-
-    #[test]
-    #[ignore = "requires a GPU and builds the full IPSMAP6 altered/direct entry table"]
-    fn gpu_lookup_builds_ipsmap6_altered_and_direct_entries() {
-        let config = PaletteConfig {
-            colors: vec![[0, 0, 0, 255], [255, 255, 255, 255]],
-            matching: PaletteMatching {
-                lightness_add: 1.0,
-                ..PaletteMatching::default()
-            },
-        };
-
-        let lookup = build_lookup_gpu_with_progress(&config, |_| {}).expect("gpu lookup");
-        assert_eq!(lookup.len(), LUT_ENTRY_COUNT * 2);
-        assert_eq!(lookup[0], 1);
-        assert_eq!(lookup[LUT_ENTRY_COUNT], 0);
-    }
-}

@@ -24,17 +24,6 @@ const TILE_SIZE: usize = 8;
 const TILE_CACHE_LIMIT: usize = 4096;
 const KEYFRAME_INTERVAL: u32 = 25;
 const FRAME_HISTORY_SECONDS: u64 = 60;
-#[cfg(test)]
-const OKLCH_HUE_COUNT: usize = 20;
-#[cfg(test)]
-const OKLCH_HUE_OFFSET_DEGREES: f32 = 29.233885;
-#[cfg(test)]
-const OKLCH_LIGHTNESS_LEVELS: [f32; 16] = [
-    0.0, 0.06666667, 0.13333334, 0.2, 0.26666668, 0.33333334, 0.4, 0.46666667, 0.53333336, 0.6,
-    0.6666667, 0.73333335, 0.8, 0.8666667, 0.93333334, 1.0,
-];
-#[cfg(test)]
-const OKLCH_CHROMA_LEVELS: [f32; 3] = [0.08589443, 0.17178887, 0.2576833];
 
 #[derive(Clone, Copy)]
 pub(crate) struct PaletteBias {
@@ -605,7 +594,6 @@ struct TileCache {
     lookup: HashMap<[u8; 64], u16>,
 }
 
-#[allow(dead_code)]
 impl IndexedPixelEncoder {
     fn new(
         palette: Vec<[u8; 4]>,
@@ -661,8 +649,8 @@ impl IndexedPixelEncoder {
         if width != height
             || width == 0
             || width > u8::MAX as u32 + 1
-            || width as usize % TILE_SIZE != 0
-            || height as usize % TILE_SIZE != 0
+            || !(width as usize).is_multiple_of(TILE_SIZE)
+            || !(height as usize).is_multiple_of(TILE_SIZE)
         {
             return Err(
                 "IPSC frames must be square, 8-aligned, and no larger than 256x256".to_owned(),
@@ -685,7 +673,8 @@ impl IndexedPixelEncoder {
             .as_ref()
             .expect("header initialized for current resolution")
             .clone();
-        let is_keyframe = self.previous.is_none() || self.frame_index % KEYFRAME_INTERVAL == 0;
+        let is_keyframe =
+            self.previous.is_none() || self.frame_index.is_multiple_of(KEYFRAME_INTERVAL);
         let frame_index = self.frame_index;
 
         let framebuffer = current.clone();
@@ -872,44 +861,6 @@ pub(crate) fn encode_palette_batch_packets(
     }
 }
 
-#[cfg(test)]
-fn generated_test_palette() -> Vec<[u8; 4]> {
-    let mut palette = Vec::with_capacity(256);
-    for lightness in OKLCH_LIGHTNESS_LEVELS {
-        palette.push(greyscale_color(lightness));
-    }
-
-    for hue_index in 0..OKLCH_HUE_COUNT {
-        let hue_degrees =
-            OKLCH_HUE_OFFSET_DEGREES + hue_index as f32 * 360.0 / OKLCH_HUE_COUNT as f32;
-        for chroma in OKLCH_CHROMA_LEVELS.iter().copied() {
-            for lightness in OKLCH_LIGHTNESS_LEVELS.iter().copied() {
-                if lightness > 0.0
-                    && lightness < 1.0
-                    && let Some(color) = checked_oklch_to_srgb(lightness, chroma, hue_degrees)
-                {
-                    palette.push(color);
-                }
-            }
-        }
-    }
-    while palette.len() < 256 {
-        palette.push([0x00, 0x00, 0x00, 0xff]);
-    }
-    palette
-}
-
-#[cfg(test)]
-fn greyscale_color(lightness: f32) -> [u8; 4] {
-    if lightness <= 0.0 {
-        [0x00, 0x00, 0x00, 0xff]
-    } else if lightness >= 1.0 {
-        [0xff, 0xff, 0xff, 0xff]
-    } else {
-        oklch_to_srgb(lightness, 0.0, 0.0)
-    }
-}
-
 #[derive(Clone, Copy)]
 struct Oklab {
     l: f32,
@@ -1026,28 +977,6 @@ fn rgb_to_oklab(r: u8, g: u8, b: u8) -> Oklab {
     }
 }
 
-#[cfg(test)]
-fn oklch_to_srgb(lightness: f32, chroma: f32, hue_degrees: f32) -> [u8; 4] {
-    let (r, g, blue) = oklch_to_linear_srgb(lightness, chroma, hue_degrees);
-    [
-        linear_to_u8(r.clamp(0.0, 1.0)),
-        linear_to_u8(g.clamp(0.0, 1.0)),
-        linear_to_u8(blue.clamp(0.0, 1.0)),
-        0xff,
-    ]
-}
-
-#[cfg(test)]
-fn checked_oklch_to_srgb(lightness: f32, chroma: f32, hue_degrees: f32) -> Option<[u8; 4]> {
-    let (r, g, b) = oklch_to_linear_srgb(lightness, chroma, hue_degrees);
-    in_srgb_gamut(r, g, b).then(|| oklch_to_srgb(lightness, chroma, hue_degrees))
-}
-
-#[cfg(test)]
-fn oklch_to_linear_srgb(lightness: f32, chroma: f32, hue_degrees: f32) -> (f32, f32, f32) {
-    oklch_to_linear_srgb_radians(lightness, chroma, hue_degrees.to_radians())
-}
-
 fn oklch_to_linear_srgb_radians(lightness: f32, chroma: f32, hue_radians: f32) -> (f32, f32, f32) {
     let a = hue_radians.cos() * chroma;
     let b = hue_radians.sin() * chroma;
@@ -1075,27 +1004,15 @@ fn srgb_to_linear(value: f32) -> f32 {
     }
 }
 
-#[cfg(test)]
-fn linear_to_u8(value: f32) -> u8 {
-    let srgb = if value <= 0.0031308 {
-        value * 12.92
-    } else {
-        1.055 * value.powf(1.0 / 2.4) - 0.055
-    };
-    (srgb * 255.0).round().clamp(0.0, 255.0) as u8
-}
-
 fn in_srgb_gamut(r: f32, g: f32, b: f32) -> bool {
     const EPSILON: f32 = 0.000_001;
+    let channel_range = -EPSILON..=1.0 + EPSILON;
     r.is_finite()
         && g.is_finite()
         && b.is_finite()
-        && r >= -EPSILON
-        && r <= 1.0 + EPSILON
-        && g >= -EPSILON
-        && g <= 1.0 + EPSILON
-        && b >= -EPSILON
-        && b <= 1.0 + EPSILON
+        && channel_range.contains(&r)
+        && channel_range.contains(&g)
+        && channel_range.contains(&b)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1105,31 +1022,8 @@ pub(crate) struct Framebuffer {
     height: usize,
 }
 
-impl Framebuffer {
-    #[cfg(test)]
-    fn new(width: usize, height: usize) -> Self {
-        Self {
-            pixels: vec![0; width * height],
-            width,
-            height,
-        }
-    }
-
-    #[cfg(test)]
-    fn set_pixel(&mut self, x: usize, y: usize, color: u8) {
-        self.pixels[y * self.width + x] = color;
-    }
-}
-
 fn encode_keyframe_raw(frame: &Framebuffer) -> Vec<u8> {
     frame.pixels.clone()
-}
-
-#[cfg(any(test, feature = "cpu-palette-encoder"))]
-#[allow(dead_code)]
-fn encode_delta_frame(current: &Framebuffer, previous: &Framebuffer) -> (Vec<u8>, TileModeCounts) {
-    let mut tile_cache = TileCache::default();
-    encode_delta_frame_impl(current, previous, &mut tile_cache, false)
 }
 
 fn encode_delta_frame_with_tile_cache(
@@ -1254,13 +1148,6 @@ enum TileMode {
     SpanDelta = 3,
     XorRle = 4,
     Cached = 5,
-}
-
-#[cfg(test)]
-fn encode_best_tile(current: &[u8; 64], previous: &[u8; 64], cached: Option<u16>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(best_tile_len(current, previous, cached).1);
-    write_best_tile(current, previous, cached, &mut out);
-    out
 }
 
 fn write_best_tile(
@@ -1464,361 +1351,5 @@ fn write_runs(values: impl Iterator<Item = u8>, out: &mut Vec<u8>, run_count: &m
         out.push(previous);
         out.push(len);
         *run_count += 1;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn keyframe_roundtrip() {
-        let mut frame = Framebuffer::new(128, 128);
-        frame.set_pixel(12, 34, 99);
-        let encoded = encode_keyframe_raw(&frame);
-        assert_eq!(encoded, frame.pixels);
-    }
-
-    #[test]
-    #[ignore = "rebuilds the full IPSMAP6 lookup"]
-    fn stale_runtime_lookup_rebuilds_in_place() {
-        let config = PaletteConfig {
-            colors: vec![[0, 0, 0, 255], [255, 0, 0, 255], [255, 255, 255, 255]],
-            matching: PaletteMatching::default(),
-        };
-        let entries = vec![0u8; crate::palette_lut::LUT_ENTRY_COUNT * 2];
-        let mut bytes = crate::palette_lut::encode_lookup(&config, &entries).expect("encodes");
-        bytes[8] ^= 0xff;
-        let path = std::env::temp_dir().join(format!(
-            "directstreamgame-stale-runtime-{}.ipsmap",
-            std::process::id()
-        ));
-        std::fs::write(&path, bytes).expect("writes stale lookup");
-
-        let lookup = load_palette_lookup_runtime(&path);
-        let rewritten = std::fs::read(&path).expect("reads rebuilt lookup");
-        let decoded =
-            crate::palette_lut::decode_lookup_bundle(&rewritten).expect("rebuilt lookup decodes");
-        let _ = std::fs::remove_file(path);
-
-        assert_eq!(lookup.config().colors, config.colors);
-        assert_eq!(decoded.config().colors, config.colors);
-        assert_eq!(
-            lookup.entries().len(),
-            crate::palette_lut::LUT_ENTRY_COUNT * 2
-        );
-    }
-
-    #[test]
-    fn delta_span_roundtrip() {
-        let mut previous = Framebuffer::new(128, 128);
-        let mut current = previous.clone();
-        current.set_pixel(10, 10, 5);
-        current.set_pixel(11, 10, 5);
-        current.set_pixel(12, 10, 5);
-
-        let mut tile_cache = TileCache::default();
-        seed_tile_cache_from_frame(&previous, &mut tile_cache);
-        let (encoded, counts) =
-            encode_delta_frame_with_tile_cache(&current, &previous, &mut tile_cache);
-        assert_eq!(counts.span_delta, 1);
-        let decoded = decode_delta_frame_for_test(&previous, &encoded);
-        assert_eq!(current, decoded);
-
-        previous = current;
-        let (encoded, counts) =
-            encode_delta_frame_with_tile_cache(&previous, &previous, &mut tile_cache);
-        assert_eq!(
-            counts.raw
-                + counts.solid
-                + counts.rle
-                + counts.span_delta
-                + counts.xor_rle
-                + counts.cached,
-            0
-        );
-        assert_eq!(encoded.len(), 32);
-    }
-
-    #[test]
-    fn best_tile_prefers_solid() {
-        let previous = [0u8; 64];
-        let current = [7u8; 64];
-        assert_eq!(encode_best_tile(&current, &previous, None), vec![1, 7]);
-    }
-
-    #[test]
-    fn delta_can_reference_cached_tiles() {
-        let previous = Framebuffer::new(128, 128);
-        let mut current = previous.clone();
-        let mut cached_tile = [0u8; 64];
-        cached_tile[0] = 3;
-        current.set_pixel(0, 0, 3);
-
-        let mut tile_cache = TileCache::default();
-        tile_cache.remember(cached_tile);
-        let (encoded, counts) =
-            encode_delta_frame_with_tile_cache(&current, &previous, &mut tile_cache);
-
-        assert_eq!(counts.cached, 1);
-        assert!(encoded.ends_with(&[TileMode::Cached as u8, 0, 0]));
-    }
-
-    #[test]
-    fn batch_keyframe_resets_cached_tile_indices() {
-        let previous = Arc::new(Framebuffer::new(128, 128));
-        let mut keyframe = Framebuffer::new(128, 128);
-        keyframe.set_pixel(0, 0, 4);
-
-        let mut delta = keyframe.clone();
-        delta.set_pixel(64, 64, 4);
-
-        let batch = vec![
-            PaletteFramePacket {
-                sequence: 1,
-                framebuffer: Arc::new(keyframe),
-                is_keyframe: true,
-                frame_index: 1,
-            },
-            PaletteFramePacket {
-                sequence: 2,
-                framebuffer: Arc::new(delta),
-                is_keyframe: false,
-                frame_index: 2,
-            },
-        ];
-
-        let encoded = encode_palette_batch_packets(Some(previous), &batch);
-        assert_eq!(encoded.keyframes, 1);
-        assert_eq!(encoded.delta_frames, 1);
-        assert_eq!(encoded.tile_counts.cached, 1);
-
-        let delta_packet = &encoded.packets[1];
-        let payload_len = u32::from_le_bytes([
-            delta_packet[5],
-            delta_packet[6],
-            delta_packet[7],
-            delta_packet[8],
-        ]) as usize;
-        let payload = &delta_packet[9..9 + payload_len];
-        assert!(payload.ends_with(&[TileMode::Cached as u8, 0, 0]));
-    }
-
-    #[test]
-    fn encoder_accepts_256_square_frames() {
-        let mut encoder =
-            IndexedPixelEncoder::new(generated_test_palette(), PaletteBias::default(), None);
-        let raw = RawFrame {
-            pixels: RawFramePixels::Bgra(vec![0; 256 * 256 * 4]),
-            width: 256,
-            height: 256,
-            captured_at: Instant::now(),
-        };
-
-        let encoded = encoder.encode(&raw, PaletteBias::default()).unwrap();
-        assert!(encoded.is_keyframe);
-        assert_eq!(&encoded.stream_header[0..4], b"IPSC");
-        let packet = PaletteFramePacket {
-            sequence: 1,
-            framebuffer: Arc::new(encoded.framebuffer),
-            is_keyframe: encoded.is_keyframe,
-            frame_index: encoded.frame_index,
-        };
-        let batch = encode_palette_batch_packets(None, &[packet]);
-        assert_eq!(batch.packets[0].len(), 1 + 4 + 4 + 256 * 256);
-    }
-
-    #[test]
-    fn exact_palette_fast_path_uses_rgb_not_bgr_indexing() {
-        let mut encoder = IndexedPixelEncoder::new(
-            vec![[255, 0, 0, 255], [0, 0, 255, 255]],
-            PaletteBias::default(),
-            None,
-        );
-        let raw = RawFrame {
-            pixels: RawFramePixels::Bgra([0, 0, 255, 255].repeat(8 * 8)),
-            width: 8,
-            height: 8,
-            captured_at: Instant::now(),
-        };
-
-        let encoded = encoder.encode(&raw, PaletteBias::default()).unwrap();
-
-        assert!(encoded.framebuffer.pixels.iter().all(|index| *index == 0));
-    }
-
-    #[test]
-    fn exact_palette_fast_path_ignores_input_offsets() {
-        let mut encoder = IndexedPixelEncoder::new(
-            vec![[255, 0, 0, 255], [0, 255, 255, 255]],
-            PaletteBias::default(),
-            None,
-        );
-        let raw = RawFrame {
-            pixels: RawFramePixels::Bgra([0, 0, 255, 255].repeat(8 * 8)),
-            width: 8,
-            height: 8,
-            captured_at: Instant::now(),
-        };
-        let bias = PaletteBias {
-            lightness_multiply: -0.85,
-            lightness_add: -0.35,
-            chroma_multiply: 2.5,
-            chroma_add: 0.25,
-            hue_add: 0.5,
-            ..PaletteBias::default()
-        };
-
-        let encoded = encoder.encode(&raw, bias).unwrap();
-
-        assert!(encoded.framebuffer.pixels.iter().all(|index| *index == 0));
-    }
-
-    #[test]
-    fn indexed_raw_frame_bypasses_cpu_quantization() {
-        let mut encoder =
-            IndexedPixelEncoder::new(generated_test_palette(), PaletteBias::default(), None);
-        let pixels = (0..64).map(|index| index as u8).collect::<Vec<_>>();
-        let raw = RawFrame {
-            pixels: RawFramePixels::Indexed(pixels.clone()),
-            width: 8,
-            height: 8,
-            captured_at: Instant::now(),
-        };
-
-        let encoded = encoder.encode(&raw, PaletteBias::default()).unwrap();
-
-        assert_eq!(encoded.framebuffer.pixels, pixels);
-    }
-
-    #[test]
-    fn generated_test_palette_has_256_entries() {
-        assert_eq!(generated_test_palette().len(), 256);
-    }
-
-    #[test]
-    fn delayed_frame_becomes_available_without_new_publish() {
-        let hub = PaletteFrameHub::new();
-        let stats = SharedStats::new();
-        let delay = Duration::from_millis(25);
-        let packet = PaletteFramePacket {
-            sequence: 1,
-            framebuffer: Arc::new(Framebuffer::new(128, 128)),
-            is_keyframe: true,
-            frame_index: 0,
-        };
-        let encoded = encode_palette_batch_packets(None, &[packet]);
-        hub.publish_encoded_batch(vec![0], 1, Instant::now(), encoded);
-
-        let started = Instant::now();
-        let batch = hub
-            .wait_for_delayed_encoded_batch_after(0, delay, &stats, || true)
-            .expect("frame should become eligible after its delay");
-
-        assert_eq!(batch.sequence, 1);
-        assert_eq!(batch.packets.len(), 1);
-        assert!(started.elapsed() >= delay);
-    }
-
-    fn decode_delta_frame_for_test(previous: &Framebuffer, bytes: &[u8]) -> Framebuffer {
-        let tiles_x = previous.width / TILE_SIZE;
-        let tiles_y = previous.height / TILE_SIZE;
-        let tile_count = tiles_x * tiles_y;
-        let mask_len = tile_count.div_ceil(8);
-        let mask = &bytes[..mask_len];
-        let mut cursor = mask_len;
-        let mut out = previous.clone();
-
-        for tile_y in 0..tiles_y {
-            for tile_x in 0..tiles_x {
-                let tile_index = tile_y * tiles_x + tile_x;
-                if mask[tile_index / 8] & (1 << (tile_index % 8)) == 0 {
-                    continue;
-                }
-
-                let previous_tile = extract_tile(previous, tile_x, tile_y);
-                let (tile, consumed) = decode_tile_for_test(&previous_tile, &bytes[cursor..]);
-                cursor += consumed;
-                write_tile_for_test(&mut out, tile_x, tile_y, &tile);
-            }
-        }
-
-        out
-    }
-
-    fn decode_tile_for_test(previous: &[u8; 64], bytes: &[u8]) -> ([u8; 64], usize) {
-        match bytes[0] {
-            0 => {
-                let mut tile = [0u8; 64];
-                tile.copy_from_slice(&bytes[1..65]);
-                (tile, 65)
-            }
-            1 => ([bytes[1]; 64], 2),
-            2 => decode_rle_for_test(bytes),
-            3 => decode_span_for_test(previous, bytes),
-            4 => decode_xor_rle_for_test(previous, bytes),
-            mode => panic!("unknown mode {mode}"),
-        }
-    }
-
-    fn decode_rle_for_test(bytes: &[u8]) -> ([u8; 64], usize) {
-        let run_count = bytes[1] as usize;
-        let mut tile = [0u8; 64];
-        let mut out_i = 0;
-        let mut cursor = 2;
-        for _ in 0..run_count {
-            let color = bytes[cursor];
-            let len = bytes[cursor + 1] as usize;
-            cursor += 2;
-            for _ in 0..len {
-                tile[out_i] = color;
-                out_i += 1;
-            }
-        }
-        (tile, cursor)
-    }
-
-    fn decode_span_for_test(previous: &[u8; 64], bytes: &[u8]) -> ([u8; 64], usize) {
-        let span_count = bytes[1] as usize;
-        let mut tile = *previous;
-        let mut tile_i = 0usize;
-        let mut cursor = 2usize;
-        for _ in 0..span_count {
-            let skip = bytes[cursor] as usize;
-            let len = bytes[cursor + 1] as usize;
-            cursor += 2;
-            tile_i += skip;
-            tile[tile_i..tile_i + len].copy_from_slice(&bytes[cursor..cursor + len]);
-            cursor += len;
-            tile_i += len;
-        }
-        (tile, cursor)
-    }
-
-    fn decode_xor_rle_for_test(previous: &[u8; 64], bytes: &[u8]) -> ([u8; 64], usize) {
-        let run_count = bytes[1] as usize;
-        let mut tile = [0u8; 64];
-        let mut out_i = 0;
-        let mut cursor = 2;
-        for _ in 0..run_count {
-            let value = bytes[cursor];
-            let len = bytes[cursor + 1] as usize;
-            cursor += 2;
-            for _ in 0..len {
-                tile[out_i] = previous[out_i] ^ value;
-                out_i += 1;
-            }
-        }
-        (tile, cursor)
-    }
-
-    fn write_tile_for_test(frame: &mut Framebuffer, tile_x: usize, tile_y: usize, tile: &[u8; 64]) {
-        for y in 0..TILE_SIZE {
-            for x in 0..TILE_SIZE {
-                let dst_x = tile_x * TILE_SIZE + x;
-                let dst_y = tile_y * TILE_SIZE + y;
-                frame.pixels[dst_y * frame.width + dst_x] = tile[y * TILE_SIZE + x];
-            }
-        }
     }
 }

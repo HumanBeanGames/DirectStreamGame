@@ -3,11 +3,13 @@ use crate::constants::{
     STREAM_AUDIO_MAX_MIX_FRAMES_PER_UPDATE, STREAM_AUDIO_SAMPLE_RATE,
 };
 use bevy::prelude::*;
+#[cfg(feature = "ffmpeg-media")]
 use ffmpeg::{
     ChannelLayout, codec, format, frame, media,
     software::resampling::context::Context as ResampleContext,
     util::format::{Sample, sample::Type as SampleType},
 };
+#[cfg(feature = "ffmpeg-media")]
 use ffmpeg_next as ffmpeg;
 use std::{
     f32::consts::PI,
@@ -167,6 +169,7 @@ impl StreamAudioClip {
     }
 
     pub fn from_wav_file(path: impl AsRef<Path>) -> Result<Self, String> {
+        #[cfg(feature = "ffmpeg-media")]
         if let Ok(clip) = decode_audio_file_with_ffmpeg(path.as_ref()) {
             return Ok(clip);
         }
@@ -229,6 +232,7 @@ impl StreamAudioClip {
     }
 }
 
+#[cfg(feature = "ffmpeg-media")]
 fn decode_audio_file_with_ffmpeg(path: &Path) -> Result<StreamAudioClip, String> {
     ffmpeg::init().map_err(|err| err.to_string())?;
 
@@ -285,6 +289,7 @@ fn decode_audio_file_with_ffmpeg(path: &Path) -> Result<StreamAudioClip, String>
     ))
 }
 
+#[cfg(feature = "ffmpeg-media")]
 fn receive_resampled_audio(
     decoder: &mut codec::decoder::Audio,
     resampler: &mut ResampleContext,
@@ -302,6 +307,7 @@ fn receive_resampled_audio(
     Ok(())
 }
 
+#[cfg(feature = "ffmpeg-media")]
 fn append_planar_stereo_f32(frame: &frame::Audio, samples: &mut Vec<f32>) -> Result<(), String> {
     if frame.format() != Sample::F32(SampleType::Planar) || frame.planes() < 2 {
         return Err("resampler did not produce planar stereo f32 audio".to_owned());
@@ -383,7 +389,7 @@ fn decode_wav_samples(data: &[u8], format: WavFormat) -> Result<Vec<f32>, String
         .checked_div(8)
         .filter(|bytes| *bytes > 0)
         .ok_or_else(|| "WAV bits per sample must be byte-aligned".to_owned())?;
-    if data.len() % bytes_per_sample != 0 {
+    if !data.len().is_multiple_of(bytes_per_sample) {
         return Err("WAV data chunk is not sample-aligned".to_owned());
     }
 

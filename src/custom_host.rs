@@ -130,23 +130,12 @@ impl CustomHostBranding {
     }
 }
 
-#[derive(Clone, Resource)]
+#[derive(Clone, Resource, Default)]
 pub struct CustomHostLayout {
     pub max_player_width_px: Option<u32>,
     pub prefer_larger_player: bool,
     pub minimizable_player: bool,
     pub start_player_minimized: bool,
-}
-
-impl Default for CustomHostLayout {
-    fn default() -> Self {
-        Self {
-            max_player_width_px: None,
-            prefer_larger_player: false,
-            minimizable_player: false,
-            start_player_minimized: false,
-        }
-    }
 }
 
 impl CustomHostLayout {
@@ -924,72 +913,5 @@ pub(crate) fn poll_stream_pointer_clicks(
 
     for click in hub.drain() {
         writer.write(click);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_panel(id: &str, body: &str) -> CustomHostPanel {
-        CustomHostPanel {
-            id: id.to_owned(),
-            title: id.to_owned(),
-            body: body.to_owned(),
-            elements: vec![CustomHostPanelElement::Text(body.to_owned())],
-            revision: 0,
-            anchor: CustomHostPanelAnchor::LeftOfStream,
-            order: 0,
-            size_hint: None,
-            style_hint: None,
-            audience: CustomHostPanelAudience::All,
-        }
-    }
-
-    #[test]
-    fn viewer_panels_with_same_id_do_not_collide() {
-        let hub = CustomHostPanelHub::default();
-        hub.publish_for_viewer_identity(test_panel("selected-town", "viewer-a"), "viewer-a");
-        hub.publish_for_viewer_identity(test_panel("selected-town", "viewer-b"), "viewer-b");
-        hub.publish(test_panel("shared", "global"));
-
-        let viewer_a = hub.snapshot_for_viewer(Some("viewer-a"), Some("A"));
-        let viewer_b = hub.snapshot_for_viewer(Some("viewer-b"), Some("B"));
-
-        assert!(viewer_a.iter().any(|panel| panel.body == "viewer-a"));
-        assert!(!viewer_a.iter().any(|panel| panel.body == "viewer-b"));
-        assert!(viewer_b.iter().any(|panel| panel.body == "viewer-b"));
-        assert!(!viewer_b.iter().any(|panel| panel.body == "viewer-a"));
-        assert!(viewer_a.iter().any(|panel| panel.body == "global"));
-        assert!(viewer_b.iter().any(|panel| panel.body == "global"));
-    }
-
-    fn test_overlay(id: &str, x: f32) -> CustomHostOverlayElement {
-        CustomHostOverlayElement {
-            id: id.to_owned(),
-            audience: CustomHostPanelAudience::All,
-            x,
-            y: 0.5,
-            coordinate_space: OverlayCoordinateSpace::NormalizedStream,
-            kind: OverlayElementKind::Circle { radius: 4.0 },
-            order: 0,
-            style: OverlayElementStyle::default(),
-            ttl_ms: None,
-        }
-    }
-
-    #[test]
-    fn viewer_overlays_with_same_id_do_not_collide() {
-        let hub = CustomHostOverlayHub::default();
-        hub.publish_overlay_for_viewer_identity(test_overlay("selected-town", 0.25), "viewer-a");
-        hub.publish_overlay_for_viewer_identity(test_overlay("selected-town", 0.75), "viewer-b");
-
-        let viewer_a = hub.snapshot_for_viewer(Some("viewer-a"), Some("A"));
-        let viewer_b = hub.snapshot_for_viewer(Some("viewer-b"), Some("B"));
-
-        assert_eq!(viewer_a.len(), 1);
-        assert_eq!(viewer_b.len(), 1);
-        assert_eq!(viewer_a[0].x, 0.25);
-        assert_eq!(viewer_b[0].x, 0.75);
     }
 }

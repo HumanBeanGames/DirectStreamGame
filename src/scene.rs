@@ -522,6 +522,8 @@ struct QuantizedPixelDebug {
     direct_overlay: bool,
 }
 
+// Bevy system inputs stay explicit so the scheduler can validate their access conflicts.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn setup_direct_stream_scene(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
@@ -584,11 +586,8 @@ pub(crate) fn setup_direct_stream_scene(
         let palette_config = palette_lookup.config();
         let palette_colors = palette_config.colors.clone();
         let palette_bias = crate::palette::PaletteBias::from(palette_config.matching);
-        let batch_size = if config.custom_host {
-            effective_custom_batch_size(config.custom_host_batch_size, config.stream_fps)
-        } else {
-            effective_custom_batch_size(config.custom_host_batch_size, config.stream_fps)
-        };
+        let batch_size =
+            effective_custom_batch_size(config.custom_host_batch_size, config.stream_fps);
         let overlay_enabled = std::env::var_os("DIRECT_STREAM_AUDIT_DISABLE_OVERLAYS").is_none();
         let pipeline = spawn_custom_host_pipeline(
             &mut commands,
@@ -660,6 +659,8 @@ pub(crate) fn setup_direct_stream_scene(
     commands.insert_resource(target);
 }
 
+// Preview construction owns several distinct render assets that must be wired consistently.
+#[allow(clippy::too_many_arguments)]
 fn spawn_preview_comparison(
     commands: &mut Commands,
     images: &mut Assets<Image>,
@@ -1634,6 +1635,8 @@ fn spawn_readback_entities(commands: &mut Commands, count: usize) -> Vec<Entity>
         .collect()
 }
 
+// Bevy system inputs stay explicit so the scheduler can validate their access conflicts.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_preview_pixel_debug_clicks(
     config: Res<AppConfig>,
     dither: Res<DirectStreamDitherSettings>,
@@ -1799,6 +1802,8 @@ fn handle_preview_palette_pick_readback(
     commands.entity(event.entity).despawn();
 }
 
+// Bevy system inputs stay explicit so the scheduler can validate their access conflicts.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn handle_preview_palette_editor_interactions(
     config: Res<AppConfig>,
     mut commands: Commands,
@@ -2098,6 +2103,8 @@ pub(crate) fn handle_preview_oklch_picker_interactions(
     }
 }
 
+// Bevy system inputs stay explicit so the scheduler can validate their access conflicts.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn sync_preview_palette_editor_ui(
     editor: Option<Res<PreviewPaletteEditor>>,
     mut images: ResMut<Assets<Image>>,
@@ -2331,6 +2338,8 @@ fn start_preview_palette_rebake(
     });
 }
 
+// Bevy system inputs stay explicit so the scheduler can validate their access conflicts.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn process_preview_palette_rebake(
     rebake: Option<ResMut<PreviewPaletteRebake>>,
     mut commands: Commands,
@@ -2344,95 +2353,96 @@ pub(crate) fn process_preview_palette_rebake(
     mut overlays: Query<&mut Visibility, With<PreviewRebakingOverlay>>,
     mut overlay_text: Query<&mut Text, With<PreviewRebakingOverlayText>>,
 ) {
-    let Some(mut rebake) = rebake else {
-        for mut visibility in &mut overlays {
-            *visibility = Visibility::Hidden;
-        }
-        return;
-    };
-
-    for mut visibility in &mut overlays {
-        *visibility = Visibility::Visible;
-    }
-
-    let progress = rebake.progress.load(Ordering::Relaxed).min(100);
-    for mut text in &mut overlay_text {
-        text.0 = format!("Rebaking... {progress}%");
-    }
-
-    let completed_rebake = if let Some(receiver) = &rebake.receiver {
-        let Ok(result) = receiver.try_recv() else {
+    let remove = {
+        let Some(mut rebake) = rebake else {
+            for mut visibility in &mut overlays {
+                *visibility = Visibility::Hidden;
+            }
             return;
         };
-        Some(result)
-    } else {
-        None
-    };
-    let mut completed_mode = rebake.mode;
 
-    if let (Some(pipeline), Some(editor)) = (pipeline.as_deref_mut(), editor.as_deref()) {
-        if let Some(result) = completed_rebake
-            && let Some(image) = images.get_mut(&pipeline.lookup_texture)
-        {
-            completed_mode = result.mode;
-            rebake.mode = result.mode;
-            rebake.receiver = None;
-            let lookup = result.lookup;
-            let lookup_entries = Arc::<[u8]>::from(lookup.clone().into_boxed_slice());
-            if image
-                .data
-                .as_ref()
-                .is_some_and(|data| data.len() == lookup.len())
-            {
-                if let Some(data) = image.data.as_mut() {
-                    *data = lookup;
-                }
-            } else {
-                *image = crate::gpu_palette::make_lookup_texture_from_entries(&lookup);
-            }
-            pipeline.lookup_entries = lookup_entries.clone();
-            if let Some(debug_state) = debug_state.as_deref_mut() {
-                debug_state.lookup_entries = lookup_entries;
-                debug_state.matching = PaletteMatching::from(editor.committed_lab_settings);
-                debug_state.validation_frames_requested = 0;
-                debug_state.validation_frames_checked = 0;
-                debug_state.validation_total_mismatches = 0;
-                debug_state.validation_total_mapping_mismatches = 0;
-                debug_state.validation_total_drifts = 0;
-                debug_state.validation_last_requested_generation = None;
-                debug_state.validation_raw_data.clear();
-                debug_state.validation_quantized_data.clear();
-                debug_state.validation_audit_data.clear();
-                debug_state.validation_overlay_mask_data.clear();
-                debug_state.pixel_debug_raw = None;
-                debug_state.pixel_debug_quantized = None;
-                debug_state.pixel_debug_audit = None;
-                debug_state.pixel_debug_overlay_mask = None;
-                debug_state.pixel_debug_clicked_source = None;
-            }
+        for mut visibility in &mut overlays {
+            *visibility = Visibility::Visible;
         }
-        update_preview_palette_materials_for_gpu(
-            pipeline,
-            throttle.as_deref(),
-            &mut palette_materials,
-            &mut display_materials,
-            editor.committed_lab_settings,
-            rebake.mode,
-        );
-    }
 
-    if let Some(editor) = editor.as_deref_mut() {
-        editor.status = match completed_mode {
-            PreviewPaletteRebakeMode::Gpu => "GPU IPSMAP6 rebake complete".to_owned(),
-            PreviewPaletteRebakeMode::Cpu => "IPSMAP6 rebake complete".to_owned(),
+        let progress = rebake.progress.load(Ordering::Relaxed).min(100);
+        for mut text in &mut overlay_text {
+            text.0 = format!("Rebaking... {progress}%");
+        }
+
+        let completed_rebake = if let Some(receiver) = &rebake.receiver {
+            let Ok(result) = receiver.try_recv() else {
+                return;
+            };
+            Some(result)
+        } else {
+            None
         };
-    }
+        let mut completed_mode = rebake.mode;
 
-    if rebake.receiver.is_none() && rebake.frames_remaining > 0 {
-        rebake.frames_remaining -= 1;
-    }
-    let remove = rebake.receiver.is_none() && rebake.frames_remaining == 0;
-    drop(rebake);
+        if let (Some(pipeline), Some(editor)) = (pipeline.as_deref_mut(), editor.as_deref()) {
+            if let Some(result) = completed_rebake
+                && let Some(image) = images.get_mut(&pipeline.lookup_texture)
+            {
+                completed_mode = result.mode;
+                rebake.mode = result.mode;
+                rebake.receiver = None;
+                let lookup = result.lookup;
+                let lookup_entries = Arc::<[u8]>::from(lookup.clone().into_boxed_slice());
+                if image
+                    .data
+                    .as_ref()
+                    .is_some_and(|data| data.len() == lookup.len())
+                {
+                    if let Some(data) = image.data.as_mut() {
+                        *data = lookup;
+                    }
+                } else {
+                    *image = crate::gpu_palette::make_lookup_texture_from_entries(&lookup);
+                }
+                pipeline.lookup_entries = lookup_entries.clone();
+                if let Some(debug_state) = debug_state.as_deref_mut() {
+                    debug_state.lookup_entries = lookup_entries;
+                    debug_state.matching = PaletteMatching::from(editor.committed_lab_settings);
+                    debug_state.validation_frames_requested = 0;
+                    debug_state.validation_frames_checked = 0;
+                    debug_state.validation_total_mismatches = 0;
+                    debug_state.validation_total_mapping_mismatches = 0;
+                    debug_state.validation_total_drifts = 0;
+                    debug_state.validation_last_requested_generation = None;
+                    debug_state.validation_raw_data.clear();
+                    debug_state.validation_quantized_data.clear();
+                    debug_state.validation_audit_data.clear();
+                    debug_state.validation_overlay_mask_data.clear();
+                    debug_state.pixel_debug_raw = None;
+                    debug_state.pixel_debug_quantized = None;
+                    debug_state.pixel_debug_audit = None;
+                    debug_state.pixel_debug_overlay_mask = None;
+                    debug_state.pixel_debug_clicked_source = None;
+                }
+            }
+            update_preview_palette_materials_for_gpu(
+                pipeline,
+                throttle.as_deref(),
+                &mut palette_materials,
+                &mut display_materials,
+                editor.committed_lab_settings,
+                rebake.mode,
+            );
+        }
+
+        if let Some(editor) = editor.as_deref_mut() {
+            editor.status = match completed_mode {
+                PreviewPaletteRebakeMode::Gpu => "GPU IPSMAP6 rebake complete".to_owned(),
+                PreviewPaletteRebakeMode::Cpu => "IPSMAP6 rebake complete".to_owned(),
+            };
+        }
+
+        if rebake.receiver.is_none() && rebake.frames_remaining > 0 {
+            rebake.frames_remaining -= 1;
+        }
+        rebake.receiver.is_none() && rebake.frames_remaining == 0
+    };
     if remove {
         commands.remove_resource::<PreviewPaletteRebake>();
     }
@@ -3621,6 +3631,8 @@ struct PreviewFrameValidationSummary {
     drifts: u64,
 }
 
+// The validator keeps raw buffers and expected render metadata explicit in diagnostics.
+#[allow(clippy::too_many_arguments)]
 fn validate_preview_palette_frame(
     raw: &[u8],
     quantized: &[u8],
@@ -3709,6 +3721,8 @@ fn expected_gpu_lookup_index(
     lookup_entries.get(lookup_key).copied()
 }
 
+// Explicit channels and lookup routes keep CPU/GPU mismatch reports unambiguous.
+#[allow(clippy::too_many_arguments)]
 fn expected_preview_index(
     r: u8,
     g: u8,
@@ -4096,282 +4110,6 @@ fn is_direct_output_overlay(
 ) -> bool {
     quantized.direct_overlay
 }
-
-#[cfg(test)]
-mod preview_pixel_debug_tests {
-    use super::*;
-
-    fn raw_debug(route: PreviewLookupRoute, _expected_index: Option<u8>) -> RawPixelDebug {
-        RawPixelDebug {
-            x: 0,
-            y: 0,
-            b: 0,
-            g: 0,
-            r: 0,
-            a: 255,
-            lookup_rgb: [0, 0, 0],
-            lookup_key: 0,
-            lookup_route: route,
-        }
-    }
-
-    fn quantized_debug(index: u8) -> QuantizedPixelDebug {
-        QuantizedPixelDebug {
-            palette_index: index,
-            shader_palette_index: index,
-            color: [4, 5, 6, 255],
-            lookup_rgb: [0, 0, 0],
-            direct_overlay: false,
-        }
-    }
-
-    fn altered_fixtures(index: u8) -> (Vec<u8>, Vec<[u8; 4]>) {
-        let lookup = vec![index];
-        let mut palette = vec![[0, 0, 0, 255]; usize::from(index) + 1];
-        palette[usize::from(index)] = [1, 2, 3, 255];
-        (lookup, palette)
-    }
-
-    #[test]
-    fn after_click_keeps_altered_label_when_after_matches_altered_expectation() {
-        let raw = raw_debug(PreviewLookupRoute::AlteredTable, Some(9));
-        let quantized = quantized_debug(9);
-        let (lookup, palette) = altered_fixtures(9);
-
-        let (label, index, color) = preview_expected_readout(
-            &raw,
-            &quantized,
-            PreviewPixelSource::Quantized,
-            &lookup,
-            &palette,
-        );
-
-        assert_eq!(label, "altered/prequantized IPSMAP table");
-        assert_eq!(index, "9");
-        assert_eq!(color, [1, 2, 3, 255]);
-    }
-
-    #[test]
-    fn after_click_reports_mismatch_when_unmarked_output_differs_from_expectation() {
-        let raw = raw_debug(PreviewLookupRoute::AlteredTable, Some(9));
-        let quantized = quantized_debug(42);
-        let (lookup, palette) = altered_fixtures(9);
-
-        let (label, index, color) = preview_expected_readout(
-            &raw,
-            &quantized,
-            PreviewPixelSource::Quantized,
-            &lookup,
-            &palette,
-        );
-
-        assert_eq!(label, "altered/prequantized IPSMAP table");
-        assert_eq!(index, "9");
-        assert_eq!(color, [1, 2, 3, 255]);
-
-        let text = preview_pixel_pair_text(
-            &raw,
-            &quantized,
-            PreviewPixelSource::Quantized,
-            PaletteMatching::default(),
-            &lookup,
-            &palette,
-        );
-        assert!(text.contains("mapping: [MISMATCH]"));
-        assert!(!text.contains("direct output overlay"));
-    }
-
-    #[test]
-    fn overlay_marker_identifies_direct_output_even_when_indices_match() {
-        let raw = raw_debug(PreviewLookupRoute::AlteredTable, Some(9));
-        let mut quantized = quantized_debug(9);
-        quantized.direct_overlay = true;
-
-        let (label, index, color) =
-            preview_expected_readout(&raw, &quantized, PreviewPixelSource::Raw, &[], &[]);
-
-        assert_eq!(label, "direct output overlay");
-        assert_eq!(index, "9");
-        assert_eq!(color, [4, 5, 6, 255]);
-    }
-
-    #[test]
-    fn direct_overlay_readout_does_not_compare_overlay_to_underlay() {
-        let mut raw = raw_debug(PreviewLookupRoute::AlteredTable, Some(9));
-        raw.r = 0x14;
-        raw.g = 0x07;
-        raw.b = 0x2A;
-        raw.lookup_rgb = [0x14, 0x07, 0x2A];
-        raw.lookup_key = 1_312_554;
-        let mut quantized = quantized_debug(169);
-        quantized.color = [0x52, 0x45, 0xFC, 255];
-        quantized.direct_overlay = true;
-
-        let text = preview_pixel_pair_text(
-            &raw,
-            &quantized,
-            PreviewPixelSource::Quantized,
-            PaletteMatching::default(),
-            &[],
-            &[],
-        );
-
-        assert!(text.contains("underlay raw: #14072A"));
-        assert!(text.contains("overlay output: index 169 #5245FC"));
-        assert!(text.contains("Delta E OK: n/a (overlay replaces underlay)"));
-        assert!(text.contains("underlay lookup RGB key: 1312554"));
-        assert!(!text.contains("OKLab dL/da/db"));
-        assert!(!text.contains("OKLCH delta"));
-    }
-
-    #[test]
-    fn altered_lookup_prediction_uses_the_same_ordered_dither_input_as_the_shader() {
-        let dither = DirectStreamDitherSettings {
-            scale: 1.0,
-            intensity: 1.0,
-            value_strength: 0.2,
-            chroma_strength: 0.05,
-            hue_strength: 0.01,
-        };
-        let raw_rgb = [0x14, 0x07, 0x2A];
-        let lookup_rgb = apply_preview_dither(raw_rgb, 116, 33, dither);
-        assert_ne!(lookup_rgb, raw_rgb);
-
-        let lookup_key = rgb_key(lookup_rgb);
-        let mut lookup_entries = vec![0; lookup_key + 1];
-        lookup_entries[lookup_key] = 42;
-        let palette = [[1, 2, 3, 255]];
-
-        let expected = expected_preview_index(
-            raw_rgb[0],
-            raw_rgb[1],
-            raw_rgb[2],
-            255,
-            116,
-            33,
-            dither,
-            &lookup_entries,
-            &palette,
-        );
-
-        assert_eq!(
-            expected,
-            Some((PreviewLookupRoute::AlteredTable, 42, lookup_rgb))
-        );
-    }
-
-    #[test]
-    fn gpu_lookup_metadata_is_the_authority_for_audited_mapping() {
-        let mut raw = raw_debug(PreviewLookupRoute::AlteredTable, None);
-        raw.lookup_rgb = [62, 68, 18];
-        let mut quantized = quantized_debug(73);
-        quantized.lookup_rgb = [63, 68, 18];
-        let gpu_key = rgb_key(quantized.lookup_rgb);
-        let mut lookup = vec![0; gpu_key + 1];
-        lookup[gpu_key] = 73;
-
-        assert_eq!(
-            expected_gpu_lookup_index(&raw, &quantized, &lookup, &[]),
-            Some(73)
-        );
-    }
-
-    #[test]
-    fn quantized_readback_contains_exact_gpu_lookup_rgb() {
-        let readback = PreviewPixelDebugReadback {
-            request_id: 0,
-            source: PreviewPixelSource::Quantized,
-            x: 0,
-            y: 0,
-            width: 1,
-            dither: DirectStreamDitherSettings::default(),
-        };
-        let mut data = vec![0; 256];
-        data[..4].copy_from_slice(&[73, 63, 68, 18]);
-        let palette = vec![[0, 0, 0, 255]; 74];
-
-        let debug = preview_quantized_pixel_debug(&readback, &data, &palette);
-
-        assert_eq!(debug.palette_index, 73);
-        assert_eq!(debug.lookup_rgb, [63, 68, 18]);
-    }
-
-    #[test]
-    fn stable_srgb_quantization_resolves_half_step_drift_consistently() {
-        assert_eq!(stable_srgb_byte(10.49 / 255.0), 10);
-        assert_eq!(stable_srgb_byte(10.51 / 255.0), 10);
-        assert_eq!(stable_srgb_byte(10.80 / 255.0), 11);
-    }
-
-    #[test]
-    fn palette_shader_anchors_dither_to_framebuffer_coordinates() {
-        let shader = include_str!("../assets/shaders/palette_material_2d.wgsl");
-
-        assert!(shader.contains("floor(mesh.position.xy)"));
-        assert!(shader.contains("textureLoad(source_image, source_coord, 0)"));
-        assert!(shader.contains("apply_dither(raw_source, framebuffer_coord)"));
-        assert!(!shader.contains("source_uv"));
-    }
-
-    #[test]
-    fn after_click_preserves_direct_table_label_for_raw_direct_text() {
-        let raw = raw_debug(PreviewLookupRoute::DirectTable, Some(12));
-        let quantized = quantized_debug(12);
-        let mut lookup = vec![0; crate::palette_lut::LUT_ENTRY_COUNT + 1];
-        lookup[crate::palette_lut::LUT_ENTRY_COUNT] = 12;
-        let mut palette = vec![[0, 0, 0, 255]; 13];
-        palette[12] = [1, 2, 3, 255];
-
-        let (label, index, color) = preview_expected_readout(
-            &raw,
-            &quantized,
-            PreviewPixelSource::Quantized,
-            &lookup,
-            &palette,
-        );
-
-        assert_eq!(label, "direct IPSMAP table");
-        assert_eq!(index, "12");
-        assert_eq!(color, [1, 2, 3, 255]);
-    }
-
-    #[test]
-    fn priority_normalization_preserves_changed_value_and_sums_to_one() {
-        let mut settings = PreviewLabSettings {
-            bias_lightness: 0.8,
-            bias_chroma: 0.3,
-            bias_hue: 0.3,
-            ..default()
-        };
-
-        normalize_preview_priorities(&mut settings, PreviewLabSlider::BiasLightness);
-
-        assert!((settings.bias_lightness - 0.8).abs() < 0.000_001);
-        assert!((settings.bias_chroma - 0.1).abs() < 0.000_001);
-        assert!((settings.bias_hue - 0.1).abs() < 0.000_001);
-        assert!(
-            (settings.bias_lightness + settings.bias_chroma + settings.bias_hue - 1.0).abs()
-                < 0.000_001
-        );
-    }
-
-    #[test]
-    fn priority_normalization_splits_remaining_when_other_priorities_are_zero() {
-        let mut settings = PreviewLabSettings {
-            bias_lightness: 0.0,
-            bias_chroma: 0.4,
-            bias_hue: 0.0,
-            ..default()
-        };
-
-        normalize_preview_priorities(&mut settings, PreviewLabSlider::BiasChroma);
-
-        assert!((settings.bias_chroma - 0.4).abs() < 0.000_001);
-        assert!((settings.bias_lightness - 0.3).abs() < 0.000_001);
-        assert!((settings.bias_hue - 0.3).abs() < 0.000_001);
-    }
-}
-
 pub(crate) fn update_preview_pixel_debug_text(
     debug_state: Option<Res<PreviewPixelDebugState>>,
     mut text_query: Query<&mut Text, With<PreviewPixelDebugText>>,

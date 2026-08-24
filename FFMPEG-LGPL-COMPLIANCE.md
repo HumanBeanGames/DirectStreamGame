@@ -1,16 +1,17 @@
 # FFmpeg LGPL Compliance Notes
 
-This app is intended to use FFmpeg dynamically so the game can remain
-closed-source while using LGPL-covered FFmpeg libraries. The app integrates
-FFmpeg through native Rust bindings and expects FFmpeg to be provided as shared
-libraries/DLLs at build and runtime.
+The optional `ffmpeg-media` feature uses FFmpeg dynamically so the game can
+remain closed-source while using LGPL-covered FFmpeg libraries. Default builds
+do not link FFmpeg. Feature-enabled builds integrate FFmpeg through native Rust
+bindings and expect FFmpeg to be provided as shared libraries/DLLs at build and
+runtime.
 
 ## Cargo configuration
 
-The Rust dependency is configured as:
+The optional Rust dependency is configured as:
 
 ```toml
-ffmpeg-next = { version = "=8.1.0", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
+ffmpeg-next = { version = "=8.1.0", optional = true, default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
 ```
 
 Do not enable `ffmpeg-next` features named `static`, `build`,
@@ -37,7 +38,7 @@ build and `installed/<triplet>/share/ffmpeg/copyright` before distribution.
 
 ## Distribution checklist
 
-Before selling or distributing the app:
+Before selling or distributing an `ffmpeg-media` build:
 
 1. Include an in-app notice such as:
    `This software uses libraries from the FFmpeg project under the LGPLv2.1.`

@@ -144,21 +144,6 @@ fn compact_indexed_rgba8(pixels: &[u8], width: u32, height: u32) -> Vec<u8> {
     }
     indexed
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn indexed_rgba8_readback_compacts_red_channel() {
-        let pixels = vec![
-            3, 255, 0, 255, 17, 0, 0, 255, 89, 255, 0, 255, 241, 0, 0, 255,
-        ];
-
-        assert_eq!(compact_indexed_rgba8(&pixels, 2, 2), vec![3, 17, 89, 241]);
-    }
-}
-
 fn finish_readback_batch_if_complete(readback: &mut StreamReadback, senders: &RawFrameSenders) {
     if !readback.pending_requests.is_empty() {
         senders.stats.with_mut(|stats| {

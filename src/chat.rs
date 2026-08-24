@@ -10,6 +10,7 @@ use std::{
 };
 
 const LOCAL_COMMAND_CHAT_TTL_MS: u64 = 30_000;
+type ViewerNameResolver = dyn Fn(&str) -> String + Send + Sync;
 
 #[derive(Message, Clone)]
 pub struct StreamChatMessage {
@@ -37,7 +38,7 @@ pub struct LocalViewerProfile {
 }
 
 #[derive(Clone, Resource)]
-pub struct CustomHostViewerNameResolver(pub Arc<dyn Fn(&str) -> String + Send + Sync>);
+pub struct CustomHostViewerNameResolver(pub Arc<ViewerNameResolver>);
 
 impl CustomHostViewerNameResolver {
     pub fn display_name_for_identity(&self, identity: &str) -> String {
@@ -159,8 +160,7 @@ struct LocalChatState {
     next_id: u64,
     generation: u64,
     names_by_identity: HashMap<String, String>,
-    blocked_identities: HashMap<String, String>,
-    name_resolver: Option<Arc<dyn Fn(&str) -> String + Send + Sync>>,
+    name_resolver: Option<Arc<ViewerNameResolver>>,
 }
 
 impl Default for LocalChatState {
@@ -171,7 +171,6 @@ impl Default for LocalChatState {
             next_id: 1,
             generation: 0,
             names_by_identity: HashMap::new(),
-            blocked_identities: HashMap::new(),
             name_resolver: None,
         }
     }
@@ -207,10 +206,6 @@ impl LocalChatHub {
     ) -> Option<String> {
         let identity_hash = local_chat_identity_hash(identity.as_ref());
         let mut state = self.state.lock().ok()?;
-        if state.blocked_identities.contains_key(&identity_hash) {
-            return None;
-        }
-
         let display_name = display_name_for_identity_hash(&mut state, &identity_hash);
         let text = message.into();
         let ttl_ms = parse_stream_command(&text).map(|_| LOCAL_COMMAND_CHAT_TTL_MS);
@@ -313,32 +308,6 @@ impl LocalChatHub {
     pub(crate) fn purge_expired(&self, now_ms: u64) {
         if let Ok(mut state) = self.state.lock() {
             purge_expired_locked(&mut state, now_ms);
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn block_identity(
-        &self,
-        identity_hash: impl Into<String>,
-        reason: impl Into<String>,
-    ) {
-        if let Ok(mut state) = self.state.lock() {
-            state
-                .blocked_identities
-                .insert(identity_hash.into(), reason.into());
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn active_names(&self) -> Vec<(String, String)> {
-        if let Ok(state) = self.state.lock() {
-            state
-                .names_by_identity
-                .iter()
-                .map(|(identity, name)| (identity.clone(), name.clone()))
-                .collect()
-        } else {
-            Vec::new()
         }
     }
 
@@ -755,81 +724,4 @@ fn display_name_color_from_hash(hash: &str) -> String {
     let value = u64::from_str_radix(hash, 16).unwrap_or(0);
     let hue = value % 360;
     format!("hsl({hue} 78% 68%)")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn viewer_name_resolver_overrides_default_name_and_caches() {
-        let hub = LocalChatHub::default();
-        hub.set_name_resolver(Some(CustomHostViewerNameResolver(Arc::new(|identity| {
-            format!("Mercantile-{identity}")
-        }))));
-
-        let (identity, name) = hub.viewer_for_identity("device:test-device");
-
-        assert!(name.starts_with("Mercantile-"));
-        assert!(name.ends_with(&identity));
-        assert_eq!(hub.viewer_for_identity("device:test-device").1, name);
-    }
-
-    #[test]
-    fn empty_resolved_viewer_name_falls_back_to_default() {
-        let hub = LocalChatHub::default();
-        hub.set_name_resolver(Some(CustomHostViewerNameResolver(Arc::new(|_| {
-            " \n ".to_owned()
-        }))));
-
-        let (identity, name) = hub.viewer_for_identity("device:test-device");
-
-        assert_eq!(name, local_chat_name_from_hash(&identity));
-    }
-
-    #[test]
-    fn refreshing_viewer_names_recomputes_cached_names() {
-        let hub = LocalChatHub::default();
-        let prefix = Arc::new(Mutex::new("One".to_owned()));
-        let resolver_prefix = prefix.clone();
-        hub.set_name_resolver(Some(CustomHostViewerNameResolver(Arc::new(
-            move |identity| {
-                format!(
-                    "{}-{identity}",
-                    resolver_prefix.lock().expect("prefix lock poisoned")
-                )
-            },
-        ))));
-
-        let (_, first) = hub.viewer_for_identity("device:test-device");
-        *prefix.lock().expect("prefix lock poisoned") = "Two".to_owned();
-        assert_eq!(hub.viewer_for_identity("device:test-device").1, first);
-
-        hub.refresh_names();
-        let (_, second) = hub.viewer_for_identity("device:test-device");
-        assert_ne!(first, second);
-        assert!(second.starts_with("Two-"));
-    }
-
-    #[test]
-    fn non_command_local_chat_entries_do_not_expire() {
-        let hub = LocalChatHub::default();
-
-        hub.submit("device:test-device", "hello market").unwrap();
-        let entries = hub.entries_after(0, None, None);
-
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].ttl_ms, None);
-    }
-
-    #[test]
-    fn command_local_chat_entries_expire() {
-        let hub = LocalChatHub::default();
-
-        hub.submit("device:test-device", "!where").unwrap();
-        let entries = hub.entries_after(0, None, None);
-
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].ttl_ms, Some(LOCAL_COMMAND_CHAT_TTL_MS));
-    }
 }

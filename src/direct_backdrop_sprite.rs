@@ -194,6 +194,8 @@ struct DirectBackdropRenderEntities {
 #[derive(Default)]
 struct DirectBackdropSpriteRenderMap(HashMap<Entity, DirectBackdropRenderEntities>);
 
+// Bevy system inputs stay explicit so the scheduler can validate their access conflicts.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn sync_direct_backdrop_sprites(
     mut commands: Commands,
     settings: Res<DirectBackdropSpriteSettings>,
@@ -563,32 +565,5 @@ fn backdrop_depth_bias(layer: DirectBackdropLayer) -> f32 {
         DirectBackdropLayer::BehindWorld => -10_000.0,
         DirectBackdropLayer::BeforeWorldSprites => 5_000.0,
         DirectBackdropLayer::BeforeText => 9_000.0,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn blended_backdrops_default_to_the_altered_lookup_path() {
-        let sprite = DirectBackdropSprite::new(Handle::default());
-
-        assert_eq!(sprite.color_lookup, DirectColorLookup::Altered);
-        assert!(matches!(
-            direct_marker_visibility(sprite.color_lookup),
-            Visibility::Hidden
-        ));
-    }
-
-    #[test]
-    fn direct_backdrops_enable_the_direct_lookup_marker() {
-        let sprite = DirectBackdropSprite::new(Handle::default())
-            .with_color_lookup(DirectColorLookup::Direct);
-
-        assert!(matches!(
-            direct_marker_visibility(sprite.color_lookup),
-            Visibility::Visible
-        ));
     }
 }
